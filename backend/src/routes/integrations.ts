@@ -6,12 +6,23 @@ import { requireRole } from "../middleware/auth.js";
 
 export const integrationsRouter = Router();
 
+function maskConfig(config: Record<string, unknown> | null) {
+  if (!config) return {};
+  const masked = { ...config };
+  for (const key of Object.keys(masked)) {
+    if (/password|token|secret|cookie|session|key/i.test(key) && masked[key]) {
+      masked[key] = "••••••••";
+    }
+  }
+  return masked;
+}
+
 integrationsRouter.get("/", asyncHandler(async (_req, res) => {
   const [integrations, logs] = await Promise.all([
     q("SELECT * FROM integrations ORDER BY name"),
     q("SELECT * FROM sync_logs ORDER BY started_at DESC LIMIT 20")
   ]);
-  res.json({ data: integrations.rows, logs: logs.rows });
+  res.json({ data: integrations.rows.map((row) => ({ ...row, config: maskConfig(row.config) })), logs: logs.rows });
 }));
 
 integrationsRouter.patch("/:id", requireRole("admin"), asyncHandler(async (req, res) => {
@@ -24,14 +35,18 @@ integrationsRouter.patch("/:id", requireRole("admin"), asyncHandler(async (req, 
     [body.status, body.config ? JSON.stringify(body.config) : null, req.params.id]
   );
   if (!rows[0]) return res.status(404).json({ error: "Integración no encontrada" });
-  res.json({ data: rows[0] });
+  res.json({ data: { ...rows[0], config: maskConfig(rows[0].config) } });
 }));
 
 integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(async (req, res) => {
   const integration = await q("SELECT * FROM integrations WHERE id=$1", [req.params.id]);
   if (!integration.rowCount) return res.status(404).json({ error: "Integración no encontrada" });
-  const status = integration.rows[0].status === "connected" || integration.rows[0].status === "warning" ? "success" : "error";
-  const message = status === "success" ? "Sincronización registrada. No se importaron registros porque no hay conector externo configurado." : "La integración requiere configuración válida antes de sincronizar.";
+  const config = integration.rows[0].config ?? {};
+  const hasConfig = Object.values(config).some((value) => String(value ?? "").trim().length > 0);
+  const status = integration.rows[0].status === "connected" && hasConfig ? "warning" : "error";
+  const message = status === "warning"
+    ? "Credenciales guardadas. Falta activar el conector de extracción específico para importar candidatos automáticamente."
+    : "La integración necesita estado Conectado y al menos una credencial/sesión guardada.";
   const { rows } = await q(
     "INSERT INTO sync_logs (integration_id, source, finished_at, duration_ms, status, message) VALUES ($1,$2,now(),0,$3,$4) RETURNING *",
     [req.params.id, integration.rows[0].name, status, message]
