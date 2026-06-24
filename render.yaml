@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: talenthub-aglh
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile.render
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: talenthub-aglh-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 8h
+      - key: ADMIN_EMAIL
+        value: admin@aglh.com
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ADMIN_NAME
+        value: Administrador AGLH
+      - key: CORS_ORIGIN
+        value: https://talenthub-aglh.onrender.com
+      - key: SERVE_STATIC
+        value: "true"
+
+databases:
+  - name: talenthub-aglh-db
+    plan: basic-256mb
+    databaseName: talenthub
+    user: talenthub
+    postgresMajorVersion: "16"
