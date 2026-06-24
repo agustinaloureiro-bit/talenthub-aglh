@@ -65,7 +65,8 @@ CREATE INDEX IF NOT EXISTS idx_candidates_email ON candidates USING GIN (email);
 CREATE INDEX IF NOT EXISTS idx_candidates_status ON candidates (status);
 CREATE INDEX IF NOT EXISTS idx_candidates_seniority ON candidates (ai_seniority);
 CREATE INDEX IF NOT EXISTS idx_candidates_text ON candidates USING GIN (
-  to_tsvector('spanish', coalesce(full_name,'') || ' ' || coalesce("current_role",'')
+  to_tsvector('spanish', coalesce(full_name,'') || ' ' || coalesce("current_role",'') || ' ' || coalesce(ai_summary,'') || ' ' || array_to_string(ai_tags,' '))
+);
 
 CREATE TABLE IF NOT EXISTS candidate_sources (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
