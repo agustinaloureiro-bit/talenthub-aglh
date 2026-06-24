@@ -1,253 +1,3 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { AlertCircle, Bot, ChevronLeft, Database, LayoutDashboard, LogOut, Plug, Plus, Save, Search, Send, Settings, UserRound, Users } from "lucide-react";
-import { api, currentUser, login, logout, type User } from "./lib/api";
-
-type Page = "dashboard" | "finder" | "candidates" | "candidate" | "ai" | "integrations" | "settings";
-
-type Candidate = {
-  id: string;
-  fullName: string;
-  email: string[];
-  phone: string[];
-  city?: string;
-  country?: string;
-  linkedinUrl?: string;
-  currentRole?: string;
-  seniority?: string;
-  years?: number;
-  tags: string[];
-  languages: { lang: string; level: string }[];
-  summary?: string;
-  strengths: string[];
-  weaknesses: string[];
-  qualityScore: number;
-  sourceCount: number;
-  status: string;
-};
-
-const nav = [
-  ["dashboard", LayoutDashboard, "Dashboard"],
-  ["finder", Search, "Talent Finder"],
-  ["candidates", Users, "Candidatos"],
-  ["ai", Bot, "AGLH AI"],
-  ["integrations", Plug, "Integraciones"],
-  ["settings", Settings, "Configuración"]
-] as const;
-
-export function App() {
-  const [user, setUser] = useState<User | null>(currentUser());
-  const [page, setPage] = useState<Page>("dashboard");
-  const [candidateId, setCandidateId] = useState<string | null>(null);
-
-  if (!user) return <Login onLogin={setUser} />;
-
-  const openCandidate = (id: string) => {
-    setCandidateId(id);
-    setPage("candidate");
-  };
-
-  return (
-    <div className="flex min-h-screen">
-      <aside className="fixed inset-y-0 left-0 w-56 bg-navy text-white">
-        <div className="flex h-16 items-center gap-3 border-b border-white/10 px-5">
-          <div className="grid h-9 w-9 place-items-center rounded-md bg-teal font-extrabold">TH</div>
-          <div>
-            <div className="text-sm font-bold">Talent Hub</div>
-            <div className="text-xs text-white/50">AGLH</div>
-          </div>
-        </div>
-        <nav className="p-3">
-          {nav.map(([key, Icon, label]) => (
-            <button key={key} onClick={() => setPage(key)} className={`mb-1 flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm ${page === key || (page === "candidate" && key === "candidates") ? "bg-white/10 text-white" : "text-white/65 hover:bg-white/5"}`}>
-              <Icon size={17} /> {label}
-            </button>
-          ))}
-        </nav>
-      </aside>
-      <main className="ml-56 flex min-h-screen flex-1 flex-col">
-        <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6">
-          <div className="flex items-center gap-3">
-            {page === "candidate" && <button className="btn-ghost" onClick={() => setPage("candidates")}><ChevronLeft size={16} /> Candidatos</button>}
-            <h1 className="text-lg font-bold">{titleFor(page)}</h1>
-          </div>
-          <div className="flex items-center gap-3 text-sm">
-            <span className="text-slate-500">{user.name} · {user.role}</span>
-            <button className="btn-ghost" onClick={() => { logout(); setUser(null); }}><LogOut size={16} /></button>
-          </div>
-        </header>
-        {page === "dashboard" && <Dashboard />}
-        {page === "finder" && <TalentFinder onView={openCandidate} />}
-        {page === "candidates" && <Candidates onView={openCandidate} />}
-        {page === "candidate" && candidateId && <CandidateProfile id={candidateId} canEdit={user.role !== "viewer"} />}
-        {page === "ai" && <Chat onView={openCandidate} />}
-        {page === "integrations" && <Integrations canEdit={user.role === "admin"} />}
-        {page === "settings" && <SettingsPage canEdit={user.role === "admin"} />}
-      </main>
-    </div>
-  );
-}
-
-function titleFor(page: Page) {
-  return ({ dashboard: "Dashboard", finder: "Talent Finder", candidates: "Candidatos", candidate: "Ficha de candidato", ai: "AGLH AI", integrations: "Integraciones", settings: "Configuración" } as Record<Page, string>)[page];
-}
-
-function Login({ onLogin }: { onLogin: (user: User) => void }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  async function submit(e: FormEvent) {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
-    try { onLogin(await login(email, password)); } catch (err: any) { setError(err.message); } finally { setLoading(false); }
-  }
-  return (
-    <div className="grid min-h-screen place-items-center bg-canvas p-4">
-      <form onSubmit={submit} className="card w-full max-w-sm p-6">
-        <div className="mb-6 flex items-center gap-3">
-          <div className="grid h-10 w-10 place-items-center rounded-md bg-navy font-extrabold text-white">TH</div>
-          <div><h1 className="font-bold">Talent Hub AGLH</h1><p className="text-sm text-slate-500">Ingreso seguro</p></div>
-        </div>
-        {error && <ErrorBox message={error} />}
-        <label className="label">Email</label>
-        <input className="field mb-3" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-        <label className="label">Contraseña</label>
-        <input className="field mb-5" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-        <button className="btn-primary w-full" disabled={loading}>{loading ? "Ingresando..." : "Ingresar"}</button>
-      </form>
-    </div>
-  );
-}
-
-function Dashboard() {
-  const [data, setData] = useState<any>(null);
-  const [error, setError] = useState("");
-  useEffect(() => { api<any>("/dashboard").then(setData).catch((e) => setError(e.message)); }, []);
-  if (error) return <PagePad><ErrorBox message={error} /></PagePad>;
-  if (!data) return <PagePad><Skeleton /></PagePad>;
-  const metrics = [
-    ["Total candidatos", data.metrics.totalCandidates],
-    ["Nuevos esta semana", data.metrics.newThisWeek],
-    ["Procesos activos", data.metrics.activeProcesses],
-    ["Fuentes conectadas", data.metrics.connectedSources]
-  ];
-  return (
-    <PagePad>
-      <div className="mb-6 grid gap-4 md:grid-cols-4">{metrics.map(([label, value]) => <div className="card p-5" key={label}><div className="text-sm text-slate-500">{label}</div><div className="mt-2 text-3xl font-extrabold">{value}</div></div>)}</div>
-      <Table title="Sincronizaciones recientes" rows={data.syncLogs} empty="Todavía no hay sincronizaciones registradas." columns={["source", "status", "new_records", "updated_records", "errors"]} />
-    </PagePad>
-  );
-}
-
-function Candidates({ onView }: { onView: (id: string) => void }) {
-  const [items, setItems] = useState<Candidate[]>([]);
-  const [search, setSearch] = useState("");
-  const [showForm, setShowForm] = useState(false);
-  const load = () => api<{ data: Candidate[] }>(`/candidates?search=${encodeURIComponent(search)}`).then((r) => setItems(r.data));
-  useEffect(() => { load(); }, []);
-  return (
-    <PagePad>
-      <div className="mb-4 flex flex-wrap gap-2">
-        <input className="field max-w-md" placeholder="Buscar por nombre, rol o tag" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && load()} />
-        <button className="btn-ghost" onClick={load}><Search size={16} /> Buscar</button>
-        <button className="btn-primary" onClick={() => setShowForm(!showForm)}><Plus size={16} /> Nuevo candidato</button>
-      </div>
-      {showForm && <CandidateForm onSaved={() => { setShowForm(false); load(); }} />}
-      <div className="grid gap-3">
-        {items.length === 0 && <Empty text="No hay candidatos cargados. Creá el primero o conectá una integración real." />}
-        {items.map((c) => <CandidateRow key={c.id} candidate={c} onView={onView} />)}
-      </div>
-    </PagePad>
-  );
-}
-
-function CandidateForm({ onSaved }: { onSaved: () => void }) {
-  const [form, setForm] = useState({ fullName: "", currentRole: "", city: "", country: "", email: "", phone: "", seniority: "", years: 0, tags: "", summary: "", qualityScore: 0 });
-  const [error, setError] = useState("");
-  async function save(e: FormEvent) {
-    e.preventDefault();
-    setError("");
-    try {
-      await api("/candidates", { method: "POST", body: JSON.stringify({ ...form, email: list(form.email), phone: list(form.phone), tags: list(form.tags), years: Number(form.years), qualityScore: Number(form.qualityScore) }) });
-      onSaved();
-    } catch (err: any) { setError(err.message); }
-  }
-  return (
-    <form onSubmit={save} className="card mb-4 grid gap-3 p-4 md:grid-cols-2">
-      {error && <div className="md:col-span-2"><ErrorBox message={error} /></div>}
-      <Input label="Nombre completo" value={form.fullName} onChange={(v) => setForm({ ...form, fullName: v })} required />
-      <Input label="Rol actual" value={form.currentRole} onChange={(v) => setForm({ ...form, currentRole: v })} />
-      <Input label="Ciudad" value={form.city} onChange={(v) => setForm({ ...form, city: v })} />
-      <Input label="País" value={form.country} onChange={(v) => setForm({ ...form, country: v })} />
-      <Input label="Emails separados por coma" value={form.email} onChange={(v) => setForm({ ...form, email: v })} />
-      <Input label="Teléfonos separados por coma" value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} />
-      <Input label="Seniority" value={form.seniority} onChange={(v) => setForm({ ...form, seniority: v })} />
-      <Input label="Años" type="number" value={String(form.years)} onChange={(v) => setForm({ ...form, years: Number(v) })} />
-      <Input label="Tags separados por coma" value={form.tags} onChange={(v) => setForm({ ...form, tags: v })} />
-      <Input label="Calidad 0-100" type="number" value={String(form.qualityScore)} onChange={(v) => setForm({ ...form, qualityScore: Number(v) })} />
-      <div className="md:col-span-2"><label className="label">Resumen</label><textarea className="field" value={form.summary} onChange={(e) => setForm({ ...form, summary: e.target.value })} /></div>
-      <button className="btn-primary md:col-span-2"><Save size={16} /> Guardar candidato</button>
-    </form>
-  );
-}
-
-function TalentFinder({ onView }: { onView: (id: string) => void }) {
-  const [query, setQuery] = useState("");
-  const [seniority, setSeniority] = useState("");
-  const [activeOnly, setActiveOnly] = useState(true);
-  const [results, setResults] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
-  async function run() {
-    if (!query.trim()) return;
-    setLoading(true);
-    const response = await api<{ data: any[] }>("/search/talent", { method: "POST", body: JSON.stringify({ query, filters: { seniority: seniority || undefined, activeOnly } }) });
-    setResults(response.data);
-    setLoading(false);
-  }
-  return (
-    <PagePad>
-      <textarea className="field min-h-36" placeholder="Pegá o escribí la descripción del cargo..." value={query} onChange={(e) => setQuery(e.target.value)} />
-      <div className="my-3 flex flex-wrap items-center gap-3">
-        <select className="field max-w-48" value={seniority} onChange={(e) => setSeniority(e.target.value)}><option value="">Todo seniority</option><option>Junior</option><option>Semi-Senior</option><option>Senior</option><option>Lead</option><option>Manager</option></select>
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)} /> Solo activos</label>
-        <button className="btn-primary" onClick={run} disabled={!query.trim() || loading}><Search size={16} /> {loading ? "Buscando..." : "Buscar candidatos"}</button>
-      </div>
-      <div className="mb-3 text-sm text-slate-500">{results.length} candidatos encontrados · ordenados por compatibilidad</div>
-      <div className="grid gap-3">{results.length === 0 && <Empty text="La búsqueda todavía no devolvió candidatos reales." />}{results.map((c) => <CandidateRow key={c.id} candidate={{ ...c, qualityScore: c.score, sourceCount: 0, email: [], phone: [], languages: [], strengths: [], weaknesses: [], status: "active" }} onView={onView} reason={c.matchReason} />)}</div>
-    </PagePad>
-  );
-}
-
-function CandidateProfile({ id, canEdit }: { id: string; canEdit: boolean }) {
-  const [data, setData] = useState<any>(null);
-  const [tab, setTab] = useState("resumen");
-  const [error, setError] = useState("");
-  const load = () => api<any>(`/candidates/${id}`).then(setData).catch((e) => setError(e.message));
-  useEffect(() => { load(); }, [id]);
-  if (error) return <PagePad><ErrorBox message={error} /></PagePad>;
-  if (!data) return <PagePad><Skeleton /></PagePad>;
-  const c: Candidate = data.data;
-  return (
-    <PagePad>
-      <section className="card mb-4 p-5">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="flex gap-4"><Avatar name={c.fullName} /><div><h2 className="text-2xl font-extrabold">{c.fullName}</h2><p className="text-slate-500">{c.currentRole || "Sin rol actual"} · {[c.city, c.country].filter(Boolean).join(", ")}</p><TagList tags={c.tags} /></div></div>
-          <Score score={c.qualityScore} />
-        </div>
-      </section>
-      <div className="mb-4 flex flex-wrap gap-2">{["resumen", "experiencia", "formacion", "documentos", "procesos", "ia"].map((t) => <button key={t} onClick={() => setTab(t)} className={tab === t ? "btn-primary" : "btn-ghost"}>{t}</button>)}</div>
-      {tab === "resumen" && <div className="grid gap-4 md:grid-cols-2"><InfoCard title="Resumen IA" text={c.summary || "Sin resumen registrado."} /><InfoCard title="Contacto" text={[...c.email, ...c.phone, c.linkedinUrl].filter(Boolean).join("\n") || "Sin datos de contacto."} /><InfoCard title="Idiomas" text={c.languages?.map((l) => `${l.lang}: ${l.level}`).join("\n") || "Sin idiomas registrados."} /></div>}
-      {tab === "experiencia" && <ChildList rows={data.work} empty="Sin experiencia registrada." fields={["company", "position", "start_date", "end_date", "description"]} canEdit={canEdit} kind="work" id={id} onSaved={load} />}
-      {tab === "formacion" && <ChildList rows={data.education} empty="Sin formación registrada." fields={["institution", "degree", "field", "start_year", "end_year"]} canEdit={canEdit} kind="education" id={id} onSaved={load} />}
-      {tab === "documentos" && <ChildList rows={data.documents} empty="Sin documentos registrados." fields={["type", "file_name", "source_type", "created_at"]} canEdit={canEdit} kind="documents" id={id} onSaved={load} />}
-      {tab === "procesos" && <ChildList rows={data.processes} empty="Sin procesos registrados." fields={["process_name", "client", "stage", "event_date"]} canEdit={canEdit} kind="processes" id={id} onSaved={load} />}
-      {tab === "ia" && <div className="grid gap-4 md:grid-cols-3"><InfoCard title="Fortalezas" text={c.strengths?.join("\n") || "Sin fortalezas registradas."} /><InfoCard title="Áreas de oportunidad" text={c.weaknesses?.join("\n") || "Sin áreas registradas."} /><InfoCard title="Seniority" text={`${c.seniority || "Sin estimación"} ${c.years ? `· ${c.years} años` : ""}`} /></div>}
-    </PagePad>
-  );
-}
-
-function ChildList({ rows, empty, fields, canEdit, kind, id, onSaved }: any) {
   const [open, setOpen] = useState(false);
   return <div className="grid gap-3">{canEdit && <button className="btn-primary w-fit" onClick={() => setOpen(!open)}><Plus size={16} /> Agregar</button>}{open && <ChildForm kind={kind} id={id} onSaved={() => { setOpen(false); onSaved(); }} />}{rows.length === 0 && <Empty text={empty} />}{rows.map((row: any) => <div className="card p-4" key={row.id}>{fields.map((f: string) => <div key={f} className="text-sm"><span className="font-semibold text-slate-500">{f}: </span>{String(row[f] ?? "")}</div>)}</div>)}</div>;
 }
@@ -288,11 +38,64 @@ function Chat({ onView }: { onView: (id: string) => void }) {
 
 function Integrations({ canEdit }: { canEdit: boolean }) {
   const [data, setData] = useState<any>({ data: [], logs: [] });
+  const [editing, setEditing] = useState<string | null>(null);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState("");
+  const [bulkError, setBulkError] = useState("");
   const load = () => api<any>("/integrations").then(setData);
   useEffect(() => { load(); }, []);
   async function save(id: string, status: string) { await api(`/integrations/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }); load(); }
   async function sync(id: string) { await api(`/integrations/${id}/sync`, { method: "POST" }); load(); }
-  return <PagePad><div className="mb-6 grid gap-4 md:grid-cols-2">{data.data.map((i: any) => <div className="card p-4" key={i.id}><div className="mb-2 flex items-center justify-between"><div className="font-bold">{i.name}</div><span className="rounded-full bg-slate-100 px-2 py-1 text-xs">{i.status}</span></div><p className="text-sm text-slate-500">Última sync: {i.last_sync_at ? new Date(i.last_sync_at).toLocaleString() : "Nunca"} · {i.total_imported} registros</p><div className="mt-3 flex gap-2">{canEdit && <select className="field max-w-44" value={i.status} onChange={(e) => save(i.id, e.target.value)}><option value="not_configured">No configurado</option><option value="connected">Conectado</option><option value="warning">Advertencia</option><option value="error">Error</option><option value="soon">Próximamente</option></select>}<button className="btn-primary" onClick={() => sync(i.id)}>Sincronizar</button></div></div>)}</div><Table title="Log de sincronizaciones" rows={data.logs} empty="Sin logs registrados." columns={["source", "status", "new_records", "updated_records", "errors", "message"]} /></PagePad>;
+  async function applyBulk(e: FormEvent) {
+    e.preventDefault();
+    setBulkError("");
+    try {
+      const parsed = JSON.parse(bulkText);
+      for (const [id, config] of Object.entries(parsed)) {
+        await api(`/integrations/${id}`, { method: "PATCH", body: JSON.stringify({ status: "connected", config }) });
+      }
+      setBulkText("");
+      setBulkOpen(false);
+      load();
+    } catch (err: any) {
+      setBulkError(err.message || "JSON inválido");
+    }
+  }
+  const template = `{
+  "yoiners": { "username": "", "password": "" },
+  "aglh": { "username": "", "password": "" },
+  "gmail": { "username": "", "password": "" },
+  "buscojobs": { "username": "", "password": "" }
+}`;
+  return <PagePad><div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Pegá sesiones/API keys solo de cuentas propias y fuentes donde tengas permiso de extracción. Los valores sensibles se guardan en el backend y luego se muestran ocultos.</div>{canEdit && <div className="card mb-4 p-4"><button className="btn-primary" onClick={() => { setBulkOpen(!bulkOpen); if (!bulkText) setBulkText(template); }}><Settings size={16} /> Cargar todas las cuentas</button>{bulkOpen && <form onSubmit={applyBulk} className="mt-4 grid gap-3">{bulkError && <ErrorBox message={bulkError} />}<textarea className="field min-h-52 font-mono text-xs" value={bulkText} onChange={(e) => setBulkText(e.target.value)} /><button className="btn-primary w-fit"><Save size={16} /> Guardar todas</button></form>}</div>}<div className="mb-6 grid gap-4 md:grid-cols-2">{data.data.map((i: any) => <div className="card p-4" key={i.id}><div className="mb-2 flex items-center justify-between"><div className="font-bold">{i.name}</div><span className="rounded-full bg-slate-100 px-2 py-1 text-xs">{i.status}</span></div><p className="text-sm text-slate-500">Última sync: {i.last_sync_at ? new Date(i.last_sync_at).toLocaleString() : "Nunca"} · {i.total_imported} registros</p><div className="mt-3 flex flex-wrap gap-2">{canEdit && <select className="field max-w-44" value={i.status} onChange={(e) => save(i.id, e.target.value)}><option value="not_configured">No configurado</option><option value="connected">Conectado</option><option value="warning">Advertencia</option><option value="error">Error</option><option value="soon">Próximamente</option></select>}{canEdit && <button className="btn-ghost" onClick={() => setEditing(editing === i.id ? null : i.id)}><Settings size={16} /> Configurar</button>}<button className="btn-primary" onClick={() => sync(i.id)}>Sincronizar</button></div>{editing === i.id && <IntegrationConfigPanel integration={i} onSaved={() => { setEditing(null); load(); }} />}</div>)}</div><Table title="Log de sincronizaciones" rows={data.logs} empty="Sin logs registrados." columns={["source", "status", "new_records", "updated_records", "errors", "message"]} /></PagePad>;
+}
+
+function IntegrationConfigPanel({ integration, onSaved }: { integration: any; onSaved: () => void }) {
+  const [form, setForm] = useState({
+    baseUrl: integration.config?.baseUrl === "••••••••" ? "" : integration.config?.baseUrl ?? "",
+    apiKey: "",
+    username: integration.config?.username === "••••••••" ? "" : integration.config?.username ?? "",
+    password: "",
+    sessionCookies: "",
+    notes: integration.config?.notes === "••••••••" ? "" : integration.config?.notes ?? ""
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  async function saveConfig(e: FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setError("");
+    const config = Object.fromEntries(Object.entries(form).filter(([, value]) => String(value).trim().length > 0));
+    try {
+      await api(`/integrations/${integration.id}`, { method: "PATCH", body: JSON.stringify({ status: "connected", config }) });
+      onSaved();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+  return <form onSubmit={saveConfig} className="mt-4 grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-4">{error && <ErrorBox message={error} />}<div className="grid gap-3 md:grid-cols-2"><Input label="URL o endpoint" value={form.baseUrl} onChange={(v) => setForm({ ...form, baseUrl: v })} /><Input label="Usuario/email" value={form.username} onChange={(v) => setForm({ ...form, username: v })} /><Input label="API key/token" type="password" value={form.apiKey} onChange={(v) => setForm({ ...form, apiKey: v })} /><Input label="Contraseña" type="password" value={form.password} onChange={(v) => setForm({ ...form, password: v })} /></div><div><label className="label">Sesión/cookies exportadas</label><textarea className="field min-h-28" placeholder="Pegá acá cookies JSON o header Cookie de tu cuenta, si esa fuente lo permite." value={form.sessionCookies} onChange={(e) => setForm({ ...form, sessionCookies: e.target.value })} /></div><div><label className="label">Notas internas</label><textarea className="field min-h-20" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div><button className="btn-primary w-fit" disabled={saving}><Save size={16} /> {saving ? "Guardando..." : "Guardar configuración"}</button></form>;
 }
 
 function SettingsPage({ canEdit }: { canEdit: boolean }) {
