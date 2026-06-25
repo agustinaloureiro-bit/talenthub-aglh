@@ -288,7 +288,7 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
   for (const candidate of allCandidates) bySource.set(candidate.sourceId ?? candidate.fullName, candidate);
   return {
     rows: [...bySource.values()],
-    message: `Buscojobs: ${offerUrls.length} ofertas revisadas. ${notes.slice(0, 8).join(" | ")}`
+    message: `Buscojobs: ${offerUrls.length} ofertas revisadas, ${bySource.size} candidatos reales detectados. ${notes.slice(0, 8).join(" | ")}`
   };
 }
 
@@ -298,7 +298,7 @@ function rowsFromConfig(config: Record<string, unknown>) {
     return direct.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null);
   }
 
-  const raw = cleanText(config.historicalData ?? config.rawData ?? config.exportData ?? config.sessionCookies);
+  const raw = cleanText(config.historicalData ?? config.rawData ?? config.exportData);
   if (!raw) return [];
 
   try {
@@ -444,8 +444,25 @@ async function ensureDefaultIntegrations() {
   }
 }
 
+async function removeCookieCandidates() {
+  await q(
+    `DELETE FROM candidates
+     WHERE EXISTS (
+       SELECT 1 FROM candidate_sources cs
+       WHERE cs.candidate_id = candidates.id
+         AND cs.source_type = 'buscojobs'
+         AND (
+           cs.source_data ? 'domain'
+           OR cs.source_data ? 'expirationDate'
+           OR candidates.full_name IN ('_gads','_gpi','_eoi','isiframeenabled','buscojobs-_zldt','buscojobs-_zldp','_hjSession_1333623','_hjSessionUser_1333623')
+         )
+     )`
+  );
+}
+
 integrationsRouter.get("/", asyncHandler(async (_req, res) => {
   await ensureDefaultIntegrations();
+  await removeCookieCandidates();
   const [integrations, logs] = await Promise.all([
     q("SELECT * FROM integrations ORDER BY name"),
     q("SELECT * FROM sync_logs ORDER BY started_at DESC LIMIT 20")
