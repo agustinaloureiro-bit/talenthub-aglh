@@ -129,6 +129,9 @@ function cookieHeaderFromConfig(config: Record<string, unknown>) {
   const raw = cleanText(config.sessionCookies ?? config.cookies ?? config.cookie);
   if (!raw) return null;
 
+  const curlCookie = raw.match(/\s-b\s+\^?"([^"]+)"/i)?.[1] ?? raw.match(/\s-b\s+'([^']+)'/i)?.[1];
+  if (curlCookie) return curlCookie.replace(/\^/g, "");
+
   try {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
@@ -154,7 +157,7 @@ async function fetchBuscojobs(url: string, cookieHeader: string) {
     redirect: "follow"
   });
   const text = await response.text();
-  if (!response.ok) throw new Error(`Buscojobs respondio ${response.status} en ${url}`);
+  if (!response.ok && response.status !== 404) throw new Error(`Buscojobs respondio ${response.status} en ${url}`);
   if (/login|iniciar sesi[oó]n|acceder/i.test(text) && !/Mi Panel|Mis Ofertas|Postulantes|Candidatos/i.test(text)) {
     throw new Error("La sesion de Buscojobs no entro al panel. Exporta cookies nuevas desde Chrome y guardalas otra vez.");
   }
