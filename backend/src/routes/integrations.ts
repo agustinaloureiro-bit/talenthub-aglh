@@ -80,6 +80,40 @@ function unique(items: string[]) {
   return [...new Set(items.map((item) => item.trim()).filter(Boolean))];
 }
 
+function decodeHtml(value: string) {
+  return value
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&aacute;/g, "a")
+    .replace(/&eacute;/g, "e")
+    .replace(/&iacute;/g, "i")
+    .replace(/&oacute;/g, "o")
+    .replace(/&uacute;/g, "u")
+    .replace(/&ntilde;/g, "n")
+    .replace(/&Aacute;/g, "A")
+    .replace(/&Eacute;/g, "E")
+    .replace(/&Iacute;/g, "I")
+    .replace(/&Oacute;/g, "O")
+    .replace(/&Uacute;/g, "U")
+    .replace(/&Ntilde;/g, "N");
+}
+
+function htmlText(value: string) {
+  return decodeHtml(value.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " "))
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function absoluteUrl(href: string, base = "https://www.buscojobs.com.uy") {
+  try {
+    return new URL(decodeHtml(href), base).toString();
+  } catch {
+    return null;
+  }
+}
+
 function parseCsv(text: string) {
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   if (lines.length < 2) return [];
@@ -89,6 +123,173 @@ function parseCsv(text: string) {
     const values = line.split(separator).map((value) => value.trim());
     return Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""]));
   });
+}
+
+function cookieHeaderFromConfig(config: Record<string, unknown>) {
+  const raw = cleanText(config.sessionCookies ?? config.cookies ?? config.cookie);
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      const pairs = parsed
+        .map((cookie) => `${cleanText(cookie?.name)}=${cleanText(cookie?.value)}`)
+        .filter((pair) => !pair.startsWith("="));
+      return pairs.length ? pairs.join("; ") : null;
+    }
+  } catch {
+    return raw.includes("=") ? raw : null;
+  }
+
+  return raw.includes("=") ? raw : null;
+}
+
+async function fetchBuscojobs(url: string, cookieHeader: string) {
+  const response = await fetch(url, {
+    headers: {
+      cookie: cookieHeader,
+      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    },
+    redirect: "follow"
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`Buscojobs respondio ${response.status} en ${url}`);
+  if (/login|iniciar sesi[oó]n|acceder/i.test(text) && !/Mi Panel|Mis Ofertas|Postulantes|Candidatos/i.test(text)) {
+    throw new Error("La sesion de Buscojobs no entro al panel. Exporta cookies nuevas desde Chrome y guardalas otra vez.");
+  }
+  return text;
+}
+
+function extractLinks(html: string, base = "https://www.buscojobs.com.uy") {
+  const links: Array<{ url: string; text: string }> = [];
+  const anchorRegex = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = anchorRegex.exec(html))) {
+    const url = absoluteUrl(match[1], base);
+    const text = htmlText(match[2]);
+    if (url) links.push({ url, text });
+  }
+  return links;
+}
+
+function extractOfferLinks(html: string) {
+  return unique(extractLinks(html)
+    .filter((link) => /\/app\/empresa\/oferta-\d+/i.test(link.url))
+    .map((link) => link.url.split(/[?#]/)[0]));
+}
+
+function candidateListUrls(offerUrl: string, offerHtml: string) {
+  const fromLinks = extractLinks(offerHtml, offerUrl)
+    .filter((link) => /ver candidatos|candidato|postulante|curriculum|cv/i.test(`${link.text} ${link.url}`))
+    .map((link) => link.url);
+  const id = offerUrl.match(/oferta-(\d+)/)?.[1];
+  const guessed = id ? [
+    `https://www.buscojobs.com.uy/app/empresa/oferta-${id}/candidatos`,
+    `https://www.buscojobs.com.uy/app/empresa/oferta-${id}/postulantes`,
+    `https://www.buscojobs.com.uy/app/empresa/oferta-${id}/curriculums`
+  ] : [];
+  return unique([...fromLinks, ...guessed]);
+}
+
+function looksLikePersonName(value: string) {
+  const text = value.trim();
+  if (!/^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{5,80}$/.test(text)) return false;
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length < 2 || words.length > 5) return false;
+  return !/panel|oferta|candidato|postulado|preseleccionado|finalista|leer|mover|descargar|buscar|adecuacion|perfil/i.test(text);
+}
+
+function extractCandidatesFromHtml(html: string, sourceUrl: string, offerTitle: string) {
+  const candidates: CandidateImport[] = [];
+  const seen = new Set<string>();
+  const links = extractLinks(html, sourceUrl);
+
+  for (const link of links) {
+    if (!looksLikePersonName(link.text)) continue;
+    const position = html.indexOf(link.text);
+    const around = position >= 0 ? html.slice(Math.max(0, position - 500), position + 1500) : "";
+    const context = htmlText(around);
+    const email = unique(context.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) ?? []);
+    const phone = unique(context.match(/(?:\+?598\s?)?(?:0?9\d|2\d)\s?\d{3}\s?\d{3}/g) ?? []);
+    const ageText = context.match(/(\d{2})\s*a[nñ]os/i)?.[1];
+    const city = context.match(/(?:Montevideo|Canelones|Maldonado|San Jose|Colonia|Florida|Rocha|Paysandu|Salto|Rivera|Tacuarembo|Durazno|Soriano|Lavalleja|Artigas|Cerro Largo|Flores|Rio Negro|Treinta y Tres)(?:,\s*[^,|]+)?/i)?.[0] ?? null;
+    const scoreText = context.match(/Adecuaci[oó]n\s*(\d{1,3})%/i)?.[1];
+    const key = `${link.text}|${link.url}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({
+      fullName: link.text,
+      email,
+      phone,
+      city,
+      country: "Uruguay",
+      currentRole: offerTitle || null,
+      years: null,
+      tags: unique(["buscojobs", offerTitle].filter(Boolean)),
+      summary: ageText ? `${ageText} anos. ${context.slice(0, 300)}` : context.slice(0, 300),
+      qualityScore: scoreText ? Math.max(0, Math.min(100, Number(scoreText))) : 0,
+      sourceId: link.url,
+      sourceUrl: link.url,
+      raw: { sourceUrl, profileUrl: link.url, offerTitle, context }
+    });
+  }
+
+  return candidates;
+}
+
+async function scrapeBuscojobs(config: Record<string, unknown>) {
+  const cookieHeader = cookieHeaderFromConfig(config);
+  if (!cookieHeader) {
+    return { rows: [] as CandidateImport[], message: "Falta pegar la sesion/cookies exportadas de Buscojobs." };
+  }
+
+  const panelHtml = await fetchBuscojobs("https://www.buscojobs.com.uy/app/empresa/panel", cookieHeader);
+  const offerUrls = extractOfferLinks(panelHtml).slice(0, Number(config.maxOffers ?? 80));
+  const allCandidates: CandidateImport[] = [];
+  const notes: string[] = [];
+
+  for (const offerUrl of offerUrls) {
+    try {
+      const offerHtml = await fetchBuscojobs(offerUrl, cookieHeader);
+      const offerTitle = htmlText(offerHtml.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] ?? "") || htmlText(offerHtml.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "");
+      const listUrls = candidateListUrls(offerUrl, offerHtml).slice(0, 4);
+      let foundForOffer = 0;
+
+      for (const listUrl of listUrls) {
+        try {
+          const listHtml = await fetchBuscojobs(listUrl, cookieHeader);
+          const pageCandidates = extractCandidatesFromHtml(listHtml, listUrl, offerTitle);
+          foundForOffer += pageCandidates.length;
+          allCandidates.push(...pageCandidates);
+
+          const paginationUrls = unique(extractLinks(listHtml, listUrl)
+            .filter((link) => /pagina|page|p=\d+|offset|desde/i.test(link.url))
+            .map((link) => link.url))
+            .slice(0, Number(config.maxPagesPerOffer ?? 5));
+          for (const pageUrl of paginationUrls) {
+            const pageHtml = await fetchBuscojobs(pageUrl, cookieHeader);
+            const extra = extractCandidatesFromHtml(pageHtml, pageUrl, offerTitle);
+            foundForOffer += extra.length;
+            allCandidates.push(...extra);
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      notes.push(`${offerTitle || offerUrl}: ${foundForOffer}`);
+    } catch {
+      notes.push(`${offerUrl}: error`);
+    }
+  }
+
+  const bySource = new Map<string, CandidateImport>();
+  for (const candidate of allCandidates) bySource.set(candidate.sourceId ?? candidate.fullName, candidate);
+  return {
+    rows: [...bySource.values()],
+    message: `Buscojobs: ${offerUrls.length} ofertas revisadas. ${notes.slice(0, 8).join(" | ")}`
+  };
 }
 
 function rowsFromConfig(config: Record<string, unknown>) {
@@ -279,7 +480,8 @@ integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(asyn
   const started = Date.now();
   const config = integration.rows[0].config ?? {};
   const hasConfig = Object.values(config).some((value) => String(value ?? "").trim().length > 0);
-  const rowsToImport = rowsFromConfig(config);
+  const scraperResult = integrationId === "buscojobs" ? await scrapeBuscojobs(config) : null;
+  const rowsToImport = scraperResult?.rows ?? rowsFromConfig(config);
   let status = integration.rows[0].status === "connected" && hasConfig ? "warning" : "error";
   let message = status === "warning"
     ? "Credenciales guardadas. Para traer historico ahora, pega un exportado JSON o CSV en Datos historicos y volve a sincronizar."
@@ -301,6 +503,8 @@ integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(asyn
     }
     status = errors > 0 ? "warning" : "success";
     message = `Historico procesado: ${newRecords} nuevos, ${updatedRecords} actualizados, ${errors} omitidos.`;
+  } else if (scraperResult) {
+    message = scraperResult.message;
   }
 
   const { rows } = await q(
