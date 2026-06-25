@@ -68,6 +68,35 @@ function firstText(row: Record<string, unknown>, keys: string[]) {
   return null;
 }
 
+function deepFirstText(value: unknown, keys: string[], depth = 0): string | null {
+  if (!value || typeof value !== "object" || depth > 4) return null;
+  const row = value as Record<string, unknown>;
+  const direct = firstText(row, keys);
+  if (direct) return direct;
+  for (const child of Object.values(row)) {
+    const found = deepFirstText(child, keys, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+function firstMatchingKeyText(value: unknown, patterns: RegExp[], depth = 0): string | null {
+  if (!value || typeof value !== "object" || depth > 4) return null;
+  const row = value as Record<string, unknown>;
+  for (const [key, child] of Object.entries(row)) {
+    const normalized = key.toLowerCase();
+    if (patterns.some((pattern) => pattern.test(normalized))) {
+      const text = textOrNull(child);
+      if (text) return text;
+    }
+  }
+  for (const child of Object.values(row)) {
+    const found = firstMatchingKeyText(child, patterns, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
 function listFrom(value: unknown) {
   if (Array.isArray(value)) return value.map(cleanText).filter(Boolean);
   return cleanText(value)
@@ -223,38 +252,43 @@ function arrayFromPayload(payload: any): Record<string, unknown>[] {
 }
 
 function offerIdFromRow(row: Record<string, unknown>) {
-  return firstText(row, ["Id", "id", "OfertaId", "ofertaId", "OfertaID", "ofertaID"]);
+  return deepFirstText(row, ["Id", "id", "OfertaId", "ofertaId", "OfertaID", "ofertaID", "IdOferta", "idOferta", "Codigo", "codigo"])
+    ?? firstMatchingKeyText(row, [/^id$/, /oferta.*id/, /id.*oferta/, /codigo/]);
 }
 
 function offerTitleFromRow(row: Record<string, unknown>) {
-  return firstText(row, ["Titulo", "titulo", "Nombre", "nombre", "Cargo", "cargo", "Puesto", "puesto"]) ?? "Oferta Buscojobs";
+  return deepFirstText(row, ["Titulo", "titulo", "Nombre", "nombre", "Cargo", "cargo", "Puesto", "puesto", "Descripcion", "descripcion"])
+    ?? firstMatchingKeyText(row, [/titulo/, /nombre/, /cargo/, /puesto/])
+    ?? "Oferta Buscojobs";
 }
 
 function applicantFromRow(row: Record<string, unknown>, offer: Record<string, unknown>): CandidateImport | null {
   const person = (row.Postulante ?? row.postulante ?? row.Candidato ?? row.candidato ?? row.Curriculum ?? row.curriculum ?? row.Persona ?? row.persona ?? row) as Record<string, unknown>;
-  const fullName = firstText(person, ["NombreCompleto", "nombreCompleto", "FullName", "fullName", "Nombre", "nombre", "Postulante", "postulante", "Candidato", "candidato"])
-    ?? unique([firstText(person, ["PrimerNombre", "Nombres", "nombre"]), firstText(person, ["Apellido", "Apellidos", "apellido"])].filter(Boolean) as string[]).join(" ");
-  const email = unique(listFrom(person.Email ?? person.email ?? person.Mail ?? person.mail ?? row.Email ?? row.email));
-  const phone = unique(listFrom(person.Telefono ?? person.telefono ?? person.Celular ?? person.celular ?? person.Mobile ?? person.mobile ?? row.Telefono ?? row.telefono));
-  const sourceId = firstText(row, ["Id", "id", "PostulacionId", "postulacionId", "PostulanteId", "postulanteId", "CandidatoId", "candidatoId"])
-    ?? firstText(person, ["Id", "id"]);
+  const fullName = deepFirstText(person, ["NombreCompleto", "nombreCompleto", "FullName", "fullName", "Nombre", "nombre", "Postulante", "postulante", "Candidato", "candidato"])
+    ?? unique([deepFirstText(person, ["PrimerNombre", "Nombres", "nombre"]), deepFirstText(person, ["Apellido", "Apellidos", "apellido"])].filter(Boolean) as string[]).join(" ")
+    ?? firstMatchingKeyText(person, [/nombre.*completo/, /full.*name/, /^nombre$/, /postulante/, /candidato/]);
+  const email = unique(listFrom(deepFirstText(person, ["Email", "email", "Mail", "mail", "Correo", "correo"]) ?? deepFirstText(row, ["Email", "email", "Mail", "mail", "Correo", "correo"])));
+  const phone = unique(listFrom(deepFirstText(person, ["Telefono", "telefono", "Celular", "celular", "Mobile", "mobile", "Phone", "phone"]) ?? deepFirstText(row, ["Telefono", "telefono", "Celular", "celular", "Mobile", "mobile", "Phone", "phone"])));
+  const sourceId = deepFirstText(row, ["Id", "id", "PostulacionId", "postulacionId", "PostulanteId", "postulanteId", "CandidatoId", "candidatoId", "CurriculumId", "curriculumId"])
+    ?? firstMatchingKeyText(row, [/postul.*id/, /candidat.*id/, /curriculum.*id/, /^id$/])
+    ?? deepFirstText(person, ["Id", "id"]);
 
   if (!fullName && email.length === 0 && phone.length === 0) return null;
 
   const offerTitle = offerTitleFromRow(offer);
   const rawText = JSON.stringify(row);
-  const scoreText = firstText(row, ["Adecuacion", "adecuacion", "Score", "score", "Puntaje", "puntaje"]);
+  const scoreText = deepFirstText(row, ["Adecuacion", "adecuacion", "Score", "score", "Puntaje", "puntaje"]);
   const qualityScore = scoreText && Number.isFinite(Number(scoreText)) ? Math.max(0, Math.min(100, Number(scoreText))) : 0;
 
   return {
     fullName: fullName || email[0] || phone[0],
-    firstName: firstText(person, ["PrimerNombre", "Nombres", "nombre"]),
-    lastName: firstText(person, ["Apellido", "Apellidos", "apellido"]),
+    firstName: deepFirstText(person, ["PrimerNombre", "Nombres", "nombre"]),
+    lastName: deepFirstText(person, ["Apellido", "Apellidos", "apellido"]),
     email,
     phone,
-    city: firstText(person, ["Ciudad", "ciudad", "Localidad", "localidad", "Ubicacion", "ubicacion"]) ?? firstText(row, ["Ciudad", "ciudad"]),
+    city: deepFirstText(person, ["Ciudad", "ciudad", "Localidad", "localidad", "Ubicacion", "ubicacion"]) ?? deepFirstText(row, ["Ciudad", "ciudad"]),
     country: "Uruguay",
-    linkedinUrl: firstText(person, ["Linkedin", "linkedin", "LinkedInUrl", "linkedinUrl"]),
+    linkedinUrl: deepFirstText(person, ["Linkedin", "linkedin", "LinkedInUrl", "linkedinUrl"]),
     currentRole: offerTitle,
     seniority: null,
     years: null,
@@ -262,7 +296,7 @@ function applicantFromRow(row: Record<string, unknown>, offer: Record<string, un
     summary: rawText.slice(0, 1000),
     qualityScore,
     sourceId: sourceId ? `buscojobs:${sourceId}` : `buscojobs:${offerIdFromRow(offer)}:${fullName || email[0] || phone[0]}`,
-    sourceUrl: firstText(row, ["Url", "url", "CVUrl", "cvUrl"]),
+    sourceUrl: deepFirstText(row, ["Url", "url", "CVUrl", "cvUrl"]),
     raw: { offer, applicant: row }
   };
 }
@@ -287,7 +321,7 @@ function applicantEndpointUrls(empresaId: string, offerId: string, limit: number
 async function fetchApplicantsForOffer(config: Record<string, unknown>, offer: Record<string, unknown>) {
   const auth = authFromConfig(config);
   const offerId = offerIdFromRow(offer);
-  if (!offerId) return { rows: [] as CandidateImport[], route: "sin-id" };
+  if (!offerId) return { rows: [] as CandidateImport[], route: `sin-id ${JSON.stringify(offer).slice(0, 180)}` };
 
   const maxPages = Number(config.maxPagesPerOffer ?? 20);
   const limit = Number(config.pageSize ?? 50);
