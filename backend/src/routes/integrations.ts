@@ -480,7 +480,15 @@ integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(asyn
   const started = Date.now();
   const config = integration.rows[0].config ?? {};
   const hasConfig = Object.values(config).some((value) => String(value ?? "").trim().length > 0);
-  const scraperResult = integrationId === "buscojobs" ? await scrapeBuscojobs(config) : null;
+  let scraperResult: Awaited<ReturnType<typeof scrapeBuscojobs>> | null = null;
+  let scraperError: string | null = null;
+  if (integrationId === "buscojobs") {
+    try {
+      scraperResult = await scrapeBuscojobs(config);
+    } catch (error: any) {
+      scraperError = error?.message ?? "Error desconocido leyendo Buscojobs.";
+    }
+  }
   const rowsToImport = scraperResult?.rows ?? rowsFromConfig(config);
   let status = integration.rows[0].status === "connected" && hasConfig ? "warning" : "error";
   let message = status === "warning"
@@ -505,6 +513,10 @@ integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(asyn
     message = `Historico procesado: ${newRecords} nuevos, ${updatedRecords} actualizados, ${errors} omitidos.`;
   } else if (scraperResult) {
     message = scraperResult.message;
+  } else if (scraperError) {
+    status = "error";
+    errors = 1;
+    message = `Buscojobs no pudo sincronizar: ${scraperError}`;
   }
 
   const { rows } = await q(
