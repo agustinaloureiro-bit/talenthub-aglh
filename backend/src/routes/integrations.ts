@@ -147,6 +147,179 @@ function cookieHeaderFromConfig(config: Record<string, unknown>) {
   return raw.includes("=") ? raw : null;
 }
 
+function authFromConfig(config: Record<string, unknown>) {
+  const raw = cleanText(config.sessionCookies ?? config.cookies ?? config.cookie ?? config.apiKey);
+  const authorization = raw.match(/authorization:\s*Bearer\s+([^^"\s]+)/i)?.[1]
+    ?? raw.match(/-H\s+\^?"authorization:\s*Bearer\s+([^^"\s]+)/i)?.[1]
+    ?? raw.match(/Bearer\s+([A-Za-z0-9._-]+)/)?.[1]
+    ?? cleanText(config.apiKey).replace(/^Bearer\s+/i, "");
+  const sessionId = raw.match(/sessionid:\s*([^^"\s]+)/i)?.[1]
+    ?? raw.match(/ASP\.NET_SessionId=([^;"]+)/i)?.[1];
+  const empresaId = raw.match(/\/empresas\/(\d+)\//i)?.[1]
+    ?? raw.match(/"empresaId":(\d+)/i)?.[1]
+    ?? "119341";
+
+  return {
+    authorization: authorization || null,
+    sessionId: sessionId?.replace(/\^/g, "") || null,
+    empresaId
+  };
+}
+
+function apiUrlFromCurl(config: Record<string, unknown>) {
+  const raw = cleanText(config.sessionCookies ?? config.cookies ?? config.cookie);
+  return raw.match(/curl\s+\^?"([^"]*api\.buscojobs\.com[^"]+)"/i)?.[1]?.replace(/\^/g, "") ?? null;
+}
+
+async function fetchBuscojobsJson(url: string, config: Record<string, unknown>) {
+  const auth = authFromConfig(config);
+  if (!auth.authorization) throw new Error("Falta authorization Bearer de Buscojobs. Copia una llamada Fetch/XHR como cURL.");
+
+  const response = await fetch(url, {
+    headers: {
+      accept: "application/json, text/plain, */*",
+      "accept-language": "es",
+      authorization: `Bearer ${auth.authorization}`,
+      origin: "https://www.buscojobs.com.uy",
+      referer: "https://www.buscojobs.com.uy/",
+      "sessionid": auth.sessionId ?? "",
+      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/149 Safari/537.36",
+      "x-timezone-offset": "180"
+    }
+  });
+  const text = await response.text();
+  if (response.status === 304) {
+    throw new Error("Buscojobs devolvio cache 304. Copia otra vez la llamada como cURL con Disable cache activado.");
+  }
+  if (!response.ok) throw new Error(`Buscojobs API respondio ${response.status}: ${text.slice(0, 160)}`);
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`Buscojobs no devolvio JSON: ${text.slice(0, 160)}`);
+  }
+}
+
+async function tryFetchBuscojobsJson(url: string, config: Record<string, unknown>) {
+  try {
+    return await fetchBuscojobsJson(url, config);
+  } catch (error: any) {
+    if (/respondio 40[034]/i.test(error?.message ?? "")) return null;
+    if (/respondio 404/i.test(error?.message ?? "")) return null;
+    return null;
+  }
+}
+
+function arrayFromPayload(payload: any): Record<string, unknown>[] {
+  if (Array.isArray(payload)) return payload.filter((item) => typeof item === "object" && item !== null);
+  for (const key of ["data", "rows", "items", "results", "postulaciones", "postulantes", "candidatos", "curriculums"]) {
+    const value = payload?.[key];
+    if (Array.isArray(value)) return value.filter((item) => typeof item === "object" && item !== null);
+  }
+  if (typeof payload === "object" && payload !== null) {
+    const nested = Object.values(payload).find((value) => Array.isArray(value)) as unknown[] | undefined;
+    if (nested) return nested.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null);
+  }
+  return [];
+}
+
+function offerIdFromRow(row: Record<string, unknown>) {
+  return firstText(row, ["Id", "id", "OfertaId", "ofertaId", "OfertaID", "ofertaID"]);
+}
+
+function offerTitleFromRow(row: Record<string, unknown>) {
+  return firstText(row, ["Titulo", "titulo", "Nombre", "nombre", "Cargo", "cargo", "Puesto", "puesto"]) ?? "Oferta Buscojobs";
+}
+
+function applicantFromRow(row: Record<string, unknown>, offer: Record<string, unknown>): CandidateImport | null {
+  const person = (row.Postulante ?? row.postulante ?? row.Candidato ?? row.candidato ?? row.Curriculum ?? row.curriculum ?? row.Persona ?? row.persona ?? row) as Record<string, unknown>;
+  const fullName = firstText(person, ["NombreCompleto", "nombreCompleto", "FullName", "fullName", "Nombre", "nombre", "Postulante", "postulante", "Candidato", "candidato"])
+    ?? unique([firstText(person, ["PrimerNombre", "Nombres", "nombre"]), firstText(person, ["Apellido", "Apellidos", "apellido"])].filter(Boolean) as string[]).join(" ");
+  const email = unique(listFrom(person.Email ?? person.email ?? person.Mail ?? person.mail ?? row.Email ?? row.email));
+  const phone = unique(listFrom(person.Telefono ?? person.telefono ?? person.Celular ?? person.celular ?? person.Mobile ?? person.mobile ?? row.Telefono ?? row.telefono));
+  const sourceId = firstText(row, ["Id", "id", "PostulacionId", "postulacionId", "PostulanteId", "postulanteId", "CandidatoId", "candidatoId"])
+    ?? firstText(person, ["Id", "id"]);
+
+  if (!fullName && email.length === 0 && phone.length === 0) return null;
+
+  const offerTitle = offerTitleFromRow(offer);
+  const rawText = JSON.stringify(row);
+  const scoreText = firstText(row, ["Adecuacion", "adecuacion", "Score", "score", "Puntaje", "puntaje"]);
+  const qualityScore = scoreText && Number.isFinite(Number(scoreText)) ? Math.max(0, Math.min(100, Number(scoreText))) : 0;
+
+  return {
+    fullName: fullName || email[0] || phone[0],
+    firstName: firstText(person, ["PrimerNombre", "Nombres", "nombre"]),
+    lastName: firstText(person, ["Apellido", "Apellidos", "apellido"]),
+    email,
+    phone,
+    city: firstText(person, ["Ciudad", "ciudad", "Localidad", "localidad", "Ubicacion", "ubicacion"]) ?? firstText(row, ["Ciudad", "ciudad"]),
+    country: "Uruguay",
+    linkedinUrl: firstText(person, ["Linkedin", "linkedin", "LinkedInUrl", "linkedinUrl"]),
+    currentRole: offerTitle,
+    seniority: null,
+    years: null,
+    tags: unique(["buscojobs", offerTitle]),
+    summary: rawText.slice(0, 1000),
+    qualityScore,
+    sourceId: sourceId ? `buscojobs:${sourceId}` : `buscojobs:${offerIdFromRow(offer)}:${fullName || email[0] || phone[0]}`,
+    sourceUrl: firstText(row, ["Url", "url", "CVUrl", "cvUrl"]),
+    raw: { offer, applicant: row }
+  };
+}
+
+function applicantEndpointUrls(empresaId: string, offerId: string, limit: number, skip: number) {
+  const filter = encodeURIComponent(JSON.stringify({ order: ["FechaPostulacion DESC"], limit, skip }));
+  const whereFilter = encodeURIComponent(JSON.stringify({ where: { OfertaId: Number(offerId) }, order: ["FechaPostulacion DESC"], limit, skip }));
+  return [
+    `https://api.buscojobs.com/v3/uy/api/empresas/${empresaId}/ofertas/${offerId}/Postulaciones?filter=${filter}`,
+    `https://api.buscojobs.com/v3/uy/api/empresas/${empresaId}/ofertas/${offerId}/Postulantes?filter=${filter}`,
+    `https://api.buscojobs.com/v3/uy/api/empresas/${empresaId}/ofertas/${offerId}/Candidatos?filter=${filter}`,
+    `https://api.buscojobs.com/v3/uy/api/empresas/${empresaId}/ofertas/${offerId}/Curriculums?filter=${filter}`,
+    `https://api.buscojobs.com/v3/uy/api/ofertas/${offerId}/Postulaciones?filter=${filter}`,
+    `https://api.buscojobs.com/v3/uy/api/ofertas/${offerId}/Postulantes?filter=${filter}`,
+    `https://api.buscojobs.com/v3/uy/api/PostulacionOfertaTodas?filter=${whereFilter}`,
+    `https://api.buscojobs.com/v3/uy/api/PostulacionesOfertaTodas?filter=${whereFilter}`,
+    `https://api.buscojobs.com/v3/uy/api/empresas/${empresaId}/PostulacionOfertaTodas?filter=${whereFilter}`,
+    `https://api.buscojobs.com/v3/uy/api/empresas/${empresaId}/PostulacionesOfertaTodas?filter=${whereFilter}`
+  ];
+}
+
+async function fetchApplicantsForOffer(config: Record<string, unknown>, offer: Record<string, unknown>) {
+  const auth = authFromConfig(config);
+  const offerId = offerIdFromRow(offer);
+  if (!offerId) return { rows: [] as CandidateImport[], route: "sin-id" };
+
+  const maxPages = Number(config.maxPagesPerOffer ?? 20);
+  const limit = Number(config.pageSize ?? 50);
+  const collected: CandidateImport[] = [];
+  let workingRoute = "";
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const skip = page * limit;
+    const urls = applicantEndpointUrls(auth.empresaId, offerId, limit, skip);
+    let pageRows: Record<string, unknown>[] = [];
+
+    for (const url of urls) {
+      const payload = await tryFetchBuscojobsJson(url, config);
+      const rows = payload ? arrayFromPayload(payload) : [];
+      if (rows.length > 0) {
+        pageRows = rows;
+        workingRoute = url.replace(/\?.*$/, "");
+        break;
+      }
+    }
+
+    if (pageRows.length === 0) break;
+    for (const row of pageRows) {
+      const candidate = applicantFromRow(row, offer);
+      if (candidate) collected.push(candidate);
+    }
+    if (pageRows.length < limit) break;
+  }
+
+  return { rows: collected, route: workingRoute || "sin-ruta" };
+}
+
 async function fetchBuscojobs(url: string, cookieHeader: string) {
   const response = await fetch(url, {
     headers: {
@@ -242,6 +415,31 @@ function extractCandidatesFromHtml(html: string, sourceUrl: string, offerTitle: 
 }
 
 async function scrapeBuscojobs(config: Record<string, unknown>) {
+  const auth = authFromConfig(config);
+  const apiUrl = apiUrlFromCurl(config);
+  if (auth.authorization) {
+    const baseUrl = apiUrl ?? `https://api.buscojobs.com/v3/uy/api/empresas/${auth.empresaId}/OfertasActivas?filter=${encodeURIComponent(JSON.stringify({ order: ["FechaInicio DESC"], limit: Number(config.maxOffers ?? 50), skip: 0 }))}`;
+    const payload = await fetchBuscojobsJson(baseUrl, config);
+    const offers = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.rows) ? payload.rows : [];
+    const candidates: CandidateImport[] = [];
+    const routeNotes: string[] = [];
+    const maxOffers = Number(config.maxOffers ?? 50);
+
+    for (const offer of offers.slice(0, maxOffers)) {
+      const result = await fetchApplicantsForOffer(config, offer);
+      candidates.push(...result.rows);
+      routeNotes.push(`${offerTitleFromRow(offer)}: ${result.rows.length} (${result.route})`);
+    }
+
+    const deduped = new Map<string, CandidateImport>();
+    for (const candidate of candidates) deduped.set(candidate.sourceId ?? candidate.fullName, candidate);
+
+    return {
+      rows: [...deduped.values()],
+      message: `Buscojobs API: ${offers.length} ofertas leidas, ${deduped.size} candidatos detectados. ${routeNotes.slice(0, 10).join(" | ")}`
+    };
+  }
+
   const cookieHeader = cookieHeaderFromConfig(config);
   if (!cookieHeader) {
     return { rows: [] as CandidateImport[], message: "Falta pegar la sesion/cookies exportadas de Buscojobs." };
