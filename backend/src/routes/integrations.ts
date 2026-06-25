@@ -6,6 +6,15 @@ import { requireRole } from "../middleware/auth.js";
 
 export const integrationsRouter = Router();
 
+const DEFAULT_INTEGRATIONS = [
+  ["aglh", "AGLH Platform"],
+  ["yoiners", "Yoiners"],
+  ["buscojobs", "Buscojobs"],
+  ["gmail", "Gmail"],
+  ["drive", "Google Drive"],
+  ["linkedin", "LinkedIn Recruiter"]
+] as const;
+
 type CandidateImport = {
   fullName: string;
   firstName?: string | null;
@@ -228,7 +237,14 @@ async function importCandidate(sourceType: string, candidate: CandidateImport) {
   return "new";
 }
 
+async function ensureDefaultIntegrations() {
+  for (const [id, name] of DEFAULT_INTEGRATIONS) {
+    await q("INSERT INTO integrations (id, name) VALUES ($1,$2) ON CONFLICT (id) DO NOTHING", [id, name]);
+  }
+}
+
 integrationsRouter.get("/", asyncHandler(async (_req, res) => {
+  await ensureDefaultIntegrations();
   const [integrations, logs] = await Promise.all([
     q("SELECT * FROM integrations ORDER BY name"),
     q("SELECT * FROM sync_logs ORDER BY started_at DESC LIMIT 20")
@@ -242,8 +258,14 @@ integrationsRouter.patch("/:id", requireRole("admin"), asyncHandler(async (req, 
     config: z.record(z.any()).optional()
   }).parse(req.body);
   const { rows } = await q(
-    "UPDATE integrations SET status=coalesce($1,status), config=config || coalesce($2::jsonb,'{}'::jsonb), updated_at=now() WHERE id=$3 RETURNING *",
-    [body.status, body.config ? JSON.stringify(body.config) : null, req.params.id]
+    `INSERT INTO integrations (id, name, status, config)
+     VALUES ($3,$4,coalesce($1,'connected'),coalesce($2::jsonb,'{}'::jsonb))
+     ON CONFLICT (id) DO UPDATE SET
+       status=coalesce($1,integrations.status),
+       config=integrations.config || coalesce($2::jsonb,'{}'::jsonb),
+       updated_at=now()
+     RETURNING *`,
+    [body.status, body.config ? JSON.stringify(body.config) : null, req.params.id, DEFAULT_INTEGRATIONS.find(([id]) => id === req.params.id)?.[1] ?? req.params.id]
   );
   if (!rows[0]) return res.status(404).json({ error: "Integracion no encontrada" });
   res.json({ data: { ...rows[0], config: maskConfig(rows[0].config) } });
