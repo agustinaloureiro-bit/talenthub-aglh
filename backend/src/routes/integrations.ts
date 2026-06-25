@@ -106,7 +106,7 @@ function htmlText(value: string) {
     .trim();
 }
 
-function absoluteUrl(href: string, base = "https://www.buscojobs.com.uy") {
+function absoluteUrl(href: string, base = "https://buscojobs.com.uy") {
   try {
     return new URL(decodeHtml(href), base).toString();
   } catch {
@@ -161,7 +161,7 @@ async function fetchBuscojobs(url: string, cookieHeader: string) {
   return text;
 }
 
-function extractLinks(html: string, base = "https://www.buscojobs.com.uy") {
+function extractLinks(html: string, base = "https://buscojobs.com.uy") {
   const links: Array<{ url: string; text: string }> = [];
   const anchorRegex = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
   let match: RegExpExecArray | null;
@@ -185,9 +185,9 @@ function candidateListUrls(offerUrl: string, offerHtml: string) {
     .map((link) => link.url);
   const id = offerUrl.match(/oferta-(\d+)/)?.[1];
   const guessed = id ? [
-    `https://www.buscojobs.com.uy/app/empresa/oferta-${id}/candidatos`,
-    `https://www.buscojobs.com.uy/app/empresa/oferta-${id}/postulantes`,
-    `https://www.buscojobs.com.uy/app/empresa/oferta-${id}/curriculums`
+    `https://buscojobs.com.uy/app/empresa/oferta-${id}/candidatos`,
+    `https://buscojobs.com.uy/app/empresa/oferta-${id}/postulantes`,
+    `https://buscojobs.com.uy/app/empresa/oferta-${id}/curriculums`
   ] : [];
   return unique([...fromLinks, ...guessed]);
 }
@@ -244,7 +244,7 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
     return { rows: [] as CandidateImport[], message: "Falta pegar la sesion/cookies exportadas de Buscojobs." };
   }
 
-  const panelHtml = await fetchBuscojobs("https://www.buscojobs.com.uy/app/empresa/panel", cookieHeader);
+  const panelHtml = await fetchBuscojobs("https://buscojobs.com.uy/app/empresa/panel", cookieHeader);
   const offerUrls = extractOfferLinks(panelHtml).slice(0, Number(config.maxOffers ?? 80));
   const allCandidates: CandidateImport[] = [];
   const notes: string[] = [];
