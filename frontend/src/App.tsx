@@ -317,7 +317,36 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
   "gmail": { "username": "", "password": "" },
   "buscojobs": { "username": "", "password": "" }
 }`;
-  return <PagePad><div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Pegá sesiones/API keys solo de cuentas propias y fuentes donde tengas permiso de extracción. Los valores sensibles se guardan en el backend y luego se muestran ocultos.</div>{canEdit && <div className="card mb-4 p-4"><button className="btn-primary" onClick={() => { setBulkOpen(!bulkOpen); if (!bulkText) setBulkText(template); }}><Settings size={16} /> Cargar todas las cuentas</button>{bulkOpen && <form onSubmit={applyBulk} className="mt-4 grid gap-3">{bulkError && <ErrorBox message={bulkError} />}<textarea className="field min-h-52 font-mono text-xs" value={bulkText} onChange={(e) => setBulkText(e.target.value)} /><button className="btn-primary w-fit"><Save size={16} /> Guardar todas</button></form>}</div>}<div className="mb-6 grid gap-4 md:grid-cols-2">{data.data.map((i: any) => <div className="card p-4" key={i.id}><div className="mb-2 flex items-center justify-between"><div className="font-bold">{i.name}</div><span className="rounded-full bg-slate-100 px-2 py-1 text-xs">{i.status}</span></div><p className="text-sm text-slate-500">Última sync: {i.last_sync_at ? new Date(i.last_sync_at).toLocaleString() : "Nunca"} · {i.total_imported} registros</p><div className="mt-3 flex flex-wrap gap-2">{canEdit && <select className="field max-w-44" value={i.status} onChange={(e) => save(i.id, e.target.value)}><option value="not_configured">No configurado</option><option value="connected">Conectado</option><option value="warning">Advertencia</option><option value="error">Error</option><option value="soon">Próximamente</option></select>}{canEdit && <button className="btn-ghost" onClick={() => setEditing(editing === i.id ? null : i.id)}><Settings size={16} /> Configurar</button>}<button className="btn-primary" onClick={() => sync(i.id)}>Sincronizar</button></div>{editing === i.id && <IntegrationConfigPanel integration={i} onSaved={() => { setEditing(null); load(); }} />}</div>)}</div><Table title="Log de sincronizaciones" rows={data.logs} empty="Sin logs registrados." columns={["source", "status", "new_records", "updated_records", "errors", "message"]} /></PagePad>;
+  return <PagePad><div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Pegá sesiones/API keys solo de cuentas propias y fuentes donde tengas permiso de extracción. Los valores sensibles se guardan en el backend y luego se muestran ocultos.</div>{canEdit && <div className="card mb-4 p-4"><button className="btn-primary" onClick={() => { setBulkOpen(!bulkOpen); if (!bulkText) setBulkText(template); }}><Settings size={16} /> Cargar todas las cuentas</button>{bulkOpen && <form onSubmit={applyBulk} className="mt-4 grid gap-3">{bulkError && <ErrorBox message={bulkError} />}<textarea className="field min-h-52 font-mono text-xs" value={bulkText} onChange={(e) => setBulkText(e.target.value)} /><button className="btn-primary w-fit"><Save size={16} /> Guardar todas</button></form>}</div>}<div className="mb-6 grid gap-4 md:grid-cols-2">{data.data.map((i: any) => <div className="card p-4" key={i.id}><div className="mb-2 flex items-center justify-between"><div className="font-bold">{i.name}</div><span className="rounded-full bg-slate-100 px-2 py-1 text-xs">{i.status}</span></div><p className="text-sm text-slate-500">Última sync: {i.last_sync_at ? new Date(i.last_sync_at).toLocaleString() : "Nunca"} · {i.total_imported} registros</p><div className="mt-3 flex flex-wrap gap-2">{canEdit && <select className="field max-w-44" value={i.status} onChange={(e) => save(i.id, e.target.value)}><option value="not_configured">No configurado</option><option value="connected">Conectado</option><option value="warning">Advertencia</option><option value="error">Error</option><option value="soon">Próximamente</option></select>}{canEdit && <button className="btn-ghost" onClick={() => setEditing(editing === i.id ? null : i.id)}><Settings size={16} /> Configurar</button>}<button className="btn-primary" onClick={() => sync(i.id)}>Sincronizar</button></div>{editing === i.id && <IntegrationConfigPanelV2 integration={i} onSaved={() => { setEditing(null); load(); }} />}</div>)}</div><Table title="Log de sincronizaciones" rows={data.logs} empty="Sin logs registrados." columns={["source", "status", "new_records", "updated_records", "errors", "message"]} /></PagePad>;
+}
+
+function IntegrationConfigPanelV2({ integration, onSaved }: { integration: any; onSaved: () => void }) {
+  const [form, setForm] = useState({
+    baseUrl: integration.config?.baseUrl === "********" ? "" : integration.config?.baseUrl ?? "",
+    apiKey: "",
+    username: integration.config?.username === "********" ? "" : integration.config?.username ?? "",
+    password: "",
+    sessionCookies: "",
+    historicalData: "",
+    notes: integration.config?.notes === "********" ? "" : integration.config?.notes ?? ""
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  async function saveConfig(e: FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setError("");
+    const config = Object.fromEntries(Object.entries(form).filter(([, value]) => String(value).trim().length > 0));
+    try {
+      await api(`/integrations/${integration.id}`, { method: "PATCH", body: JSON.stringify({ status: "connected", config }) });
+      onSaved();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+  return <form onSubmit={saveConfig} className="mt-4 grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-4">{error && <ErrorBox message={error} />}<div className="grid gap-3 md:grid-cols-2"><Input label="URL o endpoint" value={form.baseUrl} onChange={(v) => setForm({ ...form, baseUrl: v })} /><Input label="Usuario/email" value={form.username} onChange={(v) => setForm({ ...form, username: v })} /><Input label="API key/token" type="password" value={form.apiKey} onChange={(v) => setForm({ ...form, apiKey: v })} /><Input label="Contrasena" type="password" value={form.password} onChange={(v) => setForm({ ...form, password: v })} /></div><div><label className="label">Sesion/cookies exportadas</label><textarea className="field min-h-24" placeholder="Opcional. Dejalo vacio si no sabes que es." value={form.sessionCookies} onChange={(e) => setForm({ ...form, sessionCookies: e.target.value })} /></div><div><label className="label">Datos historicos JSON/CSV</label><textarea className="field min-h-40 font-mono text-xs" placeholder={`Pega aca un exportado de candidatos. Ejemplo CSV:\nnombre,email,telefono,cargo,ciudad\nAna Perez,ana@mail.com,099123456,Analista,Montevideo`} value={form.historicalData} onChange={(e) => setForm({ ...form, historicalData: e.target.value })} /></div><div><label className="label">Notas internas</label><textarea className="field min-h-20" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div><button className="btn-primary w-fit" disabled={saving}><Save size={16} /> {saving ? "Guardando..." : "Guardar configuracion"}</button></form>;
 }
 
 function IntegrationConfigPanel({ integration, onSaved }: { integration: any; onSaved: () => void }) {
