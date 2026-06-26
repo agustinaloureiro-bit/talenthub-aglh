@@ -700,6 +700,20 @@ async function saveSource(candidateId: string, sourceType: string, candidate: Ca
   );
 }
 
+async function recordRejectedImport(sourceType: string, candidate: CandidateImport | null, reason: string, payload?: Record<string, unknown>) {
+  await q(
+    `INSERT INTO rejected_imports (source_type, source_id, source_url, extracted_name, reason, payload)
+     VALUES ($1,$2,$3,$4,$5,$6::jsonb)`,
+    [
+      sourceType,
+      candidate?.sourceId ?? null,
+      candidate?.sourceUrl ?? null,
+      candidate?.fullName ?? null,
+      reason,
+      JSON.stringify(payload ?? candidate?.raw ?? {})
+    ]
+  );
+}
 async function saveDocuments(candidateId: string, sourceType: string, candidate: CandidateImport) {
   for (const document of candidate.documents ?? []) {
     if (!document.fileUrl && !document.rawText) continue;
@@ -736,7 +750,10 @@ async function saveDocuments(candidateId: string, sourceType: string, candidate:
   }
 }
 async function importCandidate(sourceType: string, candidate: CandidateImport) {
-  if (!isUsableCandidate(candidate, sourceType)) return "skipped";
+  if (!isUsableCandidate(candidate, sourceType)) {
+    await recordRejectedImport(sourceType, candidate, "No tiene evidencia suficiente de persona real, contacto o CV.");
+    return "skipped";
+  }
   let existingId: string | null = null;
 
   if (candidate.sourceId) {
@@ -837,11 +854,12 @@ async function removeCookieCandidates() {
 integrationsRouter.get("/", asyncHandler(async (_req, res) => {
   await ensureDefaultIntegrations();
   await removeCookieCandidates();
-  const [integrations, logs] = await Promise.all([
+  const [integrations, logs, rejected] = await Promise.all([
     q("SELECT * FROM integrations ORDER BY name"),
-    q("SELECT * FROM sync_logs ORDER BY started_at DESC LIMIT 20")
+    q("SELECT * FROM sync_logs ORDER BY started_at DESC LIMIT 20"),
+    q("SELECT source_type, extracted_name, reason, source_url, created_at FROM rejected_imports ORDER BY created_at DESC LIMIT 30")
   ]);
-  res.json({ data: integrations.rows.map((row) => ({ ...row, config: maskConfig(row.config) })), logs: logs.rows });
+  res.json({ data: integrations.rows.map((row) => ({ ...row, config: maskConfig(row.config) })), logs: logs.rows, rejected: rejected.rows });
 }));
 
 integrationsRouter.patch("/:id", requireRole("admin"), asyncHandler(async (req, res) => {
