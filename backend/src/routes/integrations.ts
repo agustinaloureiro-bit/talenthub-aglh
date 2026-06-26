@@ -318,7 +318,7 @@ function isUsableCandidate(candidate: CandidateImport, sourceType = "") {
   if (sourceType === "buscojobs") {
     if (!hasRealName) return false;
     if (candidateSummaryLooksLikeOffer(candidate) && !hasContact && !hasDocument) return false;
-    return hasContact || hasDocument;
+    return true;
   }
 
   if (hasContact) return true;
@@ -751,7 +751,7 @@ async function saveDocuments(candidateId: string, sourceType: string, candidate:
 }
 async function importCandidate(sourceType: string, candidate: CandidateImport) {
   if (!isUsableCandidate(candidate, sourceType)) {
-    await recordRejectedImport(sourceType, candidate, "No tiene evidencia suficiente de persona real, contacto o CV.");
+    await recordRejectedImport(sourceType, candidate, "No parece una persona real o parece una oferta, barrio o categoria.");
     return "skipped";
   }
   let existingId: string | null = null;
