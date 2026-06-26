@@ -59,7 +59,15 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
   let where = "WHERE duplicate_of IS NULL";
   if (search) {
     params.push(`%${search}%`);
-    where += ` AND (full_name ILIKE $${params.length} OR current_role ILIKE $${params.length} OR $${params.length} = ANY(ai_tags))`;
+    where += ` AND (
+      full_name ILIKE $${params.length}
+      OR coalesce("current_role",'') ILIKE $${params.length}
+      OR coalesce(city,'') ILIKE $${params.length}
+      OR coalesce(ai_summary,'') ILIKE $${params.length}
+      OR EXISTS (SELECT 1 FROM unnest(ai_tags) tag WHERE tag ILIKE $${params.length})
+      OR EXISTS (SELECT 1 FROM unnest(email) mail WHERE mail ILIKE $${params.length})
+      OR EXISTS (SELECT 1 FROM unnest(phone) tel WHERE tel ILIKE $${params.length})
+    )`;
   }
   const { rows } = await q(`SELECT * FROM candidates ${where} ORDER BY updated_at DESC LIMIT 100`, params);
   res.json({ data: rows.map(mapCandidate) });
@@ -68,7 +76,7 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
 candidatesRouter.post("/", requireRole("recruiter"), asyncHandler(async (req, res) => {
   const body = candidateSchema.parse(req.body);
   const { rows } = await q(
-    `INSERT INTO candidates (full_name, first_name, last_name, email, phone, city, country, linkedin_url, current_role,
+    `INSERT INTO candidates (full_name, first_name, last_name, email, phone, city, country, linkedin_url, "current_role",
       ai_seniority, ai_seniority_years, ai_tags, ai_languages, ai_summary, ai_strengths, ai_weaknesses, quality_score, status)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14,$15,$16,$17,$18)
      RETURNING *`,
@@ -100,7 +108,7 @@ candidatesRouter.patch("/:id", requireRole("recruiter"), asyncHandler(async (req
   const merged = { ...mapCandidate(current.rows[0]), ...body };
   const { rows } = await q(
     `UPDATE candidates SET full_name=$1, first_name=$2, last_name=$3, email=$4, phone=$5, city=$6, country=$7,
-      linkedin_url=$8, current_role=$9, ai_seniority=$10, ai_seniority_years=$11, ai_tags=$12, ai_languages=$13::jsonb,
+      linkedin_url=$8, "current_role"=$9, ai_seniority=$10, ai_seniority_years=$11, ai_tags=$12, ai_languages=$13::jsonb,
       ai_summary=$14, ai_strengths=$15, ai_weaknesses=$16, quality_score=$17, status=$18, updated_at=now()
      WHERE id=$19 RETURNING *`,
     [merged.fullName, merged.firstName, merged.lastName, merged.email, merged.phone, merged.city, merged.country,

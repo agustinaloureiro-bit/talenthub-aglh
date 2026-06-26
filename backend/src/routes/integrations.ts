@@ -97,6 +97,13 @@ function firstMatchingKeyText(value: unknown, patterns: RegExp[], depth = 0): st
   return null;
 }
 
+function hasMatchingKey(value: unknown, patterns: RegExp[], depth = 0): boolean {
+  if (!value || typeof value !== "object" || depth > 4) return false;
+  const row = value as Record<string, unknown>;
+  if (Object.keys(row).some((key) => patterns.some((pattern) => pattern.test(key.toLowerCase())))) return true;
+  return Object.values(row).some((child) => hasMatchingKey(child, patterns, depth + 1));
+}
+
 function listFrom(value: unknown) {
   if (Array.isArray(value)) return value.map(cleanText).filter(Boolean);
   return cleanText(value)
@@ -263,17 +270,30 @@ function offerTitleFromRow(row: Record<string, unknown>) {
 }
 
 function applicantFromRow(row: Record<string, unknown>, offer: Record<string, unknown>): CandidateImport | null {
-  const person = (row.Postulante ?? row.postulante ?? row.Candidato ?? row.candidato ?? row.Curriculum ?? row.curriculum ?? row.Persona ?? row.persona ?? row) as Record<string, unknown>;
-  const fullName = deepFirstText(person, ["NombreCompleto", "nombreCompleto", "FullName", "fullName", "Nombre", "nombre", "Postulante", "postulante", "Candidato", "candidato"])
-    ?? unique([deepFirstText(person, ["PrimerNombre", "Nombres", "nombre"]), deepFirstText(person, ["Apellido", "Apellidos", "apellido"])].filter(Boolean) as string[]).join(" ")
-    ?? firstMatchingKeyText(person, [/nombre.*completo/, /full.*name/, /^nombre$/, /postulante/, /candidato/]);
+  const personContainer = row.Postulante ?? row.postulante ?? row.Candidato ?? row.candidato ?? row.Curriculum ?? row.curriculum ?? row.Persona ?? row.persona;
+  const rowLooksApplicant = hasMatchingKey(row, [/postulante/, /candidat/, /curriculum/, /\bcv\b/, /persona/]);
+  if (!personContainer && !rowLooksApplicant) return null;
+
+  const person = (personContainer ?? row) as Record<string, unknown>;
+  const firstName = deepFirstText(person, ["PrimerNombre", "Nombres", "NombrePila", "firstName", "FirstName"]);
+  const lastName = deepFirstText(person, ["Apellido", "Apellidos", "lastName", "LastName"]);
+  const fullName = deepFirstText(person, ["NombreCompleto", "nombreCompleto", "FullName", "fullName", "PostulanteNombre", "postulanteNombre", "CandidatoNombre", "candidatoNombre"])
+    ?? unique([firstName, lastName].filter(Boolean) as string[]).join(" ")
+    ?? firstMatchingKeyText(person, [/nombre.*completo/, /full.*name/, /postulante.*nombre/, /candidat.*nombre/]);
   const email = unique(listFrom(deepFirstText(person, ["Email", "email", "Mail", "mail", "Correo", "correo"]) ?? deepFirstText(row, ["Email", "email", "Mail", "mail", "Correo", "correo"])));
   const phone = unique(listFrom(deepFirstText(person, ["Telefono", "telefono", "Celular", "celular", "Mobile", "mobile", "Phone", "phone"]) ?? deepFirstText(row, ["Telefono", "telefono", "Celular", "celular", "Mobile", "mobile", "Phone", "phone"])));
   const sourceId = deepFirstText(row, ["Id", "id", "PostulacionId", "postulacionId", "PostulanteId", "postulanteId", "CandidatoId", "candidatoId", "CurriculumId", "curriculumId"])
     ?? firstMatchingKeyText(row, [/postul.*id/, /candidat.*id/, /curriculum.*id/, /^id$/])
     ?? deepFirstText(person, ["Id", "id"]);
 
-  if (!fullName && email.length === 0 && phone.length === 0) return null;
+  const cleanedName = fullName?.replace(/\s+/g, " ").trim() ?? "";
+  const nameWords = cleanedName.split(/\s+/).filter(Boolean);
+  const badName = !cleanedName
+    || cleanedName.length < 5
+    || cleanedName.length > 90
+    || nameWords.length < 2
+    || /buscamos|requisito|jornada|tareas|oferta|montevideo|maldonado|canelones|treinta y tres|playa pascual|solymar|rivera|salinas|melo|suarez|malvin|neptunia/i.test(cleanedName);
+  if (badName && email.length === 0 && phone.length === 0) return null;
 
   const offerTitle = offerTitleFromRow(offer);
   const rawText = JSON.stringify(row);
@@ -281,9 +301,9 @@ function applicantFromRow(row: Record<string, unknown>, offer: Record<string, un
   const qualityScore = scoreText && Number.isFinite(Number(scoreText)) ? Math.max(0, Math.min(100, Number(scoreText))) : 0;
 
   return {
-    fullName: fullName || email[0] || phone[0],
-    firstName: deepFirstText(person, ["PrimerNombre", "Nombres", "nombre"]),
-    lastName: deepFirstText(person, ["Apellido", "Apellidos", "apellido"]),
+    fullName: badName ? (email[0] || phone[0]) : cleanedName,
+    firstName,
+    lastName,
     email,
     phone,
     city: deepFirstText(person, ["Ciudad", "ciudad", "Localidad", "localidad", "Ubicacion", "ubicacion"]) ?? deepFirstText(row, ["Ciudad", "ciudad"]),
@@ -295,7 +315,7 @@ function applicantFromRow(row: Record<string, unknown>, offer: Record<string, un
     tags: unique(["buscojobs", offerTitle]),
     summary: rawText.slice(0, 1000),
     qualityScore,
-    sourceId: sourceId ? `buscojobs:${sourceId}` : `buscojobs:${offerIdFromRow(offer)}:${fullName || email[0] || phone[0]}`,
+    sourceId: sourceId ? `buscojobs:${sourceId}` : `buscojobs:${offerIdFromRow(offer)}:${cleanedName || email[0] || phone[0]}`,
     sourceUrl: deepFirstText(row, ["Url", "url", "CVUrl", "cvUrl"]),
     raw: { offer, applicant: row }
   };
@@ -690,6 +710,19 @@ async function removeCookieCandidates() {
            cs.source_data ? 'domain'
            OR cs.source_data ? 'expirationDate'
            OR candidates.full_name IN ('_gads','_gpi','_eoi','isiframeenabled','buscojobs-_zldt','buscojobs-_zldp','_hjSession_1333623','_hjSessionUser_1333623')
+         )
+     )`
+  );
+
+  await q(
+    `DELETE FROM candidates
+     WHERE EXISTS (
+       SELECT 1 FROM candidate_sources cs
+       WHERE cs.candidate_id = candidates.id
+         AND cs.source_type = 'buscojobs'
+         AND (
+           candidates.full_name ~* '^(Playa Pascual|Montevideo|Salinas|Rivera|Fray Bentos|Jose Pedro Varela|Melo|Suarez|Treinta y Tres|Neptunia|Malvin|Lomas de Solymar|Ciudad de la Costa|Administracion de Empresas|Diseno Grafico|Asistencia Social|Barra de Carrasco|El Pinar|Solymar)$'
+           OR candidates.ai_summary ~* 'Buscamos|Requisitos|Principales tareas|Jornada|\\[object Object\\]'
          )
      )`
   );
