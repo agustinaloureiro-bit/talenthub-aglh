@@ -390,8 +390,15 @@ function SettingsPage({ canEdit }: { canEdit: boolean }) {
   return <PagePad><div className="grid gap-4">{Object.entries(settings).map(([key, value]: any) => <div className="card p-4" key={key}><h2 className="mb-3 font-bold capitalize">{key}</h2><div className="grid gap-3 md:grid-cols-3">{Object.entries(value).map(([field, val]: any) => <Input key={field} label={field} value={String(val ?? "")} disabled={!canEdit} onChange={(v) => setSettings({ ...settings, [key]: { ...settings[key], [field]: v } })} />)}</div>{canEdit && <button className="btn-primary mt-3" onClick={() => save(key)}><Save size={16} /> Guardar</button>}</div>)}</div></PagePad>;
 }
 
+function shortText(value: string | undefined | null, max = 110) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, max - 1)}...` : text;
+}
+
 function CandidateRow({ candidate, onView, reason }: { candidate: Candidate; onView: (id: string) => void; reason?: string }) {
-  return <div className="card flex flex-wrap items-center justify-between gap-4 p-4"><div className="flex min-w-0 gap-3"><Avatar name={candidate.fullName} small /><div><div className="font-bold">{candidate.fullName}</div><div className="text-sm text-slate-500">{candidate.currentRole || "Sin rol"} · {candidate.city || "Sin ciudad"} · {candidate.years ?? 0} años</div><TagList tags={candidate.tags?.slice(0, 5) ?? []} />{reason && <p className="mt-1 text-xs italic text-slate-500">{reason}</p>}</div></div><div className="flex items-center gap-3"><Score score={candidate.qualityScore} /><button className="btn-ghost" onClick={() => onView(candidate.id)}>Ver ficha</button></div></div>;
+  const role = shortText(candidate.currentRole || "Sin rol", 90);
+  const location = shortText(candidate.city || candidate.country || "Sin ciudad", 45);
+  return <div className="card flex flex-wrap items-center justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div><div className="truncate text-sm text-slate-500">{role} · {location} · {candidate.years ?? 0} años</div><TagList tags={candidate.tags ?? []} />{reason && <p className="mt-1 truncate text-xs italic text-slate-500">{shortText(reason, 120)}</p>}</div></div><div className="flex shrink-0 items-center gap-3"><Score score={candidate.qualityScore} /><button className="btn-ghost" onClick={() => onView(candidate.id)}>Ver ficha</button></div></div>;
 }
 
 type InputProps = {
@@ -411,7 +418,7 @@ function Empty({ text }: { text: string }) { return <div className="card flex it
 function ErrorBox({ message }: { message: string }) { return <div className="mb-3 flex items-center gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700"><AlertCircle size={16} /> {message}</div>; }
 function Skeleton() { return <div className="card h-40 animate-pulse bg-slate-100" />; }
 function Avatar({ name, small = false }: { name: string; small?: boolean }) { const initials = name.split(" ").map((x) => x[0]).join("").slice(0, 2).toUpperCase(); return <div className={`grid shrink-0 place-items-center rounded-md bg-teal font-bold text-white ${small ? "h-10 w-10" : "h-16 w-16 text-xl"}`}>{initials || <UserRound />}</div>; }
-function TagList({ tags }: { tags: string[] }) { return <div className="mt-2 flex flex-wrap gap-1">{tags.map((t) => <span className="rounded-full bg-teal/10 px-2 py-0.5 text-xs font-semibold text-teal" key={t}>{t}</span>)}</div>; }
+function TagList({ tags }: { tags: string[] }) { const visible = tags.filter((tag) => tag && tag.length <= 40).slice(0, 4); return <div className="mt-2 flex flex-wrap gap-1">{visible.map((t) => <span className="rounded-full bg-teal/10 px-2 py-0.5 text-xs font-semibold text-teal" key={t}>{shortText(t, 32)}</span>)}</div>; }
 function Score({ score }: { score: number }) { return <div className="min-w-24"><div className="text-right text-sm font-extrabold">{score}%</div><div className="h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-teal" style={{ width: `${Math.max(0, Math.min(100, score))}%` }} /></div></div>; }
 function InfoCard({ title, text }: { title: string; text: string }) { return <div className="card whitespace-pre-line p-4"><h3 className="mb-2 font-bold">{title}</h3><p className="text-sm text-slate-600">{text}</p></div>; }
 function Table({ title, rows, empty, columns }: any) { return <div className="card overflow-hidden"><div className="border-b border-slate-200 p-4 font-bold">{title}</div>{rows.length === 0 ? <div className="p-4 text-sm text-slate-500">{empty}</div> : <div className="overflow-auto"><table className="w-full text-left text-sm"><thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>{columns.map((c: string) => <th className="px-4 py-2" key={c}>{c}</th>)}</tr></thead><tbody>{rows.map((r: any) => <tr className="border-t border-slate-100" key={r.id}>{columns.map((c: string) => <td className="px-4 py-2" key={c}>{String(r[c] ?? "")}</td>)}</tr>)}</tbody></table></div>}</div>; }

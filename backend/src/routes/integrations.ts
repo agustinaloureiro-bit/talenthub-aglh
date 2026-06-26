@@ -281,32 +281,51 @@ function candidateDocumentsFromRow(row: Record<string, unknown>, sourceType: str
   return documents;
 }
 
+function looksLikeOfferText(value: unknown) {
+  return /buscamos|estamos buscando|importante empresa|requisitos|principales tareas|tareas:|jornada|carnet|perfil psicografico|postulantes|candidatos|oferta|\[object Object\]/i.test(cleanText(value));
+}
+
 function candidateNameLooksReal(name: string) {
   const cleaned = name.replace(/\s+/g, " ").trim();
   const words = cleaned.split(/\s+/).filter(Boolean);
   if (!cleaned || cleaned.length < 5 || cleaned.length > 90) return false;
   if (words.length < 2 || words.length > 6) return false;
   if (/[/{}<>]|\[object Object\]/i.test(cleaned)) return false;
-  if (/buscamos|estamos buscando|importante empresa|requisito|jornada|tareas|oferta|postulantes|candidatos|curriculum|descargar|mover a etapa|adecuacion|perfil psicografico/i.test(cleaned)) return false;
+  if (looksLikeOfferText(cleaned)) return false;
   if (/^(autodromo|barra de carrasco|ciudad de la costa|comercial|comercial mercadeo|el pinar|fray bentos|jose pedro varela|libertad|lomas de solymar|malvin|melo|montevideo|neptunia|playa pascual|rivera|salinas|salto|solymar|suarez|toledo|treinta y tres|administracion de empresas|asistencia social|diseno grafico)$/i.test(cleaned)) return false;
   return true;
 }
 
-function candidateSummaryLooksLikeOffer(candidate: CandidateImport) {
-  const text = `${candidate.fullName} ${candidate.currentRole ?? ""} ${candidate.summary ?? ""}`;
-  return /buscamos|estamos buscando|importante empresa|requisitos|principales tareas|tareas:|jornada|carnet|\[object Object\]/i.test(text)
-    && candidate.email.length === 0
-    && candidate.phone.length === 0
-    && !candidateNameLooksReal(candidate.fullName);
+function compactLabel(value: unknown, fallback = "") {
+  const text = cleanText(value).replace(/\s+/g, " ");
+  if (!text || looksLikeOfferText(text) || text.length > 70) return fallback;
+  return text;
 }
 
-function isUsableCandidate(candidate: CandidateImport) {
-  if (candidate.email.length > 0 || candidate.phone.length > 0) return true;
-  if (!candidateNameLooksReal(candidate.fullName)) return false;
+function safeTags(items: unknown[], sourceType: string) {
+  return unique([sourceType, ...items.map((item) => compactLabel(item)).filter(Boolean)]).slice(0, 6);
+}
+
+function candidateSummaryLooksLikeOffer(candidate: CandidateImport) {
+  return looksLikeOfferText(`${candidate.fullName} ${candidate.currentRole ?? ""} ${candidate.summary ?? ""}`);
+}
+
+function isUsableCandidate(candidate: CandidateImport, sourceType = "") {
+  const hasContact = candidate.email.length > 0 || candidate.phone.length > 0 || Boolean(candidate.linkedinUrl);
+  const hasDocument = (candidate.documents ?? []).some((document) => Boolean(document.fileUrl || document.rawText));
+  const hasRealName = candidateNameLooksReal(candidate.fullName);
+
+  if (sourceType === "buscojobs") {
+    if (!hasRealName) return false;
+    if (candidateSummaryLooksLikeOffer(candidate) && !hasContact && !hasDocument) return false;
+    return hasContact || hasDocument;
+  }
+
+  if (hasContact) return true;
+  if (!hasRealName) return false;
   if (candidateSummaryLooksLikeOffer(candidate)) return false;
   return true;
 }
-
 function isAgentCandidate(row: unknown): row is CandidateImport {
   const candidate = row as CandidateImport;
   return Boolean(candidate && typeof candidate === "object" && typeof candidate.fullName === "string" && Array.isArray(candidate.email) && Array.isArray(candidate.phone) && Array.isArray(candidate.tags));
@@ -347,11 +366,11 @@ function applicantFromRow(row: Record<string, unknown>, offer: Record<string, un
     city: deepFirstText(person, ["Ciudad", "ciudad", "Localidad", "localidad", "Ubicacion", "ubicacion"]) ?? deepFirstText(row, ["Ciudad", "ciudad"]),
     country: "Uruguay",
     linkedinUrl: deepFirstText(person, ["Linkedin", "linkedin", "LinkedInUrl", "linkedinUrl"]),
-    currentRole: offerTitle,
+    currentRole: compactLabel(offerTitle, "Postulante Buscojobs"),
     seniority: null,
     years: null,
-    tags: unique(["buscojobs", offerTitle]),
-    summary: rawText.slice(0, 1000),
+    tags: safeTags([offerTitle], "buscojobs"),
+    summary: looksLikeOfferText(rawText) && documents.length === 0 && email.length === 0 && phone.length === 0 ? null : rawText.slice(0, 1000),
     qualityScore,
     sourceId: sourceId ? `buscojobs:${sourceId}` : `buscojobs:${offerIdFromRow(offer)}:${cleanedName || email[0] || phone[0]}`,
     sourceUrl,
@@ -359,7 +378,7 @@ function applicantFromRow(row: Record<string, unknown>, offer: Record<string, un
     raw: { offer, applicant: row }
   };
 
-  return isUsableCandidate(candidate) ? candidate : null;
+  return isUsableCandidate(candidate, "buscojobs") ? candidate : null;
 }
 function applicantEndpointUrls(empresaId: string, offerId: string, limit: number, skip: number) {
   const filter = encodeURIComponent(JSON.stringify({ order: ["FechaPostulacion DESC"], limit, skip }));
@@ -644,10 +663,10 @@ function normalizeCandidate(row: Record<string, unknown>, sourceType: string): C
     city: firstText(row, ["city", "ciudad", "location", "ubicacion"]),
     country: firstText(row, ["country", "pais"]),
     linkedinUrl: firstText(row, ["linkedinUrl", "linkedin_url", "linkedin"]),
-    currentRole: firstText(row, ["currentRole", "current_role", "role", "cargo", "puesto", "position"]),
+    currentRole: compactLabel(firstText(row, ["currentRole", "current_role", "role", "cargo", "puesto", "position"])),
     seniority: firstText(row, ["seniority", "seniorityLevel", "nivel"]),
     years,
-    tags: unique(listFrom(row.tags ?? row.skills ?? row.habilidades ?? sourceType)),
+    tags: safeTags(listFrom(row.tags ?? row.skills ?? row.habilidades), sourceType),
     summary: firstText(row, ["summary", "resumen", "notes", "notas"]),
     qualityScore: 0,
     sourceId: firstText(row, ["id", "sourceId", "source_id", "candidateId", "candidate_id"]),
@@ -717,7 +736,7 @@ async function saveDocuments(candidateId: string, sourceType: string, candidate:
   }
 }
 async function importCandidate(sourceType: string, candidate: CandidateImport) {
-  if (!isUsableCandidate(candidate)) return "skipped";
+  if (!isUsableCandidate(candidate, sourceType)) return "skipped";
   let existingId: string | null = null;
 
   if (candidate.sourceId) {
@@ -881,7 +900,7 @@ integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(asyn
       const result = await importCandidate(integrationId, candidate);
       if (result === "new") newRecords += 1;
       if (result === "updated") updatedRecords += 1;
-      if (result === "skipped") errors += 1;
+      if (result === "skipped") { /* omitted: no real identity/contact/CV */ }
     }
     status = errors > 0 ? "warning" : "success";
     message = `Historico procesado: ${newRecords} nuevos, ${updatedRecords} actualizados, ${errors} omitidos.`;
