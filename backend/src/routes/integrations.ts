@@ -3,6 +3,7 @@ import { z } from "zod";
 import { q } from "../db/pool.js";
 import { asyncHandler } from "../middleware/errors.js";
 import { requireRole } from "../middleware/auth.js";
+import type { AgentSyncResult, CandidateImport, IntegrationAgent } from "../agents/types.js";
 
 export const integrationsRouter = Router();
 
@@ -14,26 +15,6 @@ const DEFAULT_INTEGRATIONS = [
   ["drive", "Google Drive"],
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
-
-type CandidateImport = {
-  fullName: string;
-  firstName?: string | null;
-  lastName?: string | null;
-  email: string[];
-  phone: string[];
-  city?: string | null;
-  country?: string | null;
-  linkedinUrl?: string | null;
-  currentRole?: string | null;
-  seniority?: string | null;
-  years?: number | null;
-  tags: string[];
-  summary?: string | null;
-  qualityScore: number;
-  sourceId?: string | null;
-  sourceUrl?: string | null;
-  raw: Record<string, unknown>;
-};
 
 function maskConfig(config: Record<string, unknown> | null) {
   if (!config) return {};
@@ -547,6 +528,14 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
   };
 }
 
+const AGENTS: Record<string, IntegrationAgent> = {
+  buscojobs: {
+    id: "buscojobs",
+    name: "Buscojobs",
+    sync: scrapeBuscojobs
+  }
+};
+
 function rowsFromConfig(config: Record<string, unknown>) {
   const direct = config.records ?? config.candidates;
   if (Array.isArray(direct)) {
@@ -765,13 +754,14 @@ integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(asyn
   const started = Date.now();
   const config = integration.rows[0].config ?? {};
   const hasConfig = Object.values(config).some((value) => String(value ?? "").trim().length > 0);
-  let scraperResult: Awaited<ReturnType<typeof scrapeBuscojobs>> | null = null;
+  const agent = AGENTS[integrationId];
+  let scraperResult: AgentSyncResult | null = null;
   let scraperError: string | null = null;
-  if (integrationId === "buscojobs") {
+  if (agent) {
     try {
-      scraperResult = await scrapeBuscojobs(config);
+      scraperResult = await agent.sync(config);
     } catch (error: any) {
-      scraperError = error?.message ?? "Error desconocido leyendo Buscojobs.";
+      scraperError = error?.message ?? `Error desconocido leyendo ${agent.name}.`;
     }
   }
   const rowsToImport = scraperResult?.rows ?? rowsFromConfig(config);
@@ -801,7 +791,7 @@ integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(asyn
   } else if (scraperError) {
     status = "error";
     errors = 1;
-    message = `Buscojobs no pudo sincronizar: ${scraperError}`;
+    message = `${agent?.name ?? integration.rows[0].name} no pudo sincronizar: ${scraperError}`;
   }
 
   const { rows } = await q(
