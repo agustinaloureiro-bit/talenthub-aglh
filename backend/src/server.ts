@@ -16,6 +16,7 @@ import { settingsRouter } from "./routes/settings.js";
 import { searchRouter } from "./routes/search.js";
 import { chatRouter } from "./routes/chat.js";
 import { usersRouter } from "./routes/users.js";
+import { intelligenceRouter } from "./routes/intelligence.js";
 
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -31,6 +32,7 @@ app.use("/api/auth", authRouter);
 app.use("/api/dashboard", requireAuth, dashboardRouter);
 app.use("/api/candidates", requireAuth, candidatesRouter);
 app.use("/api/search", requireAuth, searchRouter);
+app.use("/api/intelligence", requireAuth, intelligenceRouter);
 app.use("/api/integrations", requireAuth, integrationsRouter);
 app.use("/api/settings", requireAuth, settingsRouter);
 app.use("/api/chat", requireAuth, chatRouter);

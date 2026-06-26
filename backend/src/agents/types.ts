@@ -30,6 +30,21 @@ export type CandidateImport = {
   raw: Record<string, unknown>;
 };
 
+export type AgentHealth = {
+  ok: boolean;
+  status: "connected" | "warning" | "error" | "not_configured";
+  message: string;
+};
+
+export type AgentSearchQuery = {
+  text: string;
+  roles?: string[];
+  skills?: string[];
+  languages?: string[];
+  seniority?: string | null;
+  limit?: number;
+};
+
 export type AgentSyncResult = {
   rows: CandidateImport[];
   message: string;
@@ -38,5 +53,9 @@ export type AgentSyncResult = {
 export type IntegrationAgent = {
   id: string;
   name: string;
+  healthCheck?(config: Record<string, unknown>): Promise<AgentHealth>;
   sync(config: Record<string, unknown>): Promise<AgentSyncResult>;
+  search?(query: AgentSearchQuery, config: Record<string, unknown>): Promise<CandidateImport[]>;
+  getCandidate?(id: string, config: Record<string, unknown>): Promise<CandidateImport | null>;
+  downloadCV?(id: string, config: Record<string, unknown>): Promise<CandidateDocumentImport | null>;
 };

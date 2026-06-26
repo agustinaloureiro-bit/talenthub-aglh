@@ -2,6 +2,8 @@ import { Router } from "express";
 import { z } from "zod";
 import { q } from "../db/pool.js";
 import { asyncHandler } from "../middleware/errors.js";
+import { RecruitmentIntelligenceEngine } from "../intelligence/intelligenceEngine.js";
+import type { TalentSearchFilters } from "../intelligence/types.js";
 
 export const searchRouter = Router();
 
@@ -14,7 +16,7 @@ const searchSchema = z.object({
   }).default({})
 });
 
-export async function findCandidates(query: string, filters: any = {}) {
+export async function findCandidates(query: string, filters: TalentSearchFilters = {}) {
   const params: unknown[] = [query];
   let where = "WHERE c.duplicate_of IS NULL";
   if (filters.activeOnly) where += " AND c.status='active'";
@@ -46,13 +48,19 @@ export async function findCandidates(query: string, filters: any = {}) {
     tags: row.ai_tags ?? [],
     qualityScore: row.quality_score,
     score: Math.min(100, Math.max(0, Math.round((Number(row.rank) * 60) + (row.quality_score * 0.4)))),
-    matchReason: row.rank > 0 ? "Coincide por texto, rol, competencias o resumen registrado." : "Sin coincidencia semántica directa; ordenado por calidad del perfil."
+    matchReason: row.rank > 0 ? "Coincide por texto, rol, competencias o resumen registrado." : "Sin coincidencia semantica directa; ordenado por calidad del perfil."
   }));
+}
+
+const intelligenceEngine = new RecruitmentIntelligenceEngine(findCandidates);
+
+export async function searchTalent(query: string, filters: TalentSearchFilters = {}) {
+  return intelligenceEngine.search(query, filters);
 }
 
 searchRouter.post("/talent", asyncHandler(async (req, res) => {
   const body = searchSchema.parse(req.body);
   await q("INSERT INTO saved_searches (user_id, query, filters) VALUES ($1,$2,$3)", [req.user!.id, body.query, JSON.stringify(body.filters)]);
-  const data = await findCandidates(body.query, body.filters);
-  res.json({ data });
+  const result = await searchTalent(body.query, body.filters);
+  res.json({ data: result.data, query: result.query, explanation: result.explanation, mode: result.mode });
 }));
