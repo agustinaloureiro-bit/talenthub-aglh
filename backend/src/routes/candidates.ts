@@ -54,24 +54,10 @@ function mapCandidate(row: any) {
 }
 
 
-const invalidBuscojobsPredicate = `(
-  EXISTS (
-    SELECT 1 FROM candidate_sources cs
-    WHERE cs.candidate_id = candidates.id
-      AND cs.source_type = 'buscojobs'
-  )
-  OR 'buscojobs' = ANY(coalesce(candidates.ai_tags, '{}'::text[]))
-)
-AND (
-  candidates.full_name ~* '[/{}<>]|\\[object Object\\]|^(_gads|_gpi|_eoi|isiframeenabled|buscojobs-_zldt|buscojobs-_zldp|_hjSession_1333623|_hjSessionUser_1333623)$|^(Autodromo|Barra de Carrasco|Ciudad de la Costa|Comercial|Comercial / Mercadeo|Comercial Mercadeo|El Pinar|Fray Bentos|Jose Pedro Varela|Libertad|Lomas de Solymar|Malvin|Melo|Montevideo|Neptunia|Playa Pascual|Rivera|Salinas|Salto|Solymar|Suarez|Toledo|Treinta y Tres|Administracion de Empresas|Asistencia Social|Diseno Grafico)$'
-)`;
-async function cleanupInvalidBuscojobsCandidates() {
-  await q(`DELETE FROM candidates WHERE ${invalidBuscojobsPredicate}`);
-}
 candidatesRouter.get("/", asyncHandler(async (req, res) => {
   const search = String(req.query.search ?? "");
   const params: unknown[] = [];
-  let where = `WHERE duplicate_of IS NULL AND NOT (${invalidBuscojobsPredicate})`;
+  let where = "WHERE duplicate_of IS NULL";
   if (search) {
     params.push(`%${search}%`);
     where += ` AND (
