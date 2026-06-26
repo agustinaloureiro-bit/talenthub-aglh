@@ -54,32 +54,30 @@ function mapCandidate(row: any) {
 }
 
 
+const invalidBuscojobsPredicate = `(
+  EXISTS (
+    SELECT 1 FROM candidate_sources cs
+    WHERE cs.candidate_id = candidates.id
+      AND cs.source_type = 'buscojobs'
+  )
+  OR 'buscojobs' = ANY(coalesce(candidates.ai_tags, '{}'::text[]))
+)
+AND cardinality(coalesce(candidates.email, '{}'::text[])) = 0
+AND cardinality(coalesce(candidates.phone, '{}'::text[])) = 0
+AND (
+  candidates.full_name ~* '[/]|^(Autodromo|Barra de Carrasco|Ciudad de la Costa|Comercial|Comercial / Mercadeo|El Pinar|Fray Bentos|Jose Pedro Varela|Libertad|Lomas de Solymar|Malvin|Melo|Montevideo|Neptunia|Playa Pascual|Rivera|Salinas|Salto|Solymar|Suarez|Toledo|Treinta y Tres|Administracion de Empresas|Asistencia Social|Diseno Grafico)$'
+  OR coalesce(candidates.ai_summary, '') ~* 'Buscamos|Estamos buscando|Importante empresa|Requisitos|Principales tareas|Tareas:|Jornada|Carnet|\\[object Object\\]'
+  OR coalesce(candidates.current_role, '') ~* 'Buscamos|Estamos buscando|Importante empresa|Requisitos|Principales tareas|Tareas:|Jornada|Carnet|\\[object Object\\]'
+)`;
+
 async function cleanupInvalidBuscojobsCandidates() {
-  await q(
-    `DELETE FROM candidates
-     WHERE EXISTS (
-       SELECT 1 FROM candidate_sources cs
-       WHERE cs.candidate_id = candidates.id
-         AND cs.source_type = 'buscojobs'
-     )
-     AND (
-       candidates.full_name ~* '^(Autodromo|Autódromo|Barra de Carrasco|Ciudad de la Costa|El Pinar|Fray Bentos|Jose Pedro Varela|José Pedro Varela|Libertad|Lomas de Solymar|Malvin|Melo|Montevideo|Neptunia|Playa Pascual|Rivera|Salinas|Salto|Solymar|Suarez|Suárez|Treinta y Tres|Administracion de Empresas|Administración de Empresas|Asistencia Social|Diseno Grafico|Diseño Gráfico)$'
-       OR (
-         cardinality(coalesce(candidates.email, '{}'::text[])) = 0
-         AND cardinality(coalesce(candidates.phone, '{}'::text[])) = 0
-         AND (
-           coalesce(candidates.ai_summary, '') ~* 'Buscamos|Requisitos|Principales tareas|Jornada|\\[object Object\\]'
-           OR coalesce(candidates.current_role, '') ~* 'Buscamos|Requisitos|Principales tareas|Jornada|\\[object Object\\]'
-         )
-       )
-     )`
-  );
+  await q(`DELETE FROM candidates WHERE ${invalidBuscojobsPredicate}`);
 }
 candidatesRouter.get("/", asyncHandler(async (req, res) => {
   await cleanupInvalidBuscojobsCandidates();
   const search = String(req.query.search ?? "");
   const params: unknown[] = [];
-  let where = "WHERE duplicate_of IS NULL";
+  let where = `WHERE duplicate_of IS NULL AND NOT (${invalidBuscojobsPredicate})`;
   if (search) {
     params.push(`%${search}%`);
     where += ` AND (
