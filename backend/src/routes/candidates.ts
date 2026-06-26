@@ -63,23 +63,12 @@ const invalidBuscojobsPredicate = `(
   OR 'buscojobs' = ANY(coalesce(candidates.ai_tags, '{}'::text[]))
 )
 AND (
-  candidates.full_name ~* '[/{}<>]|\\[object Object\\]|^(Autodromo|Barra de Carrasco|Ciudad de la Costa|Comercial|Comercial / Mercadeo|Comercial Mercadeo|El Pinar|Fray Bentos|Jose Pedro Varela|Libertad|Lomas de Solymar|Malvin|Melo|Montevideo|Neptunia|Playa Pascual|Rivera|Salinas|Salto|Solymar|Suarez|Toledo|Treinta y Tres|Administracion de Empresas|Asistencia Social|Diseno Grafico)$'
-  OR (
-    cardinality(coalesce(candidates.email, '{}'::text[])) = 0
-    AND cardinality(coalesce(candidates.phone, '{}'::text[])) = 0
-    AND coalesce(candidates.linkedin_url, '') = ''
-    AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.candidate_id = candidates.id)
-    AND (
-      coalesce(candidates.ai_summary, '') ~* 'Buscamos|Estamos buscando|Importante empresa|Requisitos|Principales tareas|Tareas:|Jornada|Carnet|perfil psicografico|postulantes|candidatos|oferta|\\[object Object\\]'
-      OR coalesce(candidates.current_role, '') ~* 'Buscamos|Estamos buscando|Importante empresa|Requisitos|Principales tareas|Tareas:|Jornada|Carnet|perfil psicografico|postulantes|candidatos|oferta|\\[object Object\\]'
-    )
-  )
+  candidates.full_name ~* '[/{}<>]|\\[object Object\\]|^(_gads|_gpi|_eoi|isiframeenabled|buscojobs-_zldt|buscojobs-_zldp|_hjSession_1333623|_hjSessionUser_1333623)$|^(Autodromo|Barra de Carrasco|Ciudad de la Costa|Comercial|Comercial / Mercadeo|Comercial Mercadeo|El Pinar|Fray Bentos|Jose Pedro Varela|Libertad|Lomas de Solymar|Malvin|Melo|Montevideo|Neptunia|Playa Pascual|Rivera|Salinas|Salto|Solymar|Suarez|Toledo|Treinta y Tres|Administracion de Empresas|Asistencia Social|Diseno Grafico)$'
 )`;
 async function cleanupInvalidBuscojobsCandidates() {
   await q(`DELETE FROM candidates WHERE ${invalidBuscojobsPredicate}`);
 }
 candidatesRouter.get("/", asyncHandler(async (req, res) => {
-  await cleanupInvalidBuscojobsCandidates();
   const search = String(req.query.search ?? "");
   const params: unknown[] = [];
   let where = `WHERE duplicate_of IS NULL AND NOT (${invalidBuscojobsPredicate})`;

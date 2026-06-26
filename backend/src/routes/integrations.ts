@@ -541,7 +541,8 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
     for (const offer of offers.slice(0, maxOffers)) {
       const result = await fetchApplicantsForOffer(config, offer);
       candidates.push(...result.rows);
-      routeNotes.push(`${offerTitleFromRow(offer)}: ${result.rows.length} (${result.route})`);
+      const offerTitle = compactLabel(offerTitleFromRow(offer), `Oferta ${offerIdFromRow(offer) || "sin id"}`);
+      routeNotes.push(`${offerTitle}: ${result.rows.length}`);
     }
 
     const deduped = new Map<string, CandidateImport>();
@@ -549,7 +550,7 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
 
     return {
       rows: [...deduped.values()],
-      message: `Buscojobs API: ${offers.length} ofertas leidas, ${deduped.size} candidatos detectados. ${routeNotes.slice(0, 10).join(" | ")}`
+      message: `Buscojobs: ${offers.length} ofertas leidas, ${deduped.size} candidatos detectados. ${routeNotes.slice(0, 6).join(" | ")}`
     };
   }
 
@@ -592,7 +593,7 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
         }
       }
 
-      notes.push(`${offerTitle || offerUrl}: ${foundForOffer}`);
+      notes.push(`${compactLabel(offerTitle, "Oferta Buscojobs") || "Oferta Buscojobs"}: ${foundForOffer}`);
     } catch {
       notes.push(`${offerUrl}: error`);
     }
@@ -602,7 +603,7 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
   for (const candidate of allCandidates) bySource.set(candidate.sourceId ?? candidate.fullName, candidate);
   return {
     rows: [...bySource.values()],
-    message: `Buscojobs: ${offerUrls.length} ofertas revisadas, ${bySource.size} candidatos reales detectados. ${notes.slice(0, 8).join(" | ")}`
+    message: `Buscojobs: ${offerUrls.length} ofertas revisadas, ${bySource.size} candidatos reales detectados. ${notes.slice(0, 6).join(" | ")}`
   };
 }
 
@@ -837,18 +838,6 @@ async function removeCookieCandidates() {
      )`
   );
 
-  await q(
-    `DELETE FROM candidates
-     WHERE EXISTS (
-       SELECT 1 FROM candidate_sources cs
-       WHERE cs.candidate_id = candidates.id
-         AND cs.source_type = 'buscojobs'
-         AND (
-           candidates.full_name ~* '^(Playa Pascual|Montevideo|Salinas|Rivera|Fray Bentos|Jose Pedro Varela|Melo|Suarez|Treinta y Tres|Neptunia|Malvin|Lomas de Solymar|Ciudad de la Costa|Administracion de Empresas|Diseno Grafico|Asistencia Social|Barra de Carrasco|El Pinar|Solymar)$'
-           OR candidates.ai_summary ~* 'Buscamos|Requisitos|Principales tareas|Jornada|\\[object Object\\]'
-         )
-     )`
-  );
 }
 
 integrationsRouter.get("/", asyncHandler(async (_req, res) => {
