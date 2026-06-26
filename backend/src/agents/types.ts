@@ -1,3 +1,14 @@
+export type CandidateDocumentImport = {
+  type: string;
+  fileName: string;
+  fileUrl?: string | null;
+  rawText?: string | null;
+  mimeType?: string | null;
+  sourceId?: string | null;
+  sourcePath?: string | null;
+  isPrimaryCv?: boolean;
+};
+
 export type CandidateImport = {
   fullName: string;
   firstName?: string | null;
@@ -15,6 +26,7 @@ export type CandidateImport = {
   qualityScore: number;
   sourceId?: string | null;
   sourceUrl?: string | null;
+  documents?: CandidateDocumentImport[];
   raw: Record<string, unknown>;
 };
 

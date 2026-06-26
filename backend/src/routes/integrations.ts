@@ -250,9 +250,70 @@ function offerTitleFromRow(row: Record<string, unknown>) {
     ?? "Oferta Buscojobs";
 }
 
+function candidateDocumentsFromRow(row: Record<string, unknown>, sourceType: string) {
+  const cvUrl = deepFirstText(row, ["CVUrl", "cvUrl", "CurriculumUrl", "curriculumUrl", "UrlCv", "urlCv", "ArchivoUrl", "archivoUrl", "FileUrl", "fileUrl", "DownloadUrl", "downloadUrl", "DocumentoUrl", "documentoUrl"]);
+  const profileUrl = deepFirstText(row, ["PerfilUrl", "perfilUrl", "ProfileUrl", "profileUrl", "Url", "url"]);
+  const cvText = deepFirstText(row, ["CvTexto", "cvTexto", "TextoCV", "textoCV", "RawText", "rawText", "ResumenCV", "resumenCV"]);
+  const fileName = deepFirstText(row, ["FileName", "fileName", "NombreArchivo", "nombreArchivo", "CvNombre", "cvNombre"]);
+  const documents = [];
+
+  if (cvUrl || cvText) {
+    documents.push({
+      type: "cv",
+      fileName: fileName || "CV importado",
+      fileUrl: cvUrl,
+      rawText: cvText,
+      sourceId: deepFirstText(row, ["CurriculumId", "curriculumId", "CvId", "cvId", "Id", "id"]),
+      isPrimaryCv: true
+    });
+  }
+
+  if (profileUrl && profileUrl !== cvUrl) {
+    documents.push({
+      type: "profile",
+      fileName: `${sourceType} ficha`,
+      fileUrl: profileUrl,
+      sourceId: deepFirstText(row, ["PostulanteId", "postulanteId", "CandidatoId", "candidatoId", "Id", "id"]),
+      isPrimaryCv: false
+    });
+  }
+
+  return documents;
+}
+
+function candidateNameLooksReal(name: string) {
+  const cleaned = name.replace(/\s+/g, " ").trim();
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  if (!cleaned || cleaned.length < 5 || cleaned.length > 90) return false;
+  if (words.length < 2 || words.length > 6) return false;
+  if (/[/{}<>]|\[object Object\]/i.test(cleaned)) return false;
+  if (/buscamos|estamos buscando|importante empresa|requisito|jornada|tareas|oferta|postulantes|candidatos|curriculum|descargar|mover a etapa|adecuacion|perfil psicografico/i.test(cleaned)) return false;
+  if (/^(autodromo|barra de carrasco|ciudad de la costa|comercial|comercial mercadeo|el pinar|fray bentos|jose pedro varela|libertad|lomas de solymar|malvin|melo|montevideo|neptunia|playa pascual|rivera|salinas|salto|solymar|suarez|toledo|treinta y tres|administracion de empresas|asistencia social|diseno grafico)$/i.test(cleaned)) return false;
+  return true;
+}
+
+function candidateSummaryLooksLikeOffer(candidate: CandidateImport) {
+  const text = `${candidate.fullName} ${candidate.currentRole ?? ""} ${candidate.summary ?? ""}`;
+  return /buscamos|estamos buscando|importante empresa|requisitos|principales tareas|tareas:|jornada|carnet|\[object Object\]/i.test(text)
+    && candidate.email.length === 0
+    && candidate.phone.length === 0
+    && !candidateNameLooksReal(candidate.fullName);
+}
+
+function isUsableCandidate(candidate: CandidateImport) {
+  if (candidate.email.length > 0 || candidate.phone.length > 0) return true;
+  if (!candidateNameLooksReal(candidate.fullName)) return false;
+  if (candidateSummaryLooksLikeOffer(candidate)) return false;
+  return true;
+}
+
+function isAgentCandidate(row: unknown): row is CandidateImport {
+  const candidate = row as CandidateImport;
+  return Boolean(candidate && typeof candidate === "object" && typeof candidate.fullName === "string" && Array.isArray(candidate.email) && Array.isArray(candidate.phone) && Array.isArray(candidate.tags));
+}
 function applicantFromRow(row: Record<string, unknown>, offer: Record<string, unknown>): CandidateImport | null {
   const personContainer = row.Postulante ?? row.postulante ?? row.Candidato ?? row.candidato ?? row.Curriculum ?? row.curriculum ?? row.Persona ?? row.persona;
-  const rowLooksApplicant = hasMatchingKey(row, [/postulante/, /candidat/, /curriculum/, /\bcv\b/, /persona/]);
+  const rowLooksApplicant = hasMatchingKey(row, [/postulante/, /candidat/, /curriculum/, /\bcv\b/, /persona/, /nombre/, /apellido/, /email/, /telefono/, /celular/]);
   if (!personContainer && !rowLooksApplicant) return null;
 
   const person = (personContainer ?? row) as Record<string, unknown>;
@@ -268,21 +329,17 @@ function applicantFromRow(row: Record<string, unknown>, offer: Record<string, un
     ?? deepFirstText(person, ["Id", "id"]);
 
   const cleanedName = fullName?.replace(/\s+/g, " ").trim() ?? "";
-  const nameWords = cleanedName.split(/\s+/).filter(Boolean);
-  const badName = !cleanedName
-    || cleanedName.length < 5
-    || cleanedName.length > 90
-    || nameWords.length < 2
-    || /buscamos|requisito|jornada|tareas|oferta|montevideo|maldonado|canelones|treinta y tres|playa pascual|solymar|rivera|salinas|melo|suarez|malvin|neptunia/i.test(cleanedName);
-  if (badName && email.length === 0 && phone.length === 0) return null;
+  if (!candidateNameLooksReal(cleanedName) && email.length === 0 && phone.length === 0) return null;
 
   const offerTitle = offerTitleFromRow(offer);
   const rawText = JSON.stringify(row);
   const scoreText = deepFirstText(row, ["Adecuacion", "adecuacion", "Score", "score", "Puntaje", "puntaje"]);
   const qualityScore = scoreText && Number.isFinite(Number(scoreText)) ? Math.max(0, Math.min(100, Number(scoreText))) : 0;
+  const sourceUrl = deepFirstText(row, ["PerfilUrl", "perfilUrl", "ProfileUrl", "profileUrl", "Url", "url", "CVUrl", "cvUrl"]);
+  const documents = candidateDocumentsFromRow(row, "buscojobs");
 
-  return {
-    fullName: badName ? (email[0] || phone[0]) : cleanedName,
+  const candidate: CandidateImport = {
+    fullName: candidateNameLooksReal(cleanedName) ? cleanedName : (email[0] || phone[0]),
     firstName,
     lastName,
     email,
@@ -297,11 +354,13 @@ function applicantFromRow(row: Record<string, unknown>, offer: Record<string, un
     summary: rawText.slice(0, 1000),
     qualityScore,
     sourceId: sourceId ? `buscojobs:${sourceId}` : `buscojobs:${offerIdFromRow(offer)}:${cleanedName || email[0] || phone[0]}`,
-    sourceUrl: deepFirstText(row, ["Url", "url", "CVUrl", "cvUrl"]),
+    sourceUrl,
+    documents,
     raw: { offer, applicant: row }
   };
-}
 
+  return isUsableCandidate(candidate) ? candidate : null;
+}
 function applicantEndpointUrls(empresaId: string, offerId: string, limit: number, skip: number) {
   const filter = encodeURIComponent(JSON.stringify({ order: ["FechaPostulacion DESC"], limit, skip }));
   const whereFilter = encodeURIComponent(JSON.stringify({ where: { OfertaId: Number(offerId) }, order: ["FechaPostulacion DESC"], limit, skip }));
@@ -593,6 +652,7 @@ function normalizeCandidate(row: Record<string, unknown>, sourceType: string): C
     qualityScore: 0,
     sourceId: firstText(row, ["id", "sourceId", "source_id", "candidateId", "candidate_id"]),
     sourceUrl: firstText(row, ["url", "sourceUrl", "source_url", "profileUrl", "profile_url"]),
+    documents: candidateDocumentsFromRow(row, sourceType),
     raw: row
   };
 }
@@ -621,7 +681,43 @@ async function saveSource(candidateId: string, sourceType: string, candidate: Ca
   );
 }
 
+async function saveDocuments(candidateId: string, sourceType: string, candidate: CandidateImport) {
+  for (const document of candidate.documents ?? []) {
+    if (!document.fileUrl && !document.rawText) continue;
+    const fileName = document.fileName || `${candidate.fullName} - ${document.type}`;
+    const existing = await q<{ id: string }>(
+      `SELECT id FROM documents
+       WHERE candidate_id=$1
+         AND type=$2
+         AND coalesce(file_url,'')=coalesce($3,'')
+         AND coalesce(source_id,'')=coalesce($4,'')
+       LIMIT 1`,
+      [candidateId, document.type, document.fileUrl, document.sourceId]
+    );
+
+    if (existing.rows[0]) {
+      await q(
+        `UPDATE documents SET
+          file_name=$1,
+          file_url=coalesce($2,file_url),
+          raw_text=coalesce($3,raw_text),
+          mime_type=coalesce($4,mime_type),
+          source_path=coalesce($5,source_path),
+          is_primary_cv=$6
+         WHERE id=$7`,
+        [fileName, document.fileUrl, document.rawText, document.mimeType, document.sourcePath, Boolean(document.isPrimaryCv), existing.rows[0].id]
+      );
+    } else {
+      await q(
+        `INSERT INTO documents (candidate_id, type, file_name, file_url, raw_text, mime_type, source_type, source_id, source_path, is_primary_cv)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [candidateId, document.type, fileName, document.fileUrl, document.rawText, document.mimeType, sourceType, document.sourceId, document.sourcePath, Boolean(document.isPrimaryCv)]
+      );
+    }
+  }
+}
 async function importCandidate(sourceType: string, candidate: CandidateImport) {
+  if (!isUsableCandidate(candidate)) return "skipped";
   let existingId: string | null = null;
 
   if (candidate.sourceId) {
@@ -666,6 +762,7 @@ async function importCandidate(sourceType: string, candidate: CandidateImport) {
         candidate.tags, candidate.summary, existingId]
     );
     await saveSource(existingId, sourceType, candidate);
+    await saveDocuments(existingId, sourceType, candidate);
     return "updated";
   }
 
@@ -679,6 +776,7 @@ async function importCandidate(sourceType: string, candidate: CandidateImport) {
       candidate.tags, candidate.summary, candidate.qualityScore]
   );
   await saveSource(inserted.rows[0].id, sourceType, candidate);
+  await saveDocuments(inserted.rows[0].id, sourceType, candidate);
   return "new";
 }
 
@@ -775,7 +873,7 @@ integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(asyn
 
   if (rowsToImport.length > 0) {
     for (const row of rowsToImport) {
-      const candidate = normalizeCandidate(row, integrationId);
+      const candidate = scraperResult && isAgentCandidate(row) ? row : normalizeCandidate(row, integrationId);
       if (!candidate) {
         errors += 1;
         continue;
@@ -783,6 +881,7 @@ integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(asyn
       const result = await importCandidate(integrationId, candidate);
       if (result === "new") newRecords += 1;
       if (result === "updated") updatedRecords += 1;
+      if (result === "skipped") errors += 1;
     }
     status = errors > 0 ? "warning" : "success";
     message = `Historico procesado: ${newRecords} nuevos, ${updatedRecords} actualizados, ${errors} omitidos.`;
