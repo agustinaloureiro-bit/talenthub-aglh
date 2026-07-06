@@ -70,8 +70,11 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
       OR EXISTS (SELECT 1 FROM unnest(phone) tel WHERE tel ILIKE $${params.length})
     )`;
   }
-  const { rows } = await q(`SELECT * FROM candidates ${where} ORDER BY updated_at DESC LIMIT 100`, params);
-  res.json({ data: rows.map(mapCandidate) });
+  const [{ rows }, total] = await Promise.all([
+    q(`SELECT * FROM candidates ${where} ORDER BY updated_at DESC LIMIT 100`, params),
+    q<{ count: string }>("SELECT count(*)::text FROM candidates WHERE duplicate_of IS NULL")
+  ]);
+  res.json({ data: rows.map(mapCandidate), meta: { total: Number(total.rows[0]?.count ?? 0), returned: rows.length } });
 }));
 
 candidatesRouter.post("/", requireRole("recruiter"), asyncHandler(async (req, res) => {

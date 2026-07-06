@@ -332,30 +332,49 @@ function isAgentCandidate(row: unknown): row is CandidateImport {
 }
 function applicantFromRow(row: Record<string, unknown>, offer: Record<string, unknown>): CandidateImport | null {
   const personContainer = row.Postulante ?? row.postulante ?? row.Candidato ?? row.candidato ?? row.Curriculum ?? row.curriculum ?? row.Persona ?? row.persona;
-  const rowLooksApplicant = hasMatchingKey(row, [/postulante/, /candidat/, /curriculum/, /\bcv\b/, /persona/, /nombre/, /apellido/, /email/, /telefono/, /celular/]);
+  const rowLooksApplicant = hasMatchingKey(row, [
+    /postulante/,
+    /candidato(nombre|id|apellido|email|telefono|celular)/,
+    /curriculum|curriculo/,
+    /\bcv(url|id|texto|nombre)?\b/,
+    /persona/,
+    /^email$|^mail$|correo/,
+    /telefono|celular|mobile|phone/,
+    /fecha.*postul/,
+    /adecuacion/
+  ]);
   if (!personContainer && !rowLooksApplicant) return null;
 
   const person = (personContainer ?? row) as Record<string, unknown>;
+  const fullNameKeys = personContainer
+    ? ["NombreCompleto", "nombreCompleto", "FullName", "fullName", "PostulanteNombre", "postulanteNombre", "CandidatoNombre", "candidatoNombre", "Nombre", "nombre"]
+    : ["NombreCompleto", "nombreCompleto", "FullName", "fullName", "PostulanteNombre", "postulanteNombre", "CandidatoNombre", "candidatoNombre"];
   const firstName = deepFirstText(person, ["PrimerNombre", "Nombres", "NombrePila", "firstName", "FirstName"]);
   const lastName = deepFirstText(person, ["Apellido", "Apellidos", "lastName", "LastName"]);
-  const fullName = deepFirstText(person, ["NombreCompleto", "nombreCompleto", "FullName", "fullName", "PostulanteNombre", "postulanteNombre", "CandidatoNombre", "candidatoNombre"])
+  const fullName = deepFirstText(person, fullNameKeys)
     ?? unique([firstName, lastName].filter(Boolean) as string[]).join(" ")
     ?? firstMatchingKeyText(person, [/nombre.*completo/, /full.*name/, /postulante.*nombre/, /candidat.*nombre/]);
   const email = unique(listFrom(deepFirstText(person, ["Email", "email", "Mail", "mail", "Correo", "correo"]) ?? deepFirstText(row, ["Email", "email", "Mail", "mail", "Correo", "correo"])));
   const phone = unique(listFrom(deepFirstText(person, ["Telefono", "telefono", "Celular", "celular", "Mobile", "mobile", "Phone", "phone"]) ?? deepFirstText(row, ["Telefono", "telefono", "Celular", "celular", "Mobile", "mobile", "Phone", "phone"])));
-  const sourceId = deepFirstText(row, ["Id", "id", "PostulacionId", "postulacionId", "PostulanteId", "postulanteId", "CandidatoId", "candidatoId", "CurriculumId", "curriculumId"])
-    ?? firstMatchingKeyText(row, [/postul.*id/, /candidat.*id/, /curriculum.*id/, /^id$/])
+  const sourceId = deepFirstText(row, ["PostulacionId", "postulacionId", "PostulanteId", "postulanteId", "CandidatoId", "candidatoId", "CurriculumId", "curriculumId"])
+    ?? firstMatchingKeyText(row, [/postul.*id/, /candidat.*id/, /curriculum.*id/])
     ?? deepFirstText(person, ["Id", "id"]);
 
   const cleanedName = fullName?.replace(/\s+/g, " ").trim() ?? "";
+  const offerTitle = offerTitleFromRow(offer);
+  if (cleanedName && compactLabel(cleanedName) === compactLabel(offerTitle)) return null;
   if (!candidateNameLooksReal(cleanedName) && email.length === 0 && phone.length === 0) return null;
 
-  const offerTitle = offerTitleFromRow(offer);
-  const rawText = JSON.stringify(row);
   const scoreText = deepFirstText(row, ["Adecuacion", "adecuacion", "Score", "score", "Puntaje", "puntaje"]);
   const qualityScore = scoreText && Number.isFinite(Number(scoreText)) ? Math.max(0, Math.min(100, Number(scoreText))) : 0;
   const sourceUrl = deepFirstText(row, ["PerfilUrl", "perfilUrl", "ProfileUrl", "profileUrl", "Url", "url", "CVUrl", "cvUrl"]);
   const documents = candidateDocumentsFromRow(row, "buscojobs");
+  const city = deepFirstText(person, ["Ciudad", "ciudad", "Localidad", "localidad", "Ubicacion", "ubicacion"]) ?? deepFirstText(row, ["Ciudad", "ciudad"]);
+  const summaryParts = [
+    offerTitle ? `Postulante a ${offerTitle}` : null,
+    city ? `Ubicacion: ${city}` : null,
+    documents.find((document) => document.rawText)?.rawText?.slice(0, 700) ?? null
+  ].filter(Boolean);
 
   const candidate: CandidateImport = {
     fullName: candidateNameLooksReal(cleanedName) ? cleanedName : (email[0] || phone[0]),
@@ -363,14 +382,14 @@ function applicantFromRow(row: Record<string, unknown>, offer: Record<string, un
     lastName,
     email,
     phone,
-    city: deepFirstText(person, ["Ciudad", "ciudad", "Localidad", "localidad", "Ubicacion", "ubicacion"]) ?? deepFirstText(row, ["Ciudad", "ciudad"]),
+    city,
     country: "Uruguay",
     linkedinUrl: deepFirstText(person, ["Linkedin", "linkedin", "LinkedInUrl", "linkedinUrl"]),
     currentRole: compactLabel(offerTitle, "Postulante Buscojobs"),
     seniority: null,
     years: null,
     tags: safeTags([offerTitle], "buscojobs"),
-    summary: looksLikeOfferText(rawText) && documents.length === 0 && email.length === 0 && phone.length === 0 ? null : rawText.slice(0, 1000),
+    summary: summaryParts.join(". ") || null,
     qualityScore,
     sourceId: sourceId ? `buscojobs:${sourceId}` : `buscojobs:${offerIdFromRow(offer)}:${cleanedName || email[0] || phone[0]}`,
     sourceUrl,
@@ -776,7 +795,14 @@ async function importCandidate(sourceType: string, candidate: CandidateImport) {
   }
 
   if (existingId) {
-    await q(
+    const stillExists = await q<{ id: string }>("SELECT id FROM candidates WHERE id=$1 LIMIT 1", [existingId]);
+    if (!stillExists.rows[0]) {
+      existingId = null;
+    }
+  }
+
+  if (existingId) {
+    const updated = await q<{ id: string }>(
       `UPDATE candidates SET
         full_name=coalesce($1, full_name),
         first_name=coalesce($2, first_name),
@@ -793,14 +819,18 @@ async function importCandidate(sourceType: string, candidate: CandidateImport) {
         ai_summary=coalesce($13, ai_summary),
         updated_at=now(),
         last_seen_at=now()
-       WHERE id=$14`,
+       WHERE id=$14
+       RETURNING id`,
       [candidate.fullName, candidate.firstName, candidate.lastName, candidate.email, candidate.phone, candidate.city,
         candidate.country, candidate.linkedinUrl, candidate.currentRole, candidate.seniority, candidate.years,
         candidate.tags, candidate.summary, existingId]
     );
-    await saveSource(existingId, sourceType, candidate);
-    await saveDocuments(existingId, sourceType, candidate);
-    return "updated";
+    const updatedId = updated.rows[0]?.id;
+    if (updatedId) {
+      await saveSource(updatedId, sourceType, candidate);
+      await saveDocuments(updatedId, sourceType, candidate);
+      return "updated";
+    }
   }
 
   const inserted = await q<{ id: string }>(
