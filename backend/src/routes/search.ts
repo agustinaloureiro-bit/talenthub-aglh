@@ -17,7 +17,7 @@ const searchSchema = z.object({
 });
 
 export async function findCandidates(query: string, filters: TalentSearchFilters = {}) {
-  const params: unknown[] = [query];
+  const params: unknown[] = [query, `%${query}%`];
   let where = "WHERE c.duplicate_of IS NULL";
   if (filters.activeOnly) where += " AND c.status='active'";
   if (filters.seniority) {
@@ -28,11 +28,25 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     params.push(filters.source);
     where += ` AND EXISTS (SELECT 1 FROM candidate_sources cs WHERE cs.candidate_id=c.id AND cs.source_type = ANY($${params.length}))`;
   }
+  const searchText = "coalesce(c.full_name,'') || ' ' || coalesce(c.current_role,'') || ' ' || coalesce(c.ai_summary,'') || ' ' || array_to_string(c.ai_tags,' ') || ' ' || coalesce(doc.text,'')";
   const { rows } = await q(
     `SELECT c.*,
-      ts_rank_cd(to_tsvector('spanish', coalesce(c.full_name,'') || ' ' || coalesce(c.current_role,'') || ' ' || coalesce(c.ai_summary,'') || ' ' || array_to_string(c.ai_tags,' ')), plainto_tsquery('spanish', $1)) AS rank
+      ts_rank_cd(to_tsvector('spanish', ${searchText}), plainto_tsquery('spanish', $1)) AS rank
      FROM candidates c
+     LEFT JOIN LATERAL (
+       SELECT string_agg(coalesce(d.raw_text,'') || ' ' || coalesce(d.file_name,''), ' ') AS text
+       FROM documents d
+       WHERE d.candidate_id = c.id
+     ) doc ON true
      ${where}
+       AND (
+         to_tsvector('spanish', ${searchText}) @@ plainto_tsquery('spanish', $1)
+         OR c.full_name ILIKE $2
+         OR coalesce(c.current_role,'') ILIKE $2
+         OR coalesce(c.ai_summary,'') ILIKE $2
+         OR array_to_string(c.ai_tags,' ') ILIKE $2
+         OR coalesce(doc.text,'') ILIKE $2
+       )
      ORDER BY rank DESC, c.quality_score DESC, c.updated_at DESC
      LIMIT 20`,
     params

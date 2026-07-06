@@ -68,6 +68,15 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
       OR EXISTS (SELECT 1 FROM unnest(ai_tags) tag WHERE tag ILIKE $${params.length})
       OR EXISTS (SELECT 1 FROM unnest(email) mail WHERE mail ILIKE $${params.length})
       OR EXISTS (SELECT 1 FROM unnest(phone) tel WHERE tel ILIKE $${params.length})
+      OR EXISTS (
+        SELECT 1
+        FROM documents d
+        WHERE d.candidate_id = candidates.id
+          AND (
+            coalesce(d.raw_text,'') ILIKE $${params.length}
+            OR coalesce(d.file_name,'') ILIKE $${params.length}
+          )
+      )
     )`;
   }
   const [{ rows }, total] = await Promise.all([
