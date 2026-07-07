@@ -18,8 +18,27 @@ const searchSchema = z.object({
   }).default({})
 });
 
+function expandedSearchTerms(query: string) {
+  const words = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 3);
+  const extras: Record<string, string[]> = {
+    vendedor: ["ventas", "comercial", "ejecutivo comercial"],
+    vendedora: ["ventas", "comercial", "ejecutiva comercial"],
+    ventas: ["vendedor", "vendedora", "comercial"],
+    comercial: ["ventas", "vendedor", "vendedora"],
+    ingeniero: ["ingenieria", "ingeniería", "engineer"],
+    ingeniera: ["ingenieria", "ingeniería", "engineer"],
+    desarrollador: ["developer", "programador", "software"],
+    desarrolladora: ["developer", "programadora", "software"],
+    rrhh: ["recursos humanos", "talento", "seleccion", "selección"],
+    seleccion: ["selección", "reclutamiento", "recursos humanos"],
+    selección: ["seleccion", "reclutamiento", "recursos humanos"]
+  };
+  return [...new Set([query, ...words, ...words.flatMap((word) => extras[word] ?? [])])]
+    .map((term) => `%${term}%`);
+}
+
 export async function findCandidates(query: string, filters: TalentSearchFilters = {}) {
-  const params: unknown[] = [query, `%${query}%`];
+  const params: unknown[] = [query, `%${query}%`, expandedSearchTerms(query)];
   let where = "WHERE c.duplicate_of IS NULL";
   if (filters.activeOnly) where += " AND c.status='active'";
   if (filters.seniority) {
@@ -30,7 +49,7 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     params.push(filters.source);
     where += ` AND EXISTS (SELECT 1 FROM candidate_sources cs WHERE cs.candidate_id=c.id AND cs.source_type = ANY($${params.length}))`;
   }
-  const searchText = "coalesce(c.full_name,'') || ' ' || coalesce(c.current_role,'') || ' ' || coalesce(c.ai_summary,'') || ' ' || array_to_string(c.ai_tags,' ') || ' ' || coalesce(doc.text,'')";
+  const searchText = "coalesce(c.full_name,'') || ' ' || coalesce(c.current_role,'') || ' ' || coalesce(c.ai_summary,'') || ' ' || coalesce(array_to_string(c.ai_tags,' '),'') || ' ' || coalesce(doc.text,'')";
   const { rows } = await q(
     `SELECT c.*,
       ts_rank_cd(to_tsvector('spanish', ${searchText}), plainto_tsquery('spanish', $1)) AS rank
@@ -48,6 +67,11 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
          OR coalesce(c.ai_summary,'') ILIKE $2
          OR array_to_string(c.ai_tags,' ') ILIKE $2
          OR coalesce(doc.text,'') ILIKE $2
+         OR EXISTS (
+           SELECT 1
+           FROM unnest($3::text[]) term
+           WHERE ${searchText} ILIKE term
+         )
        )
      ORDER BY rank DESC, c.quality_score DESC, c.updated_at DESC
      LIMIT 20`,

@@ -53,6 +53,25 @@ function mapCandidate(row: any) {
   };
 }
 
+function expandedSearchTerms(query: string) {
+  const words = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 3);
+  const extras: Record<string, string[]> = {
+    vendedor: ["ventas", "comercial", "ejecutivo comercial"],
+    vendedora: ["ventas", "comercial", "ejecutiva comercial"],
+    ventas: ["vendedor", "vendedora", "comercial"],
+    comercial: ["ventas", "vendedor", "vendedora"],
+    ingeniero: ["ingenieria", "ingeniería", "engineer"],
+    ingeniera: ["ingenieria", "ingeniería", "engineer"],
+    desarrollador: ["developer", "programador", "software"],
+    desarrolladora: ["developer", "programadora", "software"],
+    rrhh: ["recursos humanos", "talento", "seleccion", "selección"],
+    seleccion: ["selección", "reclutamiento", "recursos humanos"],
+    selección: ["seleccion", "reclutamiento", "recursos humanos"]
+  };
+  return [...new Set([query, ...words, ...words.flatMap((word) => extras[word] ?? [])])]
+    .map((term) => `%${term}%`);
+}
+
 
 candidatesRouter.get("/", asyncHandler(async (req, res) => {
   const search = String(req.query.search ?? "");
@@ -60,21 +79,28 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
   let where = "WHERE duplicate_of IS NULL";
   if (search) {
     params.push(`%${search}%`);
+    params.push(expandedSearchTerms(search));
     where += ` AND (
-      full_name ILIKE $${params.length}
-      OR coalesce("current_role",'') ILIKE $${params.length}
-      OR coalesce(city,'') ILIKE $${params.length}
-      OR coalesce(ai_summary,'') ILIKE $${params.length}
-      OR EXISTS (SELECT 1 FROM unnest(ai_tags) tag WHERE tag ILIKE $${params.length})
-      OR EXISTS (SELECT 1 FROM unnest(email) mail WHERE mail ILIKE $${params.length})
-      OR EXISTS (SELECT 1 FROM unnest(phone) tel WHERE tel ILIKE $${params.length})
+      full_name ILIKE $${params.length - 1}
+      OR coalesce("current_role",'') ILIKE $${params.length - 1}
+      OR coalesce(city,'') ILIKE $${params.length - 1}
+      OR coalesce(ai_summary,'') ILIKE $${params.length - 1}
+      OR EXISTS (SELECT 1 FROM unnest(ai_tags) tag WHERE tag ILIKE $${params.length - 1})
+      OR EXISTS (SELECT 1 FROM unnest(email) mail WHERE mail ILIKE $${params.length - 1})
+      OR EXISTS (SELECT 1 FROM unnest(phone) tel WHERE tel ILIKE $${params.length - 1})
+      OR EXISTS (
+        SELECT 1
+        FROM unnest($${params.length}::text[]) term
+        WHERE coalesce(full_name,'') || ' ' || coalesce("current_role",'') || ' ' || coalesce(city,'') || ' ' || coalesce(ai_summary,'') || ' ' || coalesce(array_to_string(ai_tags,' '),'') ILIKE term
+      )
       OR EXISTS (
         SELECT 1
         FROM documents d
         WHERE d.candidate_id = candidates.id
           AND (
-            coalesce(d.raw_text,'') ILIKE $${params.length}
-            OR coalesce(d.file_name,'') ILIKE $${params.length}
+            coalesce(d.raw_text,'') ILIKE $${params.length - 1}
+            OR coalesce(d.file_name,'') ILIKE $${params.length - 1}
+            OR EXISTS (SELECT 1 FROM unnest($${params.length}::text[]) term WHERE coalesce(d.raw_text,'') || ' ' || coalesce(d.file_name,'') ILIKE term)
           )
       )
     )`;

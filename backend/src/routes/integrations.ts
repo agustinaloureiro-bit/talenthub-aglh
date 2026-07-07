@@ -179,7 +179,13 @@ function cookieHeaderFromConfig(config: Record<string, unknown>) {
   const raw = cleanText(config.sessionCookies ?? config.cookies ?? config.cookie);
   if (!raw) return null;
 
-  const curlCookie = raw.match(/\s-b\s+\^?"([^"]+)"/i)?.[1] ?? raw.match(/\s-b\s+'([^']+)'/i)?.[1];
+  const curlCookie = raw.match(/\s-b\s+\^?"([^"]+)"/i)?.[1]
+    ?? raw.match(/\s-b\s+'([^']+)'/i)?.[1]
+    ?? raw.match(/--cookie\s+\^?"([^"]+)"/i)?.[1]
+    ?? raw.match(/--cookie\s+'([^']+)'/i)?.[1]
+    ?? raw.match(/(?:-H|--header)\s+\^?"cookie:\s*([^"]+)"/i)?.[1]
+    ?? raw.match(/(?:-H|--header)\s+'cookie:\s*([^']+)'/i)?.[1]
+    ?? raw.match(/(?:^|\n|\r)cookie:\s*([^\n\r]+)/i)?.[1];
   if (curlCookie) return curlCookie.replace(/\^/g, "");
 
   try {
@@ -189,6 +195,11 @@ function cookieHeaderFromConfig(config: Record<string, unknown>) {
         .map((cookie) => `${cleanText(cookie?.name)}=${cleanText(cookie?.value)}`)
         .filter((pair) => !pair.startsWith("="));
       return pairs.length ? pairs.join("; ") : null;
+    }
+    if (parsed && typeof parsed === "object") {
+      const headers = (parsed as any).headers ?? parsed;
+      const header = headers.cookie ?? headers.Cookie;
+      if (header) return cleanText(header);
     }
   } catch {
     return raw.includes("=") ? raw : null;
@@ -337,7 +348,13 @@ function hasUsernamePassword(config: Record<string, unknown>) {
 
 function prepareConfigForSave(integrationId: string, config?: Record<string, unknown>) {
   if (!config) return null;
-  const next = { ...config };
+  const next = Object.fromEntries(
+    Object.entries(config).filter(([, value]) => {
+      if (value === null) return true;
+      if (typeof value === "string") return value.trim().length > 0;
+      return value !== undefined;
+    })
+  );
   if (integrationId !== "buscojobs") return next;
 
   const hasCredentials = hasBuscojobsCredentials(next);
@@ -555,7 +572,7 @@ function pageLooksLoggedIn(url: string, text: string) {
 }
 
 function genericPageLooksLoggedIn(text: string) {
-  return !/iniciar sesion|iniciar sesión|login|captcha|verifica que eres|verifica que sos|contrase[nñ]a|password/i.test(text.slice(0, 3000));
+  return !/iniciar sesion|iniciar sesión|sign in|log in|login|captcha|verifica que eres|verifica que sos|contrase[nñ]a|password|access denied|forbidden|unauthorized/i.test(text.slice(0, 3000));
 }
 
 async function ensureBuscojobsBrowserSession(page: any, config: Record<string, unknown>) {
@@ -779,6 +796,22 @@ async function googleJson(url: string, token: string) {
   return payload;
 }
 
+function googleWebFallback(sourceType: "gmail" | "drive", displayName: string, config: Record<string, unknown>) {
+  const defaultSearchUrl = sourceType === "gmail"
+    ? "https://mail.google.com/mail/u/0/#search/cv%20OR%20curriculum%20OR%20resume%20OR%20candidato%20OR%20postulante%20OR%20linkedin"
+    : "https://drive.google.com/drive/search?q=cv%20OR%20curriculum%20OR%20resume%20OR%20candidato%20OR%20postulante";
+  const defaultPattern = sourceType === "gmail"
+    ? "mail|inbox|all|search|cv|curriculum|resume|candidato|postulante|linkedin"
+    : "document|file|drive|cv|curriculum|resume|candidato|postulante";
+  const searchUrl = cleanText(config.baseUrl) || defaultSearchUrl;
+  return scrapeGenericWebSource(sourceType, displayName, {
+    ...config,
+    baseUrl: searchUrl,
+    searchUrls: cleanText(config.searchUrls) || searchUrl,
+    candidateLinkPattern: cleanText(config.candidateLinkPattern) || defaultPattern
+  });
+}
+
 function gmailMessageText(message: any) {
   const headers = Object.fromEntries((message.payload?.headers ?? []).map((header: any) => [String(header.name).toLowerCase(), String(header.value ?? "")]));
   const parts: any[] = [];
@@ -801,81 +834,101 @@ function gmailMessageText(message: any) {
 }
 
 async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncResult> {
-  const auth = await googleAccessToken(config);
+  let auth: Awaited<ReturnType<typeof googleAccessToken>> = null;
+  try {
+    auth = await googleAccessToken(config);
+  } catch (error: any) {
+    const fallback = await googleWebFallback("gmail", "Gmail", config);
+    return {
+      ...fallback,
+      message: `Gmail OAuth no funciono (${cleanText(error?.message).slice(0, 120)}). ${fallback.message}`
+    };
+  }
   if (!auth) {
-    const gmailSearchUrl = cleanText(config.baseUrl)
-      || "https://mail.google.com/mail/u/0/#search/cv%20OR%20curriculum%20OR%20resume%20OR%20candidato%20OR%20postulante%20OR%20linkedin";
-    return scrapeGenericWebSource("gmail", "Gmail", {
-      ...config,
-      baseUrl: gmailSearchUrl,
-      searchUrls: cleanText(config.searchUrls) || gmailSearchUrl,
-      candidateLinkPattern: cleanText(config.candidateLinkPattern) || "mail|inbox|all|search|cv|curriculum|resume|candidato|postulante|linkedin"
-    });
+    return googleWebFallback("gmail", "Gmail", config);
   }
-  const query = cleanText(config.query) || "(cv OR curriculum OR resume OR candidato OR postulante OR linkedin OR selección OR seleccion) newer_than:3650d";
-  const maxResults = numberFromConfig(config.maxResults, 50);
-  const listUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`;
-  const list = await googleJson(listUrl, auth.token);
-  const rows: CandidateImport[] = [];
-  for (const item of list.messages ?? []) {
-    const message = await googleJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${item.id}?format=full`, auth.token);
-    const parsed = gmailMessageText(message);
-    const candidate = candidateFromFreeText("gmail", parsed.text, {
-      sourceId: `gmail:${item.id}`,
-      sourceUrl: `https://mail.google.com/mail/u/0/#all/${item.id}`,
-      currentRole: parsed.subject,
-      fileName: parsed.subject || "Correo Gmail"
-    });
-    if (candidate) rows.push(candidate);
+  try {
+    const query = cleanText(config.query) || "(cv OR curriculum OR resume OR candidato OR postulante OR linkedin OR selección OR seleccion) newer_than:3650d";
+    const maxResults = numberFromConfig(config.maxResults, 50);
+    const listUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`;
+    const list = await googleJson(listUrl, auth.token);
+    const rows: CandidateImport[] = [];
+    for (const item of list.messages ?? []) {
+      const message = await googleJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${item.id}?format=full`, auth.token);
+      const parsed = gmailMessageText(message);
+      const candidate = candidateFromFreeText("gmail", parsed.text, {
+        sourceId: `gmail:${item.id}`,
+        sourceUrl: `https://mail.google.com/mail/u/0/#all/${item.id}`,
+        currentRole: parsed.subject,
+        fileName: parsed.subject || "Correo Gmail"
+      });
+      if (candidate) rows.push(candidate);
+    }
+    return {
+      rows,
+      configUpdate: { ...auth.configUpdate, sessionStatus: "connected", lastAgentMessage: `Gmail: ${rows.length} candidatos detectados.` },
+      message: `Gmail: ${list.messages?.length ?? 0} correos revisados, ${rows.length} candidatos detectados.`
+    };
+  } catch (error: any) {
+    const fallback = await googleWebFallback("gmail", "Gmail", config);
+    return {
+      ...fallback,
+      message: `Gmail API no funciono (${cleanText(error?.message).slice(0, 120)}). ${fallback.message}`
+    };
   }
-  return {
-    rows,
-    configUpdate: { ...auth.configUpdate, sessionStatus: "connected", lastAgentMessage: `Gmail: ${rows.length} candidatos detectados.` },
-    message: `Gmail: ${list.messages?.length ?? 0} correos revisados, ${rows.length} candidatos detectados.`
-  };
 }
 
 async function scrapeDrive(config: Record<string, unknown>): Promise<AgentSyncResult> {
-  const auth = await googleAccessToken(config);
+  let auth: Awaited<ReturnType<typeof googleAccessToken>> = null;
+  try {
+    auth = await googleAccessToken(config);
+  } catch (error: any) {
+    const fallback = await googleWebFallback("drive", "Google Drive", config);
+    return {
+      ...fallback,
+      message: `Google Drive OAuth no funciono (${cleanText(error?.message).slice(0, 120)}). ${fallback.message}`
+    };
+  }
   if (!auth) {
-    const driveSearchUrl = cleanText(config.baseUrl)
-      || "https://drive.google.com/drive/search?q=cv%20OR%20curriculum%20OR%20resume%20OR%20candidato%20OR%20postulante";
-    return scrapeGenericWebSource("drive", "Google Drive", {
-      ...config,
-      baseUrl: driveSearchUrl,
-      searchUrls: cleanText(config.searchUrls) || driveSearchUrl,
-      candidateLinkPattern: cleanText(config.candidateLinkPattern) || "document|file|cv|curriculum|resume|candidato|postulante"
-    });
+    return googleWebFallback("drive", "Google Drive", config);
   }
-  const maxResults = numberFromConfig(config.maxResults, 50);
-  const query = cleanText(config.query) || "trashed=false and (name contains 'cv' or name contains 'CV' or name contains 'curriculum' or name contains 'Curriculum' or name contains 'resume' or name contains 'candidato')";
-  const list = await googleJson(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&pageSize=${maxResults}&fields=files(id,name,mimeType,webViewLink)`, auth.token);
-  const rows: CandidateImport[] = [];
-  for (const file of list.files ?? []) {
-    let text = `${file.name}\n${file.webViewLink ?? ""}`;
-    try {
-      const isGoogleDoc = String(file.mimeType).includes("google-apps.document");
-      const exportUrl = isGoogleDoc
-        ? `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=text/plain`
-        : `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
-      const response = await fetch(exportUrl, { headers: { authorization: `Bearer ${auth.token}` } });
-      const downloaded = await response.text();
-      if (response.ok) text += `\n${downloaded.slice(0, 15000)}`;
-    } catch {
-      // Metadata still gives useful matching for filenames and links.
+  try {
+    const maxResults = numberFromConfig(config.maxResults, 50);
+    const query = cleanText(config.query) || "trashed=false and (name contains 'cv' or name contains 'CV' or name contains 'curriculum' or name contains 'Curriculum' or name contains 'resume' or name contains 'candidato')";
+    const list = await googleJson(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&pageSize=${maxResults}&fields=files(id,name,mimeType,webViewLink)`, auth.token);
+    const rows: CandidateImport[] = [];
+    for (const file of list.files ?? []) {
+      let text = `${file.name}\n${file.webViewLink ?? ""}`;
+      try {
+        const isGoogleDoc = String(file.mimeType).includes("google-apps.document");
+        const exportUrl = isGoogleDoc
+          ? `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=text/plain`
+          : `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
+        const response = await fetch(exportUrl, { headers: { authorization: `Bearer ${auth.token}` } });
+        const downloaded = await response.text();
+        if (response.ok) text += `\n${downloaded.slice(0, 15000)}`;
+      } catch {
+        // Metadata still gives useful matching for filenames and links.
+      }
+      const candidate = candidateFromFreeText("drive", text, {
+        sourceId: `drive:${file.id}`,
+        sourceUrl: file.webViewLink,
+        fileName: file.name
+      });
+      if (candidate) rows.push(candidate);
     }
-    const candidate = candidateFromFreeText("drive", text, {
-      sourceId: `drive:${file.id}`,
-      sourceUrl: file.webViewLink,
-      fileName: file.name
-    });
-    if (candidate) rows.push(candidate);
+    return {
+      rows,
+      configUpdate: { ...auth.configUpdate, sessionStatus: "connected", lastAgentMessage: `Drive: ${rows.length} candidatos detectados.` },
+      message: `Google Drive: ${list.files?.length ?? 0} archivos revisados, ${rows.length} candidatos detectados.`
+    };
+  } catch (error: any) {
+    const fallback = await googleWebFallback("drive", "Google Drive", config);
+    return {
+      ...fallback,
+      message: `Google Drive API no funciono (${cleanText(error?.message).slice(0, 120)}). ${fallback.message}`
+    };
   }
-  return {
-    rows,
-    configUpdate: { ...auth.configUpdate, sessionStatus: "connected", lastAgentMessage: `Drive: ${rows.length} candidatos detectados.` },
-    message: `Google Drive: ${list.files?.length ?? 0} archivos revisados, ${rows.length} candidatos detectados.`
-  };
 }
 
 async function fetchBuscojobsJson(url: string, config: Record<string, unknown>) {
