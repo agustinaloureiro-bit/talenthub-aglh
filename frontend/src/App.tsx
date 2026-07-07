@@ -375,9 +375,9 @@ function IntegrationDiagnostic({ integration }: { integration: any }) {
   const status = config.sessionStatus;
   const message = config.sessionLastError || config.lastAgentMessage;
   if (!status && !message) return null;
-  const isError = status === "requires_reconnect" || integration.status === "error";
+  const isError = String(status ?? "").startsWith("requires_") || integration.status === "error";
   return <div className={`mt-3 rounded-md border p-3 text-xs ${isError ? "border-red-200 bg-red-50 text-red-700" : "border-slate-200 bg-slate-50 text-slate-600"}`}>
-    {status && <div className="font-semibold">Sesion: {status === "requires_reconnect" ? "requiere reconexion" : status}</div>}
+    {status && <div className="font-semibold">Sesion: {String(status).replace(/_/g, " ")}</div>}
     {message && <div className="mt-1">{shortText(String(message), 220)}</div>}
     {config.sessionRefreshedAt && <div className="mt-1 text-slate-500">Renovada: {new Date(config.sessionRefreshedAt).toLocaleString()}</div>}
   </div>;

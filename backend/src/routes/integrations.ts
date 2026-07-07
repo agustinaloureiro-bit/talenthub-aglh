@@ -119,6 +119,10 @@ function decodeHtml(value: string) {
     .replace(/&Ntilde;/g, "N");
 }
 
+function normalizeWhitespace(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
 function htmlText(value: string) {
   return decodeHtml(value.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " "))
     .replace(/\s+/g, " ")
@@ -232,8 +236,20 @@ async function loginBuscojobsWithCredentials(config: Record<string, unknown>) {
   const loginUrls = unique([
     cleanText(config.loginUrl),
     "https://www.buscojobs.com.uy/login",
+    "https://www.buscojobs.com.uy/empresas/login",
+    "https://www.buscojobs.com.uy/login/empresa",
+    "https://www.buscojobs.com.uy/empresa/login",
     "https://www.buscojobs.com.uy/app/login",
+    "https://www.buscojobs.com.uy/app/empresa/login",
+    "https://www.buscojobs.com.uy/ingresar",
+    "https://www.buscojobs.com.uy/iniciar-sesion",
     "https://buscojobs.com.uy/login",
+    "https://buscojobs.com.uy/empresas/login",
+    "https://buscojobs.com.uy/login/empresa",
+    "https://buscojobs.com.uy/empresa/login",
+    "https://buscojobs.com.uy/app/empresa/login",
+    "https://buscojobs.com.uy/ingresar",
+    "https://buscojobs.com.uy/iniciar-sesion",
     "https://buscojobs.com.uy/app/login"
   ].filter(Boolean));
 
@@ -483,9 +499,21 @@ async function ensureBuscojobsBrowserSession(page: any, config: Record<string, u
   const loginUrls = unique([
     cleanText(config.loginUrl),
     "https://www.buscojobs.com.uy/login",
+    "https://www.buscojobs.com.uy/empresas/login",
+    "https://www.buscojobs.com.uy/login/empresa",
+    "https://www.buscojobs.com.uy/empresa/login",
     "https://www.buscojobs.com.uy/app/login",
+    "https://www.buscojobs.com.uy/app/empresa/login",
+    "https://www.buscojobs.com.uy/ingresar",
+    "https://www.buscojobs.com.uy/iniciar-sesion",
     "https://buscojobs.com.uy/login",
-    "https://buscojobs.com.uy/app/login"
+    "https://buscojobs.com.uy/empresas/login",
+    "https://buscojobs.com.uy/login/empresa",
+    "https://buscojobs.com.uy/empresa/login",
+    "https://buscojobs.com.uy/app/login",
+    "https://buscojobs.com.uy/app/empresa/login",
+    "https://buscojobs.com.uy/ingresar",
+    "https://buscojobs.com.uy/iniciar-sesion"
   ].filter(Boolean));
 
   for (const loginUrl of loginUrls) {
@@ -964,21 +992,20 @@ function extractCandidatesFromHtml(html: string, sourceUrl: string, offerTitle: 
   const seen = new Set<string>();
   const links = extractLinks(html, sourceUrl);
 
-  for (const link of links) {
-    if (!looksLikePersonName(link.text)) continue;
-    const position = html.indexOf(link.text);
-    const around = position >= 0 ? html.slice(Math.max(0, position - 500), position + 1500) : "";
-    const context = htmlText(around);
+  const addCandidate = (name: string, context: string, profileUrl?: string | null) => {
+    const cleanName = normalizeWhitespace(name);
+    if (!looksLikePersonName(cleanName)) return;
     const email = unique(context.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) ?? []);
     const phone = unique(context.match(/(?:\+?598\s?)?(?:0?9\d|2\d)\s?\d{3}\s?\d{3}/g) ?? []);
     const ageText = context.match(/(\d{2})\s*a[nñ]os/i)?.[1];
     const city = context.match(/(?:Montevideo|Canelones|Maldonado|San Jose|Colonia|Florida|Rocha|Paysandu|Salto|Rivera|Tacuarembo|Durazno|Soriano|Lavalleja|Artigas|Cerro Largo|Flores|Rio Negro|Treinta y Tres)(?:,\s*[^,|]+)?/i)?.[0] ?? null;
     const scoreText = context.match(/Adecuaci[oó]n\s*(\d{1,3})%/i)?.[1];
-    const key = `${link.text}|${link.url}`;
-    if (seen.has(key)) continue;
+    const sourceKey = profileUrl || `${sourceUrl}#${cleanName}:${email[0] ?? ""}:${phone[0] ?? ""}`;
+    const key = `${cleanName}|${sourceKey}`;
+    if (seen.has(key)) return;
     seen.add(key);
     candidates.push({
-      fullName: link.text,
+      fullName: cleanName,
       email,
       phone,
       city,
@@ -986,12 +1013,42 @@ function extractCandidatesFromHtml(html: string, sourceUrl: string, offerTitle: 
       currentRole: offerTitle || null,
       years: null,
       tags: unique(["buscojobs", offerTitle].filter(Boolean)),
-      summary: ageText ? `${ageText} anos. ${context.slice(0, 300)}` : context.slice(0, 300),
+      summary: ageText ? `${ageText} anos. ${context.slice(0, 500)}` : context.slice(0, 500),
       qualityScore: scoreText ? Math.max(0, Math.min(100, Number(scoreText))) : 0,
-      sourceId: link.url,
-      sourceUrl: link.url,
-      raw: { sourceUrl, profileUrl: link.url, offerTitle, context }
+      sourceId: sourceKey,
+      sourceUrl: profileUrl || sourceUrl,
+      raw: { sourceUrl, profileUrl, offerTitle, context }
     });
+  };
+
+  for (const link of links) {
+    if (!looksLikePersonName(link.text)) continue;
+    const position = html.indexOf(link.text);
+    const around = position >= 0 ? html.slice(Math.max(0, position - 500), position + 1500) : "";
+    const context = htmlText(around);
+    addCandidate(link.text, context, link.url);
+  }
+
+  const plainText = htmlText(html);
+  const emailMatches = [...plainText.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)];
+  for (const match of emailMatches) {
+    const index = match.index ?? 0;
+    const context = plainText.slice(Math.max(0, index - 700), index + 900);
+    const beforeEmail = context.slice(0, Math.max(0, context.indexOf(match[0])));
+    const name = beforeEmail
+      .split(/[|•·\n\r]/)
+      .map((part) => normalizeWhitespace(part))
+      .reverse()
+      .find((part) => looksLikePersonName(part));
+    if (name) addCandidate(name, context, sourceUrl);
+  }
+
+  const rowRegex = /([A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{3,35}\s+[A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{2,45})(?=[\s\S]{0,260}(?:Adecuaci[oó]n|Postulad|CV|Curriculum|Edad|a[nñ]os|Montevideo|Canelones|Maldonado|San Jose|Colonia|Florida|Rocha|Paysandu|Salto|Rivera))/g;
+  let rowMatch: RegExpExecArray | null;
+  while ((rowMatch = rowRegex.exec(plainText))) {
+    const index = rowMatch.index;
+    const context = plainText.slice(Math.max(0, index - 350), index + 900);
+    addCandidate(rowMatch[1], context, sourceUrl);
   }
 
   return candidates;
@@ -1597,7 +1654,7 @@ async function syncIntegration(integrationId: string) {
       : `Historico procesado: ${newRecords} nuevos, ${updatedRecords} actualizados, ${errors} omitidos.`;
   } else if (scraperResult) {
     message = scraperResult.message;
-    if (scraperResult.configUpdate?.sessionStatus === "requires_reconnect") {
+    if (/^requires_/i.test(cleanText(scraperResult.configUpdate?.sessionStatus))) {
       status = "error";
       errors = 1;
     }
@@ -1642,7 +1699,10 @@ async function syncIntegration(integrationId: string) {
 export async function syncConnectedIntegrations() {
   await ensureDefaultIntegrations();
   const integrations = await q<{ id: string }>(
-    "SELECT id FROM integrations WHERE status='connected' ORDER BY name"
+    `SELECT id FROM integrations
+     WHERE status NOT IN ('not_configured','soon')
+       AND config <> '{}'::jsonb
+     ORDER BY name`
   );
   const results = [];
   for (const row of integrations.rows) {
