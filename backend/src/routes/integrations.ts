@@ -16,7 +16,7 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-07.4";
+const SYNC_ENGINE_VERSION = "2026-07-07.5";
 
 function maskConfig(config: Record<string, unknown> | null) {
   if (!config) return {};
@@ -104,6 +104,21 @@ function unique(items: string[]) {
 function numberFromConfig(value: unknown, fallback: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
 }
 
 function decodeHtml(value: string) {
@@ -2227,7 +2242,11 @@ async function syncIntegration(integrationId: string) {
       }), integrationId]
     );
     try {
-      scraperResult = await agent.sync(config);
+      scraperResult = await withTimeout(
+        agent.sync(config),
+        numberFromConfig(config.syncTimeoutMs, 70_000),
+        `${agent.name} no respondio a tiempo. Proba sincronizar esa fuente sola o vuelve a guardar la sesion.`
+      );
       if (scraperResult.configUpdate) {
         await q(
           "UPDATE integrations SET config=config || $1::jsonb, updated_at=now() WHERE id=$2",
