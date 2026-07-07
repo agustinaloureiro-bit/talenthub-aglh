@@ -306,6 +306,31 @@ function authFromConfig(config: Record<string, unknown>) {
   };
 }
 
+function hasBuscojobsCredentials(config: Record<string, unknown>) {
+  return Boolean(cleanText(config.username ?? config.email ?? config.user) && cleanText(config.password));
+}
+
+function prepareConfigForSave(integrationId: string, config?: Record<string, unknown>) {
+  if (!config) return null;
+  const next = { ...config };
+  if (integrationId !== "buscojobs") return next;
+
+  const hasCredentials = hasBuscojobsCredentials(next);
+  const providedSession = ["apiKey", "token", "accessToken", "sessionCookies", "cookies", "cookie"]
+    .some((key) => key in next && cleanText(next[key]).length > 0);
+
+  if (hasCredentials && !providedSession) {
+    for (const key of ["apiKey", "token", "accessToken", "sessionCookies", "cookies", "cookie", "sessionId"]) {
+      next[key] = null;
+    }
+    next.sessionStatus = "credentials_saved";
+    next.sessionLastError = null;
+    next.lastAgentMessage = "Credenciales guardadas. En la proxima sincronizacion TalentHub intentara iniciar sesion y traer postulantes.";
+  }
+
+  return next;
+}
+
 function deepFindTextByKey(value: unknown, patterns: RegExp[], depth = 0): string | null {
   if (!value || depth > 6) return null;
   if (typeof value !== "object") return null;
@@ -419,7 +444,7 @@ async function fetchBuscojobsJson(url: string, config: Record<string, unknown>) 
     throw new Error("Buscojobs devolvio cache 304. Copia otra vez la llamada como cURL con Disable cache activado.");
   }
   if (response.status === 401 && /JWTExpired|INVALID_TOKEN|claim timestamp check failed/i.test(text)) {
-    throw new Error("La sesion/API de Buscojobs vencio. Entra otra vez a Buscojobs, copia una llamada Fetch/XHR nueva como cURL y guardala en Configurar.");
+    throw new Error("La sesion/API de Buscojobs vencio.");
   }
   if (!response.ok) throw new Error(`Buscojobs API respondio ${response.status}: ${text.slice(0, 160)}`);
   try {
@@ -886,6 +911,26 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
             }
           };
         }
+
+        return {
+          rows: [] as CandidateImport[],
+          configUpdate: {
+            apiKey: null,
+            token: null,
+            accessToken: null,
+            sessionCookies: null,
+            cookies: null,
+            cookie: null,
+            sessionStatus: "requires_reconnect",
+            sessionFailedAt: new Date().toISOString(),
+            sessionLastError: hasBuscojobsCredentials(config)
+              ? "El token viejo vencio y TalentHub no pudo renovar la sesion automaticamente con las credenciales guardadas."
+              : "El token viejo vencio. Guarda usuario/email y contrasena de Buscojobs en Configurar para que TalentHub intente iniciar sesion automaticamente."
+          },
+          message: hasBuscojobsCredentials(config)
+            ? "Buscojobs: el token viejo vencio y el login automatico con las credenciales guardadas no logro renovar la sesion. Puede requerir CAPTCHA/2FA o un endpoint de login especifico."
+            : "Buscojobs: el token viejo vencio. Guarda usuario/email y contrasena en Configurar; TalentHub dejara de depender del cURL vencido."
+        };
       }
       throw error;
     }
@@ -1240,6 +1285,7 @@ integrationsRouter.patch("/:id", requireRole("admin"), asyncHandler(async (req, 
     status: z.enum(["not_configured", "connected", "warning", "error", "soon"]).optional(),
     config: z.record(z.any()).optional()
   }).parse(req.body);
+  const configToSave = prepareConfigForSave(String(req.params.id), body.config);
   const { rows } = await q(
     `INSERT INTO integrations (id, name, status, config)
      VALUES ($3,$4,coalesce($1,'connected'),coalesce($2::jsonb,'{}'::jsonb))
@@ -1248,7 +1294,7 @@ integrationsRouter.patch("/:id", requireRole("admin"), asyncHandler(async (req, 
        config=integrations.config || coalesce($2::jsonb,'{}'::jsonb),
        updated_at=now()
      RETURNING *`,
-    [body.status, body.config ? JSON.stringify(body.config) : null, req.params.id, DEFAULT_INTEGRATIONS.find(([id]) => id === req.params.id)?.[1] ?? req.params.id]
+    [body.status, configToSave ? JSON.stringify(configToSave) : null, req.params.id, DEFAULT_INTEGRATIONS.find(([id]) => id === req.params.id)?.[1] ?? req.params.id]
   );
   if (!rows[0]) return res.status(404).json({ error: "Integracion no encontrada" });
   res.json({ data: { ...rows[0], config: maskConfig(rows[0].config) } });
