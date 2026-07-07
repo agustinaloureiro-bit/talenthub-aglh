@@ -48,6 +48,7 @@ export type AgentSearchQuery = {
 export type AgentSyncResult = {
   rows: CandidateImport[];
   message: string;
+  configUpdate?: Record<string, unknown>;
 };
 
 export type IntegrationAgent = {
