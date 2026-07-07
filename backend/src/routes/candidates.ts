@@ -72,6 +72,223 @@ function expandedSearchTerms(query: string) {
     .map((term) => `%${term}%`);
 }
 
+const importSchema = z.object({
+  sourceType: z.string().trim().min(1).default("manual"),
+  data: z.string().min(1)
+});
+
+type ImportedCandidate = {
+  fullName: string;
+  email: string[];
+  phone: string[];
+  city?: string | null;
+  country?: string | null;
+  linkedinUrl?: string | null;
+  currentRole?: string | null;
+  tags: string[];
+  summary?: string | null;
+  sourceId?: string | null;
+  sourceUrl?: string | null;
+  rawText?: string | null;
+  raw: Record<string, unknown>;
+};
+
+function cleanText(value: unknown) {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function unique(values: unknown[]) {
+  return [...new Set(values.map(cleanText).filter(Boolean))];
+}
+
+function listFrom(value: unknown) {
+  if (Array.isArray(value)) return unique(value);
+  return unique(String(value ?? "").split(/[,;|\n]+/));
+}
+
+function extractEmails(text: string) {
+  return unique(text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) ?? []).map((email) => email.toLowerCase());
+}
+
+function extractPhones(text: string) {
+  return unique(text.match(/(?:\+?\d[\d\s().-]{6,}\d)/g) ?? []).map((phone) => phone.replace(/\s+/g, " ").trim());
+}
+
+function firstValue(row: Record<string, unknown>, names: string[]) {
+  const normalized = new Map(Object.entries(row).map(([key, value]) => [key.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, ""), value]));
+  for (const name of names) {
+    const value = normalized.get(name.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, ""));
+    if (cleanText(value)) return cleanText(value);
+  }
+  return "";
+}
+
+function parseDelimited(data: string) {
+  const lines = data.replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim());
+  if (lines.length < 2) return [];
+  const headerLine = lines[0];
+  const separators = [";", "\t", ","];
+  const separator = separators
+    .map((sep) => ({ sep, count: headerLine.split(sep).length }))
+    .sort((a, b) => b.count - a.count)[0].sep;
+  const parseLine = (line: string) => {
+    const cells: string[] = [];
+    let cell = "";
+    let quoted = false;
+    for (let i = 0; i < line.length; i += 1) {
+      const char = line[i];
+      const next = line[i + 1];
+      if (char === '"' && quoted && next === '"') {
+        cell += '"';
+        i += 1;
+      } else if (char === '"') {
+        quoted = !quoted;
+      } else if (char === separator && !quoted) {
+        cells.push(cell.trim());
+        cell = "";
+      } else {
+        cell += char;
+      }
+    }
+    cells.push(cell.trim());
+    return cells;
+  };
+  const headers = parseLine(headerLine).map(cleanText);
+  if (headers.length < 2) return [];
+  return lines.slice(1).map((line) => {
+    const cells = parseLine(line);
+    return Object.fromEntries(headers.map((header, index) => [header || `columna_${index + 1}`, cells[index] ?? ""]));
+  });
+}
+
+function rowsFromImportData(data: string) {
+  const trimmed = data.trim();
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) return parsed.filter((item) => item && typeof item === "object") as Record<string, unknown>[];
+    if (parsed && typeof parsed === "object") return [parsed as Record<string, unknown>];
+  } catch {
+    // Not JSON; continue with CSV/TSV/free text parsing.
+  }
+  const delimited = parseDelimited(trimmed);
+  if (delimited.length) return delimited;
+  return trimmed
+    .split(/\n\s*\n|(?=\n[A-ZÁÉÍÓÚÑ][^\n]{2,80}\s*(?:\n|$))/u)
+    .map((chunk, index) => ({ Texto: chunk.trim(), sourceId: `text-${index + 1}` }))
+    .filter((row) => cleanText(row.Texto));
+}
+
+function isLikelyPersonName(name: string) {
+  const cleaned = cleanText(name);
+  if (cleaned.length < 4 || cleaned.length > 90) return false;
+  if (/@|https?:|www\.|\.com|\d{3,}|buscojobs|gmail|drive|linkedin/i.test(cleaned)) return false;
+  if (/(seleccion|busqueda|oferta|vacante|cargo|empresa|zona|barrio|departamento|postulacion|actualizacion|proceso)/i.test(cleaned)) return false;
+  const parts = cleaned.split(/\s+/).filter(Boolean);
+  return parts.length >= 2 || /^[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+$/u.test(cleaned);
+}
+
+function candidateFromRow(row: Record<string, unknown>, sourceType: string): ImportedCandidate | null {
+  const allText = Object.values(row).map(cleanText).filter(Boolean).join("\n");
+  const textField = firstValue(row, ["texto", "text", "rawText", "raw_text", "cv", "curriculum", "contenido", "body", "mensaje"]) || allText;
+  const email = unique([
+    ...listFrom(firstValue(row, ["email", "mail", "correo", "correo electronico", "e-mail"])),
+    ...extractEmails(allText)
+  ]).map((mail) => mail.toLowerCase());
+  const phone = unique([
+    ...listFrom(firstValue(row, ["telefono", "teléfono", "celular", "phone", "mobile", "whatsapp"])),
+    ...extractPhones(allText)
+  ]);
+  let fullName = firstValue(row, ["fullName", "full_name", "nombre completo", "nombre", "name", "postulante", "candidato", "persona"]);
+  if (!isLikelyPersonName(fullName)) {
+    const lines = textField.split(/\r?\n/).map(cleanText).filter(Boolean);
+    fullName = lines.find(isLikelyPersonName) ?? "";
+  }
+  if (!isLikelyPersonName(fullName) && !email.length) return null;
+  if (!isLikelyPersonName(fullName)) fullName = email[0].split("@")[0].replace(/[._-]+/g, " ");
+  const currentRole = firstValue(row, ["cargo", "puesto", "rol", "role", "position", "postulacion", "postulación", "vacante", "oferta", "currentRole", "current_role"]);
+  const city = firstValue(row, ["ciudad", "city", "ubicacion", "ubicación", "location", "localidad"]);
+  const country = firstValue(row, ["pais", "país", "country"]);
+  const linkedinUrl = firstValue(row, ["linkedin", "linkedinUrl", "linkedin_url", "profileUrl", "profile_url", "url"]);
+  const summary = firstValue(row, ["resumen", "summary", "notas", "notes", "experiencia", "perfil"]) || (textField.length > 30 ? textField.slice(0, 2000) : "");
+  const tags = unique([
+    ...listFrom(firstValue(row, ["tags", "skills", "habilidades", "competencias", "area", "área"])),
+    ...(currentRole ? [currentRole] : [])
+  ]).slice(0, 20);
+  return {
+    fullName: cleanText(fullName),
+    email,
+    phone,
+    city: city || null,
+    country: country || null,
+    linkedinUrl: linkedinUrl || null,
+    currentRole: currentRole || null,
+    tags,
+    summary: summary || null,
+    sourceId: firstValue(row, ["id", "sourceId", "source_id", "candidateId", "candidate_id", "postulanteId", "postulacionId"]) || email[0] || `${sourceType}-${fullName}`,
+    sourceUrl: linkedinUrl || firstValue(row, ["url", "sourceUrl", "source_url"]) || null,
+    rawText: textField || null,
+    raw: row
+  };
+}
+
+async function upsertImportedCandidate(sourceType: string, candidate: ImportedCandidate) {
+  const existing = candidate.email.length
+    ? await q("SELECT * FROM candidates WHERE duplicate_of IS NULL AND email && $1::text[] ORDER BY updated_at DESC LIMIT 1", [candidate.email])
+    : candidate.phone.length
+      ? await q("SELECT * FROM candidates WHERE duplicate_of IS NULL AND phone && $1::text[] ORDER BY updated_at DESC LIMIT 1", [candidate.phone])
+      : { rows: [] };
+  let row;
+  let created = false;
+  if (existing.rows[0]) {
+    const current = existing.rows[0];
+    const { rows } = await q(
+      `UPDATE candidates SET
+        full_name=coalesce(nullif($2,''), full_name),
+        email=(SELECT coalesce(array_agg(DISTINCT value), '{}') FROM unnest(coalesce(email,'{}') || $3::text[]) value),
+        phone=(SELECT coalesce(array_agg(DISTINCT value), '{}') FROM unnest(coalesce(phone,'{}') || $4::text[]) value),
+        city=coalesce($5, city),
+        country=coalesce($6, country),
+        linkedin_url=coalesce($7, linkedin_url),
+        "current_role"=coalesce($8, "current_role"),
+        ai_tags=(SELECT coalesce(array_agg(DISTINCT value), '{}') FROM unnest(coalesce(ai_tags,'{}') || $9::text[]) value),
+        ai_summary=coalesce($10, ai_summary),
+        last_seen_at=now(),
+        updated_at=now()
+       WHERE id=$1 RETURNING *`,
+      [current.id, candidate.fullName, candidate.email, candidate.phone, candidate.city, candidate.country, candidate.linkedinUrl, candidate.currentRole, candidate.tags, candidate.summary]
+    );
+    row = rows[0];
+  } else {
+    const { rows } = await q(
+      `INSERT INTO candidates (full_name, email, phone, city, country, linkedin_url, "current_role", ai_tags, ai_summary, quality_score, status, last_seen_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,50,'active',now())
+       RETURNING *`,
+      [candidate.fullName, candidate.email, candidate.phone, candidate.city, candidate.country, candidate.linkedinUrl, candidate.currentRole, candidate.tags, candidate.summary]
+    );
+    row = rows[0];
+    created = true;
+  }
+
+  const source = await q<{ id: string }>(
+    "SELECT id FROM candidate_sources WHERE candidate_id=$1 AND source_type=$2 AND coalesce(source_id,'')=coalesce($3,'') LIMIT 1",
+    [row.id, sourceType, candidate.sourceId]
+  );
+  if (source.rows[0]) {
+    await q("UPDATE candidate_sources SET source_url=coalesce($1,source_url), source_data=$2::jsonb, last_synced_at=now(), is_active=true WHERE id=$3", [candidate.sourceUrl, JSON.stringify(candidate.raw), source.rows[0].id]);
+  } else {
+    await q("INSERT INTO candidate_sources (candidate_id, source_type, source_id, source_url, source_data) VALUES ($1,$2,$3,$4,$5::jsonb)", [row.id, sourceType, candidate.sourceId, candidate.sourceUrl, JSON.stringify(candidate.raw)]);
+  }
+  if (candidate.rawText && candidate.rawText.length > 20) {
+    await q(
+      `INSERT INTO documents (candidate_id, type, file_name, raw_text, source_type, source_id, is_primary_cv)
+       VALUES ($1,'import', $2, $3, $4, $5, true)`,
+      [row.id, `${candidate.fullName} - importacion`, candidate.rawText.slice(0, 50000), sourceType, candidate.sourceId]
+    );
+  }
+  await q("UPDATE candidates SET source_count=(SELECT count(*)::int FROM candidate_sources WHERE candidate_id=$1) WHERE id=$1", [row.id]);
+  return { created, candidate: mapCandidate(row) };
+}
+
 
 candidatesRouter.get("/", asyncHandler(async (req, res) => {
   const search = String(req.query.search ?? "");
@@ -125,6 +342,30 @@ candidatesRouter.post("/", requireRole("recruiter"), asyncHandler(async (req, re
   );
   await q("INSERT INTO audit_logs (user_id, action, entity_type, entity_id) VALUES ($1,'create','candidate',$2)", [req.user!.id, rows[0].id]);
   res.status(201).json({ data: mapCandidate(rows[0]) });
+}));
+
+candidatesRouter.post("/import", requireRole("recruiter"), asyncHandler(async (req, res) => {
+  const body = importSchema.parse(req.body);
+  const rows = rowsFromImportData(body.data).slice(0, 5000);
+  let created = 0;
+  let updated = 0;
+  let skipped = 0;
+  const imported = [];
+
+  for (const sourceRow of rows) {
+    const candidate = candidateFromRow(sourceRow, body.sourceType);
+    if (!candidate) {
+      skipped += 1;
+      continue;
+    }
+    const saved = await upsertImportedCandidate(body.sourceType, candidate);
+    if (saved.created) created += 1;
+    else updated += 1;
+    imported.push(saved.candidate);
+  }
+
+  await q("INSERT INTO audit_logs (user_id, action, entity_type) VALUES ($1,'import','candidate')", [req.user!.id]);
+  res.status(201).json({ data: imported, meta: { total: rows.length, created, updated, skipped } });
 }));
 
 candidatesRouter.get("/:id", asyncHandler(async (req, res) => {

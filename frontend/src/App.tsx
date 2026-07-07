@@ -144,6 +144,7 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
   const [items, setItems] = useState<Candidate[]>([]);
   const [search, setSearch] = useState("");
   const [showForm, setShowForm] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [meta, setMeta] = useState<{ total: number; returned: number } | null>(null);
@@ -167,16 +168,91 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
       <div className="mb-4 flex flex-wrap gap-2">
         <input className="field max-w-md" placeholder="Buscar por nombre, rol o tag" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && load()} />
         <button className="btn-ghost" onClick={load} disabled={loading}><Search size={16} /> {loading ? "Cargando..." : "Buscar"}</button>
+        <button className="btn-ghost" onClick={() => setShowImport(!showImport)}><Database size={16} /> Importar candidatos</button>
         <button className="btn-primary" onClick={() => setShowForm(!showForm)}><Plus size={16} /> Nuevo candidato</button>
       </div>
       {error && <ErrorBox message={error} />}
       {!error && meta && <div className="mb-3 text-sm text-slate-500">{meta.total} candidatos en base Â· mostrando {meta.returned}</div>}
+      {showImport && <CandidateImportPanel onImported={() => { setShowImport(false); load(); }} />}
       {showForm && <CandidateForm onSaved={() => { setShowForm(false); load(); }} />}
       <div className="grid gap-3">
         {!loading && !error && items.length === 0 && <Empty text="No hay candidatos cargados. Crea el primero o conecta una integracion real." />}
         {items.map((c) => <CandidateRow key={c.id} candidate={c} onView={onView} />)}
       </div>
     </PagePad>
+  );
+}
+
+function CandidateImportPanel({ onImported }: { onImported: () => void }) {
+  const [sourceType, setSourceType] = useState("manual");
+  const [data, setData] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  async function readFile(file?: File) {
+    if (!file) return;
+    setError("");
+    const text = await file.text();
+    setData(text);
+    setMessage(`${file.name} cargado para importar.`);
+  }
+
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    if (!data.trim()) {
+      setError("Pega texto o carga un archivo primero.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const response = await api<{ meta: { total: number; created: number; updated: number; skipped: number } }>("/candidates/import", {
+        method: "POST",
+        body: JSON.stringify({ sourceType, data })
+      });
+      setMessage(`${response.meta.created} nuevos, ${response.meta.updated} actualizados, ${response.meta.skipped} omitidos.`);
+      onImported();
+    } catch (err: any) {
+      setError(err.message || "No se pudo importar.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="card mb-4 grid gap-3 p-4">
+      <div className="grid gap-3 md:grid-cols-[220px_1fr]">
+        <div>
+          <label className="label">Fuente</label>
+          <select className="field" value={sourceType} onChange={(e) => setSourceType(e.target.value)}>
+            <option value="manual">Manual / planilla</option>
+            <option value="buscojobs_export">Buscojobs export</option>
+            <option value="gmail_export">Gmail / emails</option>
+            <option value="drive_export">Drive / CVs</option>
+            <option value="yoiners_export">Yoiners export</option>
+            <option value="aglh_export">AGLH export</option>
+          </select>
+        </div>
+        <div>
+          <label className="label">Archivo CSV/TSV/TXT/JSON</label>
+          <input className="field" type="file" accept=".csv,.tsv,.txt,.json" onChange={(e) => readFile(e.target.files?.[0])} />
+        </div>
+      </div>
+      <div>
+        <label className="label">Datos</label>
+        <textarea
+          className="field min-h-48 font-mono text-xs"
+          placeholder="Pega aca candidatos, CVs, correos o una exportacion con columnas como nombre, email, telefono, cargo, ciudad, tags..."
+          value={data}
+          onChange={(e) => setData(e.target.value)}
+        />
+      </div>
+      {error && <ErrorBox message={error} />}
+      {message && <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{message}</div>}
+      <button className="btn-primary w-fit" disabled={busy}><Database size={16} /> {busy ? "Importando..." : "Importar a candidatos"}</button>
+    </form>
   );
 }
 
