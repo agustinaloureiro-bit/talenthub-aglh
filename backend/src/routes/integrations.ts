@@ -19,10 +19,10 @@ const DEFAULT_INTEGRATIONS = [
 function maskConfig(config: Record<string, unknown> | null) {
   if (!config) return {};
   const masked = { ...config };
-  const visibleDiagnostics = new Set(["sessionStatus", "sessionRefreshedAt", "sessionFailedAt", "sessionLastError", "lastAgentMessage"]);
+  const visibleDiagnostics = new Set(["sessionStatus", "sessionRefreshedAt", "sessionFailedAt", "sessionLastError", "lastAgentMessage", "oauthStatus"]);
   for (const key of Object.keys(masked)) {
     if (visibleDiagnostics.has(key)) continue;
-    if (/password|token|secret|cookie|session|key|browserStorageState/i.test(key) && masked[key]) {
+    if (/password|token|secret|cookie|session|key|browserStorageState|clientSecret|refreshToken/i.test(key) && masked[key]) {
       masked[key] = "********";
     }
   }
@@ -97,6 +97,11 @@ function listFrom(value: unknown) {
 
 function unique(items: string[]) {
   return [...new Set(items.map((item) => item.trim()).filter(Boolean))];
+}
+
+function numberFromConfig(value: unknown, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function decodeHtml(value: string) {
@@ -326,6 +331,10 @@ function hasBuscojobsCredentials(config: Record<string, unknown>) {
   return Boolean(cleanText(config.username ?? config.email ?? config.user) && cleanText(config.password));
 }
 
+function hasUsernamePassword(config: Record<string, unknown>) {
+  return Boolean(cleanText(config.username ?? config.email ?? config.user) && cleanText(config.password));
+}
+
 function prepareConfigForSave(integrationId: string, config?: Record<string, unknown>) {
   if (!config) return null;
   const next = { ...config };
@@ -485,6 +494,10 @@ function pageLooksLoggedIn(url: string, text: string) {
     && !/iniciar sesion|iniciar sesión|login|captcha|verifica que eres|verifica que sos/i.test(text.slice(0, 4000));
 }
 
+function genericPageLooksLoggedIn(text: string) {
+  return !/iniciar sesion|iniciar sesión|login|captcha|verifica que eres|verifica que sos|contrase[nñ]a|password/i.test(text.slice(0, 3000));
+}
+
 async function ensureBuscojobsBrowserSession(page: any, config: Record<string, unknown>) {
   const username = cleanText(config.username ?? config.email ?? config.user);
   const password = cleanText(config.password);
@@ -562,9 +575,247 @@ async function ensureBuscojobsBrowserSession(page: any, config: Record<string, u
   return false;
 }
 
+async function ensureGenericBrowserSession(page: any, config: Record<string, unknown>) {
+  const baseUrl = cleanText(config.baseUrl ?? config.url);
+  const loginUrl = cleanText(config.loginUrl) || baseUrl;
+  const username = cleanText(config.username ?? config.email ?? config.user);
+  const password = cleanText(config.password);
+  if (!baseUrl && !loginUrl) return false;
+
+  await page.goto(baseUrl || loginUrl, { waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => null);
+  await page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => null);
+  let text = await page.locator("body").innerText({ timeout: 5000 }).catch(() => "");
+  if (genericPageLooksLoggedIn(text) && /candidato|postulante|talento|curriculum|cv|perfil|proceso|busqueda|búsqueda/i.test(text)) return true;
+  if (!username || !password) return false;
+
+  await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => null);
+  await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
+  const filledUser = await fillFirstVisible(page, [
+    cleanText(config.usernameSelector),
+    "input[type='email']",
+    "input[name*='email' i]",
+    "input[name*='mail' i]",
+    "input[name*='usuario' i]",
+    "input[name*='user' i]",
+    "input[name*='login' i]",
+    "input[type='text']"
+  ].filter(Boolean), username);
+  const filledPassword = await fillFirstVisible(page, [
+    cleanText(config.passwordSelector),
+    "input[type='password']",
+    "input[name*='password' i]",
+    "input[name*='pass' i]",
+    "input[name*='clave' i]",
+    "input[name*='contras' i]"
+  ].filter(Boolean), password);
+  if (!filledUser || !filledPassword) return false;
+  await clickFirstVisible(page, [
+    cleanText(config.submitSelector),
+    "button[type='submit']",
+    "input[type='submit']",
+    "button:has-text('Ingresar')",
+    "button:has-text('Entrar')",
+    "button:has-text('Acceder')",
+    "button:has-text('Login')",
+    "text=Ingresar",
+    "text=Entrar"
+  ].filter(Boolean));
+  await page.waitForLoadState("networkidle", { timeout: 18000 }).catch(() => null);
+  await page.goto(baseUrl || page.url(), { waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => null);
+  await page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => null);
+  text = await page.locator("body").innerText({ timeout: 5000 }).catch(() => "");
+  return genericPageLooksLoggedIn(text);
+}
+
 function apiUrlFromCurl(config: Record<string, unknown>) {
   const raw = cleanText(config.sessionCookies ?? config.cookies ?? config.cookie);
   return raw.match(/curl\s+\^?"([^"]*api\.buscojobs\.com[^"]+)"/i)?.[1]?.replace(/\^/g, "") ?? null;
+}
+
+function decodeBase64Url(value: string) {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  return Buffer.from(normalized, "base64").toString("utf8");
+}
+
+function candidateFromFreeText(sourceType: string, text: string, options: { sourceId?: string | null; sourceUrl?: string | null; currentRole?: string | null; fileName?: string | null } = {}): CandidateImport | null {
+  const content = normalizeWhitespace(text);
+  if (!content || content.length < 8) return null;
+  const email = extractEmails(content);
+  const phone = extractPhones(content);
+  const explicitName = content.match(/(?:nombre|name|candidato|postulante)\s*[:\-]\s*([A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{4,80})/i)?.[1];
+  const firstLikelyName = content
+    .split(/[|•\n\r,]/)
+    .map((part) => normalizeWhitespace(part))
+    .find((part) => candidateNameLooksReal(part));
+  const fromEmailName = email[0]?.split("@")[0]
+    ?.replace(/[._-]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+  const fullName = explicitName || firstLikelyName || (fromEmailName && candidateNameLooksReal(fromEmailName) ? fromEmailName : "") || email[0] || phone[0];
+  if (!fullName) return null;
+
+  const role = compactLabel(options.currentRole ?? content.match(/(?:cargo|puesto|rol|postulaci[oó]n)\s*[:\-]\s*([^.;\n\r]{3,70})/i)?.[1], "Candidato importado");
+  return {
+    fullName,
+    email,
+    phone,
+    city: content.match(/(?:Montevideo|Canelones|Maldonado|San Jose|Colonia|Florida|Rocha|Paysandu|Salto|Rivera|Tacuarembo|Durazno|Soriano|Lavalleja|Artigas|Cerro Largo|Flores|Rio Negro|Treinta y Tres)/i)?.[0] ?? null,
+    country: "Uruguay",
+    currentRole: role,
+    years: null,
+    tags: safeTags([role], sourceType),
+    summary: content.slice(0, 900),
+    qualityScore: 0,
+    sourceId: options.sourceId ?? `${sourceType}:${email[0] ?? phone[0] ?? fullName}`,
+    sourceUrl: options.sourceUrl ?? null,
+    documents: [{
+      type: "cv",
+      fileName: options.fileName || `${fullName} - ${sourceType}`,
+      rawText: content,
+      sourceId: options.sourceId ?? null,
+      sourcePath: options.sourceUrl ?? null,
+      isPrimaryCv: true
+    }],
+    raw: { text: content, sourceUrl: options.sourceUrl, fileName: options.fileName }
+  };
+}
+
+async function googleAccessToken(config: Record<string, unknown>) {
+  const direct = cleanText(config.accessToken ?? config.token ?? config.apiKey).replace(/^Bearer\s+/i, "");
+  if (direct) return { token: direct, configUpdate: {} };
+  const refreshToken = cleanText(config.refreshToken);
+  const clientId = cleanText(config.clientId);
+  const clientSecret = cleanText(config.clientSecret);
+  if (!refreshToken || !clientId || !clientSecret) return null;
+
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      grant_type: "refresh_token"
+    })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.access_token) {
+    throw new Error(`Google OAuth no pudo renovar token: ${JSON.stringify(payload).slice(0, 180)}`);
+  }
+  return {
+    token: String(payload.access_token),
+    configUpdate: {
+      accessToken: payload.access_token,
+      oauthStatus: "connected",
+      sessionRefreshedAt: new Date().toISOString(),
+      sessionLastError: null
+    }
+  };
+}
+
+async function googleJson(url: string, token: string) {
+  const response = await fetch(url, { headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(`Google API respondio ${response.status}: ${JSON.stringify(payload).slice(0, 180)}`);
+  return payload;
+}
+
+function gmailMessageText(message: any) {
+  const headers = Object.fromEntries((message.payload?.headers ?? []).map((header: any) => [String(header.name).toLowerCase(), String(header.value ?? "")]));
+  const parts: any[] = [];
+  const walk = (part: any) => {
+    if (!part) return;
+    parts.push(part);
+    for (const child of part.parts ?? []) walk(child);
+  };
+  walk(message.payload);
+  const bodyText = parts
+    .filter((part) => /text\/plain|text\/html/i.test(part.mimeType ?? "") && part.body?.data)
+    .map((part) => decodeBase64Url(String(part.body.data)))
+    .join("\n");
+  const attachmentNames = parts.map((part) => cleanText(part.filename)).filter(Boolean).join(" ");
+  return {
+    from: headers.from ?? "",
+    subject: headers.subject ?? "",
+    text: htmlText(`${headers.from ?? ""}\n${headers.subject ?? ""}\n${attachmentNames}\n${bodyText}`)
+  };
+}
+
+async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncResult> {
+  const auth = await googleAccessToken(config);
+  if (!auth) {
+    return {
+      rows: [],
+      configUpdate: {
+        sessionStatus: "requires_oauth",
+        sessionLastError: "Gmail necesita accessToken o refreshToken + clientId + clientSecret con permisos de Gmail."
+      },
+      message: "Gmail no esta conectado por OAuth/API. Guarda tokens de Google para sincronizar correos con CVs."
+    };
+  }
+  const query = cleanText(config.query) || "(cv OR curriculum OR resume OR candidato OR postulante OR linkedin OR selección OR seleccion) newer_than:3650d";
+  const maxResults = numberFromConfig(config.maxResults, 50);
+  const listUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`;
+  const list = await googleJson(listUrl, auth.token);
+  const rows: CandidateImport[] = [];
+  for (const item of list.messages ?? []) {
+    const message = await googleJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${item.id}?format=full`, auth.token);
+    const parsed = gmailMessageText(message);
+    const candidate = candidateFromFreeText("gmail", parsed.text, {
+      sourceId: `gmail:${item.id}`,
+      sourceUrl: `https://mail.google.com/mail/u/0/#all/${item.id}`,
+      currentRole: parsed.subject,
+      fileName: parsed.subject || "Correo Gmail"
+    });
+    if (candidate) rows.push(candidate);
+  }
+  return {
+    rows,
+    configUpdate: { ...auth.configUpdate, sessionStatus: "connected", lastAgentMessage: `Gmail: ${rows.length} candidatos detectados.` },
+    message: `Gmail: ${list.messages?.length ?? 0} correos revisados, ${rows.length} candidatos detectados.`
+  };
+}
+
+async function scrapeDrive(config: Record<string, unknown>): Promise<AgentSyncResult> {
+  const auth = await googleAccessToken(config);
+  if (!auth) {
+    return {
+      rows: [],
+      configUpdate: {
+        sessionStatus: "requires_oauth",
+        sessionLastError: "Google Drive necesita accessToken o refreshToken + clientId + clientSecret con permisos de Drive."
+      },
+      message: "Google Drive no esta conectado por OAuth/API. Guarda tokens de Google para sincronizar documentos."
+    };
+  }
+  const maxResults = numberFromConfig(config.maxResults, 50);
+  const query = cleanText(config.query) || "trashed=false and (name contains 'cv' or name contains 'CV' or name contains 'curriculum' or name contains 'Curriculum' or name contains 'resume' or name contains 'candidato')";
+  const list = await googleJson(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&pageSize=${maxResults}&fields=files(id,name,mimeType,webViewLink)`, auth.token);
+  const rows: CandidateImport[] = [];
+  for (const file of list.files ?? []) {
+    let text = `${file.name}\n${file.webViewLink ?? ""}`;
+    try {
+      const isGoogleDoc = String(file.mimeType).includes("google-apps.document");
+      const exportUrl = isGoogleDoc
+        ? `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=text/plain`
+        : `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
+      const response = await fetch(exportUrl, { headers: { authorization: `Bearer ${auth.token}` } });
+      const downloaded = await response.text();
+      if (response.ok) text += `\n${downloaded.slice(0, 15000)}`;
+    } catch {
+      // Metadata still gives useful matching for filenames and links.
+    }
+    const candidate = candidateFromFreeText("drive", text, {
+      sourceId: `drive:${file.id}`,
+      sourceUrl: file.webViewLink,
+      fileName: file.name
+    });
+    if (candidate) rows.push(candidate);
+  }
+  return {
+    rows,
+    configUpdate: { ...auth.configUpdate, sessionStatus: "connected", lastAgentMessage: `Drive: ${rows.length} candidatos detectados.` },
+    message: `Google Drive: ${list.files?.length ?? 0} archivos revisados, ${rows.length} candidatos detectados.`
+  };
 }
 
 async function fetchBuscojobsJson(url: string, config: Record<string, unknown>) {
@@ -987,7 +1238,7 @@ function looksLikePersonName(value: string) {
   return !/panel|oferta|candidato|postulado|preseleccionado|finalista|leer|mover|descargar|buscar|adecuacion|perfil/i.test(text);
 }
 
-function extractCandidatesFromHtml(html: string, sourceUrl: string, offerTitle: string) {
+function extractCandidatesFromHtml(html: string, sourceUrl: string, offerTitle: string, sourceType = "buscojobs") {
   const candidates: CandidateImport[] = [];
   const seen = new Set<string>();
   const links = extractLinks(html, sourceUrl);
@@ -1012,12 +1263,12 @@ function extractCandidatesFromHtml(html: string, sourceUrl: string, offerTitle: 
       country: "Uruguay",
       currentRole: offerTitle || null,
       years: null,
-      tags: unique(["buscojobs", offerTitle].filter(Boolean)),
+      tags: unique([sourceType, offerTitle].filter(Boolean)),
       summary: ageText ? `${ageText} anos. ${context.slice(0, 500)}` : context.slice(0, 500),
       qualityScore: scoreText ? Math.max(0, Math.min(100, Number(scoreText))) : 0,
-      sourceId: sourceKey,
+      sourceId: `${sourceType}:${sourceKey}`,
       sourceUrl: profileUrl || sourceUrl,
-      raw: { sourceUrl, profileUrl, offerTitle, context }
+      raw: { sourceType, sourceUrl, profileUrl, offerTitle, context }
     });
   };
 
@@ -1186,6 +1437,106 @@ async function scrapeBuscojobsWithBrowser(config: Record<string, unknown>, prefi
   }
 }
 
+async function scrapeGenericWebSource(sourceType: string, displayName: string, config: Record<string, unknown>): Promise<AgentSyncResult> {
+  const baseUrl = cleanText(config.baseUrl ?? config.url);
+  const searchUrls = unique([
+    ...listFrom(config.searchUrls),
+    baseUrl
+  ]).filter(Boolean);
+  if (searchUrls.length === 0) {
+    return {
+      rows: [],
+      configUpdate: {
+        sessionStatus: "requires_config",
+        sessionLastError: `${displayName} necesita URL/baseUrl o searchUrls para saber donde buscar candidatos.`
+      },
+      message: `${displayName}: falta configurar URL/baseUrl o searchUrls.`
+    };
+  }
+
+  let playwright: any;
+  try {
+    playwright = await loadPlaywright();
+  } catch {
+    return {
+      rows: [],
+      configUpdate: {
+        sessionStatus: "requires_browser",
+        sessionLastError: "El servidor no tiene navegador automatico instalado todavia."
+      },
+      message: `${displayName}: necesita navegador automatico desplegado.`
+    };
+  }
+
+  const browser = await playwright.chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+  try {
+    const storageState = browserStorageStateFromConfig(config);
+    const context = await browser.newContext({
+      ...(storageState ? { storageState } : {}),
+      locale: "es-UY",
+      timezoneId: "America/Montevideo",
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/149 Safari/537.36"
+    });
+    const page = await context.newPage();
+    page.setDefaultTimeout(15000);
+    const loggedIn = await ensureGenericBrowserSession(page, config);
+    if (!loggedIn) {
+      return {
+        rows: [],
+        configUpdate: {
+          sessionStatus: hasUsernamePassword(config) ? "requires_manual_login" : "requires_credentials",
+          sessionFailedAt: new Date().toISOString(),
+          sessionLastError: `${displayName} no pudo iniciar sesion. Revisa URL/login/credenciales o guarda cookies/sesion.`
+        },
+        message: `${displayName}: no pudo iniciar sesion o falta configurar credenciales/sesion.`
+      };
+    }
+
+    const rows: CandidateImport[] = [];
+    const visited = new Set<string>();
+    const maxPages = numberFromConfig(config.maxPages, 30);
+    const candidateLinkPattern = new RegExp(cleanText(config.candidateLinkPattern) || "candidato|postulante|talento|curriculum|cv|perfil|applicant|candidate", "i");
+    const queue = [...searchUrls];
+
+    while (queue.length > 0 && visited.size < maxPages) {
+      const url = queue.shift();
+      if (!url || visited.has(url)) continue;
+      visited.add(url);
+      try {
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
+        await page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => null);
+        const html = await page.content();
+        const title = htmlText(html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] ?? "")
+          || htmlText(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "")
+          || displayName;
+        rows.push(...extractCandidatesFromHtml(html, page.url(), title, sourceType));
+        const links = await browserLinks(page, candidateLinkPattern);
+        for (const link of links.slice(0, 25)) {
+          if (!visited.has(link) && queue.length + visited.size < maxPages) queue.push(link);
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    const bySource = new Map<string, CandidateImport>();
+    for (const candidate of rows) bySource.set(candidate.sourceId ?? `${candidate.fullName}:${candidate.email[0] ?? ""}`, candidate);
+    return {
+      rows: [...bySource.values()],
+      configUpdate: {
+        browserStorageState: await context.storageState(),
+        sessionStatus: "connected",
+        sessionRefreshedAt: new Date().toISOString(),
+        sessionLastError: null,
+        lastAgentMessage: `${displayName}: ${bySource.size} candidatos detectados.`
+      },
+      message: `${displayName}: ${visited.size} paginas revisadas, ${bySource.size} candidatos detectados.`
+    };
+  } finally {
+    await browser.close().catch(() => null);
+  }
+}
+
 async function scrapeBuscojobs(config: Record<string, unknown>) {
   const auth = authFromConfig(config);
   if (auth.authorization) {
@@ -1318,10 +1669,30 @@ async function scrapeBuscojobsWithCookies(config: Record<string, unknown>, cooki
 }
 
 const AGENTS: Record<string, IntegrationAgent> = {
+  aglh: {
+    id: "aglh",
+    name: "AGLH Platform",
+    sync: (config) => scrapeGenericWebSource("aglh", "AGLH Platform", config)
+  },
   buscojobs: {
     id: "buscojobs",
     name: "Buscojobs",
     sync: scrapeBuscojobs
+  },
+  drive: {
+    id: "drive",
+    name: "Google Drive",
+    sync: scrapeDrive
+  },
+  gmail: {
+    id: "gmail",
+    name: "Gmail",
+    sync: scrapeGmail
+  },
+  yoiners: {
+    id: "yoiners",
+    name: "Yoiners",
+    sync: (config) => scrapeGenericWebSource("yoiners", "Yoiners", config)
   }
 };
 
