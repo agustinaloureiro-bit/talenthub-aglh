@@ -16,7 +16,7 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-07.5";
+const SYNC_ENGINE_VERSION = "2026-07-07.6";
 
 function maskConfig(config: Record<string, unknown> | null) {
   if (!config) return {};
@@ -353,6 +353,41 @@ function authFromConfig(config: Record<string, unknown>) {
     sessionId: sessionId?.replace(/\^/g, "") || null,
     empresaId
   };
+}
+
+function decodeJwtPayload(token: string) {
+  try {
+    const payload = token.split(".")[1];
+    if (!payload) return {};
+    return JSON.parse(Buffer.from(payload.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function collectIdsFromObject(value: unknown, patterns: RegExp[], depth = 0): string[] {
+  if (!value || typeof value !== "object" || depth > 4) return [];
+  const ids: string[] = [];
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (patterns.some((pattern) => pattern.test(key)) && /^\d+$/.test(cleanText(child))) ids.push(cleanText(child));
+    ids.push(...collectIdsFromObject(child, patterns, depth + 1));
+  }
+  return ids;
+}
+
+function buscojobsEmpresaIds(config: Record<string, unknown>) {
+  const auth = authFromConfig(config);
+  const raw = cleanText(config.sessionCookies ?? config.cookies ?? config.cookie ?? config.apiKey ?? config.accessToken ?? config.token);
+  const jwtPayload = auth.authorization ? decodeJwtPayload(auth.authorization) : {};
+  return unique([
+    ...listFrom(config.empresaIds ?? config.companyIds),
+    auth.empresaId,
+    cleanText(config.empresaId),
+    cleanText(config.companyId),
+    ...(raw.match(/\/empresas\/(\d+)/gi) ?? []).map((match) => match.match(/\d+/)?.[0] ?? ""),
+    ...(raw.match(/"empresaId"\s*:\s*"?(\d+)/gi) ?? []).map((match) => match.match(/\d+/)?.[0] ?? ""),
+    ...collectIdsFromObject(jwtPayload, [/empresa.*id/i, /company.*id/i, /^emp$/i])
+  ]).filter((id) => /^\d+$/.test(id));
 }
 
 function hasBuscojobsCredentials(config: Record<string, unknown>) {
@@ -1016,9 +1051,47 @@ async function tryFetchBuscojobsJson(url: string, config: Record<string, unknown
   }
 }
 
-function buscojobsOffersUrl(config: Record<string, unknown>) {
-  const auth = authFromConfig(config);
-  return `https://api.buscojobs.com/v3/uy/api/empresas/${auth.empresaId}/OfertasActivas?filter=${encodeURIComponent(JSON.stringify({ order: ["FechaInicio DESC"], limit: Number(config.maxOffers ?? 50), skip: 0 }))}`;
+function buscojobsOfferEndpointUrls(config: Record<string, unknown>) {
+  const limit = Number(config.maxOffers ?? 80);
+  const activeFilter = encodeURIComponent(JSON.stringify({ order: ["FechaInicio DESC"], limit, skip: 0 }));
+  const allFilter = encodeURIComponent(JSON.stringify({ order: ["FechaInicio DESC"], limit, skip: 0 }));
+  const ids = buscojobsEmpresaIds(config);
+  return unique(ids.flatMap((empresaId) => [
+    `https://api.buscojobs.com/v3/uy/api/empresas/${empresaId}/OfertasActivas?filter=${activeFilter}`,
+    `https://api.buscojobs.com/v3/uy/api/empresas/${empresaId}/Ofertas?filter=${allFilter}`,
+    `https://api.buscojobs.com/v3/uy/api/empresas/${empresaId}/ofertas?filter=${allFilter}`,
+    `https://api.buscojobs.com/v3/uy/api/empresas/${empresaId}/MisOfertas?filter=${allFilter}`,
+    `https://api.buscojobs.com/v3/uy/api/OfertasActivas?filter=${encodeURIComponent(JSON.stringify({ where: { EmpresaId: Number(empresaId) }, order: ["FechaInicio DESC"], limit, skip: 0 }))}`,
+    `https://api.buscojobs.com/v3/uy/api/Ofertas?filter=${encodeURIComponent(JSON.stringify({ where: { EmpresaId: Number(empresaId) }, order: ["FechaInicio DESC"], limit, skip: 0 }))}`,
+    `https://api.buscojobs.com/v3/uy/api/OfertaEmpresaTodas?filter=${encodeURIComponent(JSON.stringify({ where: { EmpresaId: Number(empresaId) }, order: ["FechaInicio DESC"], limit, skip: 0 }))}`,
+    `https://api.buscojobs.com/v3/uy/api/OfertasEmpresaTodas?filter=${encodeURIComponent(JSON.stringify({ where: { EmpresaId: Number(empresaId) }, order: ["FechaInicio DESC"], limit, skip: 0 }))}`
+  ]));
+}
+
+function offerRowsFromPayload(payload: unknown) {
+  const rows = arrayFromPayload(payload);
+  const nested = collectOfferLikeRows(payload);
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const row of [...rows, ...nested]) {
+    const id = offerIdFromRow(row);
+    const title = offerTitleFromRow(row);
+    if (!id && !compactLabel(title)) continue;
+    if (candidatesFromBuscojobsPayload(row).length > 0) continue;
+    byId.set(id || title, row);
+  }
+  return [...byId.values()];
+}
+
+async function fetchBuscojobsOffers(config: Record<string, unknown>) {
+  const routes = buscojobsOfferEndpointUrls(config);
+  const notes: string[] = [];
+  for (const url of routes) {
+    const payload = await tryFetchBuscojobsJson(url, config);
+    const offers = payload ? offerRowsFromPayload(payload) : [];
+    notes.push(`${url.replace(/\?.*$/, "")}: ${offers.length}`);
+    if (offers.length > 0) return { offers, route: url.replace(/\?.*$/, ""), notes };
+  }
+  return { offers: [] as Record<string, unknown>[], route: "", notes };
 }
 
 async function scrapeBuscojobsWithApi(config: Record<string, unknown>, prefix = ""): Promise<AgentSyncResult> {
@@ -1026,17 +1099,18 @@ async function scrapeBuscojobsWithApi(config: Record<string, unknown>, prefix = 
   const apiUrl = apiUrlFromCurl(config);
   if (!auth.authorization) throw new Error("Buscojobs no tiene token/API valido para consultar postulantes.");
 
-  let baseUrl = apiUrl ?? buscojobsOffersUrl(config);
+  let baseUrl = apiUrl ?? buscojobsOfferEndpointUrls(config)[0];
   let payload: any;
   try {
     payload = await fetchBuscojobsJson(baseUrl, config);
   } catch (error: any) {
     if (!apiUrl || /sesion\/API de Buscojobs vencio|JWTExpired|INVALID_TOKEN/i.test(error?.message ?? "")) throw error;
-    baseUrl = buscojobsOffersUrl(config);
+    baseUrl = buscojobsOfferEndpointUrls(config)[0];
+    if (!baseUrl) throw error;
     payload = await fetchBuscojobsJson(baseUrl, config);
   }
-  const offers = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.rows) ? payload.rows : [];
   const directCandidates = candidatesFromBuscojobsPayload(payload);
+  let offers = offerRowsFromPayload(payload);
   const baseLooksLikeApplicants = directCandidates.length > 0 && (
     /postul|candidat|curriculum|cv/i.test(baseUrl)
     || directCandidates.length >= Math.max(1, Math.floor(offers.length * 0.5))
@@ -1046,6 +1120,17 @@ async function scrapeBuscojobsWithApi(config: Record<string, unknown>, prefix = 
       rows: directCandidates,
       message: `${prefix}Buscojobs: ${directCandidates.length} postulantes detectados directamente desde la llamada/API.`
     };
+  }
+  let offerRoute = baseUrl.replace(/\?.*$/, "");
+  let discoveryNotes: string[] = [];
+  if (offers.length === 0) {
+    const discovered = await fetchBuscojobsOffers(config);
+    offers = discovered.offers;
+    offerRoute = discovered.route;
+    discoveryNotes = discovered.notes;
+  }
+  if (offers.length === 0) {
+    throw new Error(`Buscojobs inicio sesion pero no encontro ofertas. EmpresaIds probados: ${buscojobsEmpresaIds(config).join(", ") || "ninguno"}. Rutas: ${discoveryNotes.slice(0, 5).join(" | ") || "sin rutas disponibles"}.`);
   }
 
   const candidates: CandidateImport[] = [];
@@ -1064,7 +1149,7 @@ async function scrapeBuscojobsWithApi(config: Record<string, unknown>, prefix = 
 
   return {
     rows: [...deduped.values()],
-    message: `${prefix}Buscojobs: ${offers.length} ofertas leidas, ${deduped.size} candidatos detectados. ${routeNotes.slice(0, 6).join(" | ")}`
+    message: `${prefix}Buscojobs: ${offers.length} ofertas leidas desde ${offerRoute || "API"}, ${deduped.size} candidatos detectados. ${routeNotes.slice(0, 6).join(" | ")}`
   };
 }
 
@@ -1151,6 +1236,22 @@ function collectCandidateLikeRows(value: unknown, depth = 0): Record<string, unk
     /fecha.*postul/
   ]);
   return isCandidateLike ? [row, ...nested] : nested;
+}
+
+function collectOfferLikeRows(value: unknown, depth = 0): Record<string, unknown>[] {
+  if (!value || depth > 5) return [];
+  if (Array.isArray(value)) return value.flatMap((item) => collectOfferLikeRows(item, depth + 1));
+  if (typeof value !== "object") return [];
+
+  const row = value as Record<string, unknown>;
+  const nested = Object.values(row).flatMap((item) => collectOfferLikeRows(item, depth + 1));
+  const isOfferLike = hasMatchingKey(row, [
+    /^oferta(id)?$/i,
+    /oferta.*id/i,
+    /titulo|cargo|puesto|vacante|fecha.*inicio|estado/i
+  ]);
+  const isApplicantLike = hasMatchingKey(row, [/postulante/, /candidato/, /curriculum|curriculo|\bcv\b/, /^email$|correo/, /telefono|celular/]);
+  return isOfferLike && !isApplicantLike ? [row, ...nested] : nested;
 }
 
 function extractEmails(value: unknown) {
@@ -1348,7 +1449,6 @@ function applicantEndpointUrls(empresaId: string, offerId: string, limit: number
 }
 
 async function fetchApplicantsForOffer(config: Record<string, unknown>, offer: Record<string, unknown>) {
-  const auth = authFromConfig(config);
   const offerId = offerIdFromRow(offer);
   if (!offerId) return { rows: [] as CandidateImport[], route: `sin-id ${JSON.stringify(offer).slice(0, 180)}` };
 
@@ -1359,7 +1459,7 @@ async function fetchApplicantsForOffer(config: Record<string, unknown>, offer: R
 
   for (let page = 0; page < maxPages; page += 1) {
     const skip = page * limit;
-    const urls = applicantEndpointUrls(auth.empresaId, offerId, limit, skip);
+    const urls = unique(buscojobsEmpresaIds(config).flatMap((empresaId) => applicantEndpointUrls(empresaId, offerId, limit, skip)));
     let pageRows: Record<string, unknown>[] = [];
 
     for (const url of urls) {
