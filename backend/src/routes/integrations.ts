@@ -459,6 +459,66 @@ function browserStorageStateFromConfig(config: Record<string, unknown>) {
   }
 }
 
+function cookieDomainFromUrl(url: string) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+}
+
+function browserCookiesFromConfig(config: Record<string, unknown>, urlForDomain: string) {
+  const raw = cleanText(config.browserCookies ?? config.sessionCookies ?? config.cookies ?? config.cookie);
+  const domain = cookieDomainFromUrl(urlForDomain);
+  if (!raw || !domain) return [];
+
+  try {
+    const parsed = JSON.parse(raw);
+    const cookies = Array.isArray(parsed) ? parsed : parsed?.cookies;
+    if (Array.isArray(cookies)) {
+      return cookies
+        .map((cookie) => {
+          const name = cleanText(cookie?.name);
+          const value = cleanText(cookie?.value);
+          if (!name || !value) return null;
+          return {
+            name,
+            value,
+            domain: cleanText(cookie?.domain) || domain,
+            path: cleanText(cookie?.path) || "/",
+            expires: Number.isFinite(Number(cookie?.expires)) ? Number(cookie.expires) : undefined,
+            httpOnly: Boolean(cookie?.httpOnly),
+            secure: cookie?.secure === undefined ? true : Boolean(cookie.secure),
+            sameSite: ["Strict", "Lax", "None"].includes(cleanText(cookie?.sameSite)) ? cleanText(cookie.sameSite) : undefined
+          };
+        })
+        .filter(Boolean);
+    }
+  } catch {
+    // Fall back to raw Cookie header parsing below.
+  }
+
+  const header = cookieHeaderFromConfig(config);
+  if (!header) return [];
+  return header
+    .split(";")
+    .map((part) => {
+      const separator = part.indexOf("=");
+      if (separator <= 0) return null;
+      const name = part.slice(0, separator).trim();
+      const value = part.slice(separator + 1).trim();
+      if (!name || !value) return null;
+      return { name, value, domain, path: "/", secure: true };
+    })
+    .filter(Boolean);
+}
+
+async function addConfiguredBrowserCookies(context: any, config: Record<string, unknown>, urlForDomain: string) {
+  const cookies = browserCookiesFromConfig(config, urlForDomain);
+  if (!cookies.length) return;
+  await context.addCookies(cookies);
+}
+
 async function fillFirstVisible(page: any, selectors: string[], value: string) {
   for (const selector of selectors) {
     const locator = page.locator(selector).first();
@@ -743,14 +803,14 @@ function gmailMessageText(message: any) {
 async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncResult> {
   const auth = await googleAccessToken(config);
   if (!auth) {
-    return {
-      rows: [],
-      configUpdate: {
-        sessionStatus: "requires_oauth",
-        sessionLastError: "Gmail necesita accessToken o refreshToken + clientId + clientSecret con permisos de Gmail."
-      },
-      message: "Gmail no esta conectado por OAuth/API. Guarda tokens de Google para sincronizar correos con CVs."
-    };
+    const gmailSearchUrl = cleanText(config.baseUrl)
+      || "https://mail.google.com/mail/u/0/#search/cv%20OR%20curriculum%20OR%20resume%20OR%20candidato%20OR%20postulante%20OR%20linkedin";
+    return scrapeGenericWebSource("gmail", "Gmail", {
+      ...config,
+      baseUrl: gmailSearchUrl,
+      searchUrls: cleanText(config.searchUrls) || gmailSearchUrl,
+      candidateLinkPattern: cleanText(config.candidateLinkPattern) || "mail|inbox|all|search|cv|curriculum|resume|candidato|postulante|linkedin"
+    });
   }
   const query = cleanText(config.query) || "(cv OR curriculum OR resume OR candidato OR postulante OR linkedin OR selección OR seleccion) newer_than:3650d";
   const maxResults = numberFromConfig(config.maxResults, 50);
@@ -778,14 +838,14 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
 async function scrapeDrive(config: Record<string, unknown>): Promise<AgentSyncResult> {
   const auth = await googleAccessToken(config);
   if (!auth) {
-    return {
-      rows: [],
-      configUpdate: {
-        sessionStatus: "requires_oauth",
-        sessionLastError: "Google Drive necesita accessToken o refreshToken + clientId + clientSecret con permisos de Drive."
-      },
-      message: "Google Drive no esta conectado por OAuth/API. Guarda tokens de Google para sincronizar documentos."
-    };
+    const driveSearchUrl = cleanText(config.baseUrl)
+      || "https://drive.google.com/drive/search?q=cv%20OR%20curriculum%20OR%20resume%20OR%20candidato%20OR%20postulante";
+    return scrapeGenericWebSource("drive", "Google Drive", {
+      ...config,
+      baseUrl: driveSearchUrl,
+      searchUrls: cleanText(config.searchUrls) || driveSearchUrl,
+      candidateLinkPattern: cleanText(config.candidateLinkPattern) || "document|file|cv|curriculum|resume|candidato|postulante"
+    });
   }
   const maxResults = numberFromConfig(config.maxResults, 50);
   const query = cleanText(config.query) || "trashed=false and (name contains 'cv' or name contains 'CV' or name contains 'curriculum' or name contains 'Curriculum' or name contains 'resume' or name contains 'candidato')";
@@ -1346,6 +1406,7 @@ async function scrapeBuscojobsWithBrowser(config: Record<string, unknown>, prefi
       timezoneId: "America/Montevideo",
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/149 Safari/537.36"
     });
+    await addConfiguredBrowserCookies(context, config, "https://www.buscojobs.com.uy");
     const page = await context.newPage();
     page.setDefaultTimeout(15000);
 
@@ -1477,6 +1538,7 @@ async function scrapeGenericWebSource(sourceType: string, displayName: string, c
       timezoneId: "America/Montevideo",
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/149 Safari/537.36"
     });
+    await addConfiguredBrowserCookies(context, config, searchUrls[0]);
     const page = await context.newPage();
     page.setDefaultTimeout(15000);
     const loggedIn = await ensureGenericBrowserSession(page, config);
@@ -1569,7 +1631,7 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
         }
 
         const browserResult = await scrapeBuscojobsWithBrowser(
-          { ...config, apiKey: null, token: null, accessToken: null, sessionCookies: null, cookies: null, cookie: null },
+          { ...config, apiKey: null, token: null, accessToken: null },
           "Buscojobs: token vencido; se intento navegador automatico. "
         );
         return {
@@ -1578,9 +1640,6 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
             apiKey: null,
             token: null,
             accessToken: null,
-            sessionCookies: null,
-            cookies: null,
-            cookie: null,
             ...browserResult.configUpdate
           }
         };
