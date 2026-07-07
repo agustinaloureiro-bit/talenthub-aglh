@@ -19,7 +19,9 @@ const DEFAULT_INTEGRATIONS = [
 function maskConfig(config: Record<string, unknown> | null) {
   if (!config) return {};
   const masked = { ...config };
+  const visibleDiagnostics = new Set(["sessionStatus", "sessionRefreshedAt", "sessionFailedAt", "sessionLastError", "lastAgentMessage"]);
   for (const key of Object.keys(masked)) {
+    if (visibleDiagnostics.has(key)) continue;
     if (/password|token|secret|cookie|session|key/i.test(key) && masked[key]) {
       masked[key] = "********";
     }
@@ -281,15 +283,20 @@ async function loginBuscojobsWithCredentials(config: Record<string, unknown>) {
 }
 
 function authFromConfig(config: Record<string, unknown>) {
-  const raw = cleanText(config.sessionCookies ?? config.cookies ?? config.cookie ?? config.apiKey);
+  const raw = cleanText(config.sessionCookies ?? config.cookies ?? config.cookie ?? config.apiKey ?? config.accessToken ?? config.token);
   const authorization = raw.match(/authorization:\s*Bearer\s+([^^"\s]+)/i)?.[1]
     ?? raw.match(/-H\s+\^?"authorization:\s*Bearer\s+([^^"\s]+)/i)?.[1]
     ?? raw.match(/Bearer\s+([A-Za-z0-9._-]+)/)?.[1]
-    ?? cleanText(config.apiKey).replace(/^Bearer\s+/i, "");
+    ?? textOrNull(cleanText(config.apiKey).replace(/^Bearer\s+/i, ""))
+    ?? textOrNull(cleanText(config.accessToken).replace(/^Bearer\s+/i, ""))
+    ?? textOrNull(cleanText(config.token).replace(/^Bearer\s+/i, ""));
   const sessionId = raw.match(/sessionid:\s*([^^"\s]+)/i)?.[1]
-    ?? raw.match(/ASP\.NET_SessionId=([^;"]+)/i)?.[1];
+    ?? raw.match(/ASP\.NET_SessionId=([^;"]+)/i)?.[1]
+    ?? cleanText(config.sessionId);
   const empresaId = raw.match(/\/empresas\/(\d+)\//i)?.[1]
     ?? raw.match(/"empresaId":(\d+)/i)?.[1]
+    ?? cleanText(config.empresaId)
+    ?? cleanText(config.companyId)
     ?? "119341";
 
   return {
@@ -297,6 +304,93 @@ function authFromConfig(config: Record<string, unknown>) {
     sessionId: sessionId?.replace(/\^/g, "") || null,
     empresaId
   };
+}
+
+function deepFindTextByKey(value: unknown, patterns: RegExp[], depth = 0): string | null {
+  if (!value || depth > 6) return null;
+  if (typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  for (const [key, child] of Object.entries(row)) {
+    if (patterns.some((pattern) => pattern.test(key))) {
+      const text = textOrNull(child);
+      if (text) return text;
+    }
+  }
+  for (const child of Object.values(row)) {
+    const found = deepFindTextByKey(child, patterns, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+async function loginBuscojobsApiWithCredentials(config: Record<string, unknown>) {
+  const username = cleanText(config.username ?? config.email ?? config.user);
+  const password = cleanText(config.password);
+  if (!username || !password) return null;
+
+  const endpoints = unique([
+    cleanText(config.apiLoginUrl),
+    "https://api.buscojobs.com/v3/uy/api/Account/Login",
+    "https://api.buscojobs.com/v3/uy/api/Auth/Login",
+    "https://api.buscojobs.com/v3/uy/api/Usuarios/Login",
+    "https://api.buscojobs.com/v3/uy/api/Cuentas/Login",
+    "https://api.buscojobs.com/v3/uy/api/login",
+    "https://www.buscojobs.com.uy/api/login",
+    "https://buscojobs.com.uy/api/login"
+  ].filter(Boolean));
+
+  const payloads = [
+    { email: username, password },
+    { username, password },
+    { user: username, password },
+    { usuario: username, password },
+    { mail: username, password },
+    { email: username, clave: password },
+    { usuario: username, clave: password }
+  ];
+
+  for (const endpoint of endpoints) {
+    for (const payload of payloads) {
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            accept: "application/json, text/plain, */*",
+            "content-type": "application/json",
+            origin: "https://www.buscojobs.com.uy",
+            referer: "https://www.buscojobs.com.uy/",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/149 Safari/537.36"
+          },
+          body: JSON.stringify(payload),
+          redirect: "follow"
+        });
+        const text = await response.text();
+        if (!response.ok) continue;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          continue;
+        }
+        const token = deepFindTextByKey(parsed, [/token/i, /access.?token/i, /^jwt$/i, /^id$/i]);
+        if (!token || token.length < 20) continue;
+        const empresaId = deepFindTextByKey(parsed, [/empresa.*id/i, /company.*id/i, /^empresaId$/i]);
+        const sessionId = deepFindTextByKey(parsed, [/session/i]);
+        return {
+          apiKey: token.startsWith("Bearer ") ? token : `Bearer ${token}`,
+          ...(empresaId ? { empresaId } : {}),
+          ...(sessionId ? { sessionId } : {}),
+          sessionStatus: "connected",
+          sessionRefreshedAt: new Date().toISOString(),
+          sessionLastError: null
+        };
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  return null;
 }
 
 function apiUrlFromCurl(config: Record<string, unknown>) {
@@ -343,6 +437,46 @@ async function tryFetchBuscojobsJson(url: string, config: Record<string, unknown
     if (/respondio 404/i.test(error?.message ?? "")) return null;
     return null;
   }
+}
+
+async function scrapeBuscojobsWithApi(config: Record<string, unknown>, prefix = ""): Promise<AgentSyncResult> {
+  const auth = authFromConfig(config);
+  const apiUrl = apiUrlFromCurl(config);
+  if (!auth.authorization) throw new Error("Buscojobs no tiene token/API valido para consultar postulantes.");
+
+  const baseUrl = apiUrl ?? `https://api.buscojobs.com/v3/uy/api/empresas/${auth.empresaId}/OfertasActivas?filter=${encodeURIComponent(JSON.stringify({ order: ["FechaInicio DESC"], limit: Number(config.maxOffers ?? 50), skip: 0 }))}`;
+  const payload = await fetchBuscojobsJson(baseUrl, config);
+  const offers = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.rows) ? payload.rows : [];
+  const directCandidates = candidatesFromBuscojobsPayload(payload);
+  const baseLooksLikeApplicants = directCandidates.length > 0 && (
+    /postul|candidat|curriculum|cv/i.test(baseUrl)
+    || directCandidates.length >= Math.max(1, Math.floor(offers.length * 0.5))
+  );
+  if (baseLooksLikeApplicants) {
+    return {
+      rows: directCandidates,
+      message: `${prefix}Buscojobs: ${directCandidates.length} postulantes detectados directamente desde la llamada/API.`
+    };
+  }
+
+  const candidates: CandidateImport[] = [];
+  const routeNotes: string[] = [];
+  const maxOffers = Number(config.maxOffers ?? 50);
+
+  for (const offer of offers.slice(0, maxOffers)) {
+    const result = await fetchApplicantsForOffer(config, offer);
+    candidates.push(...result.rows);
+    const offerTitle = compactLabel(offerTitleFromRow(offer), `Oferta ${offerIdFromRow(offer) || "sin id"}`);
+    routeNotes.push(`${offerTitle}: ${result.rows.length}`);
+  }
+
+  const deduped = new Map<string, CandidateImport>();
+  for (const candidate of candidates) deduped.set(candidate.sourceId ?? candidate.fullName, candidate);
+
+  return {
+    rows: [...deduped.values()],
+    message: `${prefix}Buscojobs: ${offers.length} ofertas leidas, ${deduped.size} candidatos detectados. ${routeNotes.slice(0, 6).join(" | ")}`
+  };
 }
 
 function arrayFromPayload(payload: any): Record<string, unknown>[] {
@@ -724,14 +858,21 @@ function extractCandidatesFromHtml(html: string, sourceUrl: string, offerTitle: 
 
 async function scrapeBuscojobs(config: Record<string, unknown>) {
   const auth = authFromConfig(config);
-  const apiUrl = apiUrlFromCurl(config);
   if (auth.authorization) {
-    const baseUrl = apiUrl ?? `https://api.buscojobs.com/v3/uy/api/empresas/${auth.empresaId}/OfertasActivas?filter=${encodeURIComponent(JSON.stringify({ order: ["FechaInicio DESC"], limit: Number(config.maxOffers ?? 50), skip: 0 }))}`;
-    let payload: any;
     try {
-      payload = await fetchBuscojobsJson(baseUrl, config);
+      return await scrapeBuscojobsWithApi(config);
     } catch (error: any) {
       if (/sesion\/API de Buscojobs vencio|JWTExpired|INVALID_TOKEN/i.test(error?.message ?? "")) {
+        const refreshedAuth = await loginBuscojobsApiWithCredentials(config);
+        if (refreshedAuth) {
+          const nextConfig = { ...config, ...refreshedAuth };
+          const result = await scrapeBuscojobsWithApi(nextConfig, "Buscojobs: token vencido; se renovo con usuario/contrasena. ");
+          return {
+            ...result,
+            configUpdate: refreshedAuth
+          };
+        }
+
         const refreshedCookies = await loginBuscojobsWithCredentials(config);
         if (refreshedCookies) {
           const result = await scrapeBuscojobsWithCookies(config, refreshedCookies, "Buscojobs: token API vencido; se reconecto con usuario/contrasena. ");
@@ -748,35 +889,15 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
       }
       throw error;
     }
-    const offers = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.rows) ? payload.rows : [];
-    const directCandidates = candidatesFromBuscojobsPayload(payload);
-    const baseLooksLikeApplicants = directCandidates.length > 0 && (
-      /postul|candidat|curriculum|cv/i.test(baseUrl)
-      || directCandidates.length >= Math.max(1, Math.floor(offers.length * 0.5))
-    );
-    if (baseLooksLikeApplicants) {
-      return {
-        rows: directCandidates,
-        message: `Buscojobs: ${directCandidates.length} postulantes detectados directamente desde la llamada/API pegada.`
-      };
-    }
-    const candidates: CandidateImport[] = [];
-    const routeNotes: string[] = [];
-    const maxOffers = Number(config.maxOffers ?? 50);
+  }
 
-    for (const offer of offers.slice(0, maxOffers)) {
-      const result = await fetchApplicantsForOffer(config, offer);
-      candidates.push(...result.rows);
-      const offerTitle = compactLabel(offerTitleFromRow(offer), `Oferta ${offerIdFromRow(offer) || "sin id"}`);
-      routeNotes.push(`${offerTitle}: ${result.rows.length}`);
-    }
-
-    const deduped = new Map<string, CandidateImport>();
-    for (const candidate of candidates) deduped.set(candidate.sourceId ?? candidate.fullName, candidate);
-
+  const refreshedAuth = await loginBuscojobsApiWithCredentials(config);
+  if (refreshedAuth) {
+    const nextConfig = { ...config, ...refreshedAuth };
+    const result = await scrapeBuscojobsWithApi(nextConfig, "Buscojobs: se inicio sesion API con usuario/contrasena guardados. ");
     return {
-      rows: [...deduped.values()],
-      message: `Buscojobs: ${offers.length} ofertas leidas, ${deduped.size} candidatos detectados. ${routeNotes.slice(0, 6).join(" | ")}`
+      ...result,
+      configUpdate: refreshedAuth
     };
   }
 
@@ -799,7 +920,12 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
 
   return {
     rows: [] as CandidateImport[],
-    message: "Buscojobs necesita una sesion valida o credenciales guardadas. Si la plataforma pide CAPTCHA/2FA, hay que reconectar manualmente una vez."
+    configUpdate: {
+      sessionStatus: "requires_reconnect",
+      sessionFailedAt: new Date().toISOString(),
+      sessionLastError: "No se pudo iniciar sesion automaticamente con las credenciales guardadas."
+    },
+    message: "Buscojobs no pudo iniciar sesion automaticamente. Revisa usuario/contrasena guardados; si Buscojobs pide CAPTCHA/2FA, hay que reconectar una vez desde navegador o usar export/API oficial."
   };
 }
 
@@ -1188,10 +1314,21 @@ async function syncIntegration(integrationId: string) {
       : `Historico procesado: ${newRecords} nuevos, ${updatedRecords} actualizados, ${errors} omitidos.`;
   } else if (scraperResult) {
     message = scraperResult.message;
+    if (scraperResult.configUpdate?.sessionStatus === "requires_reconnect") {
+      status = "error";
+      errors = 1;
+    }
   } else if (scraperError) {
     status = "error";
     errors = 1;
     message = `${agent?.name ?? integration.rows[0].name} no pudo sincronizar: ${scraperError}`;
+  }
+
+  if (scraperResult?.message) {
+    await q(
+      "UPDATE integrations SET config=config || $1::jsonb, updated_at=now() WHERE id=$2",
+      [JSON.stringify({ lastAgentMessage: scraperResult.message }), integrationId]
+    );
   }
 
   await q(
