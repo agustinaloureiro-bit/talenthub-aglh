@@ -230,6 +230,9 @@ async function fetchBuscojobsJson(url: string, config: Record<string, unknown>) 
   if (response.status === 304) {
     throw new Error("Buscojobs devolvio cache 304. Copia otra vez la llamada como cURL con Disable cache activado.");
   }
+  if (response.status === 401 && /JWTExpired|INVALID_TOKEN|claim timestamp check failed/i.test(text)) {
+    throw new Error("La sesion/API de Buscojobs vencio. Entra otra vez a Buscojobs, copia una llamada Fetch/XHR nueva como cURL y guardala en Configurar.");
+  }
   if (!response.ok) throw new Error(`Buscojobs API respondio ${response.status}: ${text.slice(0, 160)}`);
   try {
     return JSON.parse(text);
