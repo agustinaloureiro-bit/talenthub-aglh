@@ -2075,7 +2075,12 @@ integrationsRouter.get("/", asyncHandler(async (_req, res) => {
     q("SELECT * FROM sync_logs ORDER BY started_at DESC LIMIT 20"),
     q("SELECT source_type, extracted_name, reason, source_url, created_at FROM rejected_imports ORDER BY created_at DESC LIMIT 30")
   ]);
-  res.json({ data: integrations.rows.map((row) => ({ ...row, config: maskConfig(row.config) })), logs: logs.rows, rejected: rejected.rows });
+  res.json({
+    data: integrations.rows.map((row) => ({ ...row, config: maskConfig(row.config) })),
+    logs: logs.rows,
+    rejected: rejected.rows,
+    meta: { syncEngineVersion: SYNC_ENGINE_VERSION }
+  });
 }));
 
 integrationsRouter.patch("/:id", requireRole("admin"), asyncHandler(async (req, res) => {
