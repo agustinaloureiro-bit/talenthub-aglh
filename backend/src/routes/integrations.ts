@@ -22,7 +22,7 @@ function maskConfig(config: Record<string, unknown> | null) {
   const visibleDiagnostics = new Set(["sessionStatus", "sessionRefreshedAt", "sessionFailedAt", "sessionLastError", "lastAgentMessage"]);
   for (const key of Object.keys(masked)) {
     if (visibleDiagnostics.has(key)) continue;
-    if (/password|token|secret|cookie|session|key/i.test(key) && masked[key]) {
+    if (/password|token|secret|cookie|session|key|browserStorageState/i.test(key) && masked[key]) {
       masked[key] = "********";
     }
   }
@@ -316,11 +316,11 @@ function prepareConfigForSave(integrationId: string, config?: Record<string, unk
   if (integrationId !== "buscojobs") return next;
 
   const hasCredentials = hasBuscojobsCredentials(next);
-  const providedSession = ["apiKey", "token", "accessToken", "sessionCookies", "cookies", "cookie"]
+  const providedSession = ["apiKey", "token", "accessToken", "sessionCookies", "cookies", "cookie", "browserStorageState"]
     .some((key) => key in next && cleanText(next[key]).length > 0);
 
   if (hasCredentials && !providedSession) {
-    for (const key of ["apiKey", "token", "accessToken", "sessionCookies", "cookies", "cookie", "sessionId"]) {
+    for (const key of ["apiKey", "token", "accessToken", "sessionCookies", "cookies", "cookie", "sessionId", "browserStorageState"]) {
       next[key] = null;
     }
     next.sessionStatus = "credentials_saved";
@@ -416,6 +416,122 @@ async function loginBuscojobsApiWithCredentials(config: Record<string, unknown>)
   }
 
   return null;
+}
+
+async function loadPlaywright() {
+  const dynamicImport = new Function("name", "return import(name)") as (name: string) => Promise<any>;
+  return dynamicImport("playwright");
+}
+
+function browserStorageStateFromConfig(config: Record<string, unknown>) {
+  const raw = config.browserStorageState;
+  if (!raw) return null;
+  if (typeof raw === "object") return raw;
+  try {
+    return JSON.parse(String(raw));
+  } catch {
+    return null;
+  }
+}
+
+async function fillFirstVisible(page: any, selectors: string[], value: string) {
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    try {
+      if (await locator.count() && await locator.isVisible({ timeout: 1500 })) {
+        await locator.fill(value);
+        return true;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
+
+async function clickFirstVisible(page: any, selectors: string[]) {
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    try {
+      if (await locator.count() && await locator.isVisible({ timeout: 1500 })) {
+        await locator.click();
+        return true;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
+
+function pageLooksLoggedIn(url: string, text: string) {
+  return /\/app\/empresa|panel|ofertas|postulantes|candidatos|curriculum/i.test(`${url} ${text}`)
+    && !/iniciar sesion|iniciar sesión|login|captcha|verifica que eres|verifica que sos/i.test(text.slice(0, 4000));
+}
+
+async function ensureBuscojobsBrowserSession(page: any, config: Record<string, unknown>) {
+  const username = cleanText(config.username ?? config.email ?? config.user);
+  const password = cleanText(config.password);
+  const panelUrl = "https://buscojobs.com.uy/app/empresa/panel";
+
+  await page.goto(panelUrl, { waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => null);
+  await page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => null);
+  let text = await page.locator("body").innerText({ timeout: 5000 }).catch(() => "");
+  if (pageLooksLoggedIn(page.url(), text)) return true;
+  if (!username || !password) return false;
+
+  const loginUrls = unique([
+    cleanText(config.loginUrl),
+    "https://www.buscojobs.com.uy/login",
+    "https://www.buscojobs.com.uy/app/login",
+    "https://buscojobs.com.uy/login",
+    "https://buscojobs.com.uy/app/login"
+  ].filter(Boolean));
+
+  for (const loginUrl of loginUrls) {
+    try {
+      await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => null);
+
+      const filledUser = await fillFirstVisible(page, [
+        "input[type='email']",
+        "input[name*='email' i]",
+        "input[name*='mail' i]",
+        "input[name*='usuario' i]",
+        "input[name*='user' i]",
+        "input[name*='login' i]",
+        "input[type='text']"
+      ], username);
+      const filledPassword = await fillFirstVisible(page, [
+        "input[type='password']",
+        "input[name*='password' i]",
+        "input[name*='pass' i]",
+        "input[name*='clave' i]",
+        "input[name*='contras' i]"
+      ], password);
+      if (!filledUser || !filledPassword) continue;
+
+      await clickFirstVisible(page, [
+        "button[type='submit']",
+        "input[type='submit']",
+        "button:has-text('Ingresar')",
+        "button:has-text('Entrar')",
+        "button:has-text('Acceder')",
+        "text=Ingresar",
+        "text=Entrar"
+      ]);
+      await page.waitForLoadState("networkidle", { timeout: 18000 }).catch(() => null);
+      await page.goto(panelUrl, { waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => null);
+      await page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => null);
+      text = await page.locator("body").innerText({ timeout: 5000 }).catch(() => "");
+      if (pageLooksLoggedIn(page.url(), text)) return true;
+      if (/captcha|verifica que eres|verifica que sos|2fa|codigo|código/i.test(text)) return false;
+    } catch {
+      continue;
+    }
+  }
+
+  return false;
 }
 
 function apiUrlFromCurl(config: Record<string, unknown>) {
@@ -881,6 +997,138 @@ function extractCandidatesFromHtml(html: string, sourceUrl: string, offerTitle: 
   return candidates;
 }
 
+async function browserLinks(page: any, pattern: RegExp) {
+  const links = await page.evaluate(() => Array.from((globalThis as any).document.querySelectorAll("a"))
+    .map((anchor) => ({
+      href: (anchor as any).href,
+      text: ((anchor as any).textContent ?? "").trim()
+    }))
+    .filter((link) => link.href));
+  return unique((links as Array<{ href: string; text: string }>)
+    .filter((link) => pattern.test(`${link.href} ${link.text}`))
+    .map((link) => link.href.split(/[?#]/)[0]));
+}
+
+async function scrapeBuscojobsWithBrowser(config: Record<string, unknown>, prefix = ""): Promise<AgentSyncResult> {
+  let playwright: any;
+  try {
+    playwright = await loadPlaywright();
+  } catch {
+    return {
+      rows: [],
+      configUpdate: {
+        sessionStatus: "requires_browser",
+        sessionFailedAt: new Date().toISOString(),
+        sessionLastError: "El servidor no tiene navegador automatico instalado todavia. Hay que desplegar la version con Playwright."
+      },
+      message: "Buscojobs necesita navegador automatico para iniciar sesion. Desplega la version con Playwright."
+    };
+  }
+
+  const browser = await playwright.chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+  });
+
+  try {
+    const storageState = browserStorageStateFromConfig(config);
+    const context = await browser.newContext({
+      ...(storageState ? { storageState } : {}),
+      locale: "es-UY",
+      timezoneId: "America/Montevideo",
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/149 Safari/537.36"
+    });
+    const page = await context.newPage();
+    page.setDefaultTimeout(15000);
+
+    const loggedIn = await ensureBuscojobsBrowserSession(page, config);
+    if (!loggedIn) {
+      const bodyText = await page.locator("body").innerText({ timeout: 5000 }).catch(() => "");
+      const blocked = /captcha|verifica que eres|verifica que sos|2fa|codigo|código/i.test(bodyText);
+      return {
+        rows: [],
+        configUpdate: {
+          sessionStatus: "requires_manual_login",
+          sessionFailedAt: new Date().toISOString(),
+          sessionLastError: blocked
+            ? "Buscojobs mostro CAPTCHA/2FA/verificacion humana. TalentHub no puede saltearlo automaticamente."
+            : "El navegador automatico no pudo completar el login con las credenciales guardadas."
+        },
+        message: blocked
+          ? "Buscojobs pidio verificacion humana/CAPTCHA/2FA. Hace falta una autorizacion manual o un export/API oficial."
+          : "Buscojobs no permitio iniciar sesion automaticamente con navegador. Revisa usuario/contrasena o endpoint de login."
+      };
+    }
+
+    const panelUrl = "https://buscojobs.com.uy/app/empresa/panel";
+    await page.goto(panelUrl, { waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => null);
+    await page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => null);
+    let offerUrls = await browserLinks(page, /\/app\/empresa\/oferta-\d+|oferta|postulante|candidato/i);
+    offerUrls = offerUrls.filter((url) => /\/app\/empresa\/oferta-\d+/i.test(url)).slice(0, Number(config.maxOffers ?? 80));
+
+    const allCandidates: CandidateImport[] = [];
+    const notes: string[] = [];
+    for (const offerUrl of offerUrls) {
+      try {
+        await page.goto(offerUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+        await page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => null);
+        const offerHtml = await page.content();
+        const offerTitle = htmlText(offerHtml.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] ?? "")
+          || htmlText(offerHtml.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "")
+          || "Oferta Buscojobs";
+        const listUrls = unique([
+          ...(await browserLinks(page, /candidato|postulante|curriculum|cv/i)),
+          ...candidateListUrls(offerUrl, offerHtml)
+        ]).slice(0, 6);
+        let foundForOffer = 0;
+
+        for (const listUrl of listUrls) {
+          try {
+            await page.goto(listUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+            await page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => null);
+            const listHtml = await page.content();
+            const pageCandidates = extractCandidatesFromHtml(listHtml, page.url(), offerTitle);
+            foundForOffer += pageCandidates.length;
+            allCandidates.push(...pageCandidates);
+
+            const paginationUrls = (await browserLinks(page, /pagina|page|p=\d+|offset|desde/i))
+              .slice(0, Number(config.maxPagesPerOffer ?? 5));
+            for (const pageUrl of paginationUrls) {
+              await page.goto(pageUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+              await page.waitForLoadState("networkidle", { timeout: 12000 }).catch(() => null);
+              const extra = extractCandidatesFromHtml(await page.content(), page.url(), offerTitle);
+              foundForOffer += extra.length;
+              allCandidates.push(...extra);
+            }
+          } catch {
+            continue;
+          }
+        }
+
+        notes.push(`${compactLabel(offerTitle, "Oferta Buscojobs")}: ${foundForOffer}`);
+      } catch {
+        notes.push(`${offerUrl}: error`);
+      }
+    }
+
+    const savedState = await context.storageState();
+    const bySource = new Map<string, CandidateImport>();
+    for (const candidate of allCandidates) bySource.set(candidate.sourceId ?? candidate.fullName, candidate);
+    return {
+      rows: [...bySource.values()],
+      configUpdate: {
+        browserStorageState: savedState,
+        sessionStatus: "connected",
+        sessionRefreshedAt: new Date().toISOString(),
+        sessionLastError: null
+      },
+      message: `${prefix}Buscojobs navegador: ${offerUrls.length} ofertas revisadas, ${bySource.size} candidatos reales detectados. ${notes.slice(0, 6).join(" | ")}`
+    };
+  } finally {
+    await browser.close().catch(() => null);
+  }
+}
+
 async function scrapeBuscojobs(config: Record<string, unknown>) {
   const auth = authFromConfig(config);
   if (auth.authorization) {
@@ -912,8 +1160,12 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
           };
         }
 
+        const browserResult = await scrapeBuscojobsWithBrowser(
+          { ...config, apiKey: null, token: null, accessToken: null, sessionCookies: null, cookies: null, cookie: null },
+          "Buscojobs: token vencido; se intento navegador automatico. "
+        );
         return {
-          rows: [] as CandidateImport[],
+          ...browserResult,
           configUpdate: {
             apiKey: null,
             token: null,
@@ -921,15 +1173,8 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
             sessionCookies: null,
             cookies: null,
             cookie: null,
-            sessionStatus: "requires_reconnect",
-            sessionFailedAt: new Date().toISOString(),
-            sessionLastError: hasBuscojobsCredentials(config)
-              ? "El token viejo vencio y TalentHub no pudo renovar la sesion automaticamente con las credenciales guardadas."
-              : "El token viejo vencio. Guarda usuario/email y contrasena de Buscojobs en Configurar para que TalentHub intente iniciar sesion automaticamente."
-          },
-          message: hasBuscojobsCredentials(config)
-            ? "Buscojobs: el token viejo vencio y el login automatico con las credenciales guardadas no logro renovar la sesion. Puede requerir CAPTCHA/2FA o un endpoint de login especifico."
-            : "Buscojobs: el token viejo vencio. Guarda usuario/email y contrasena en Configurar; TalentHub dejara de depender del cURL vencido."
+            ...browserResult.configUpdate
+          }
         };
       }
       throw error;
@@ -963,15 +1208,7 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
     };
   }
 
-  return {
-    rows: [] as CandidateImport[],
-    configUpdate: {
-      sessionStatus: "requires_reconnect",
-      sessionFailedAt: new Date().toISOString(),
-      sessionLastError: "No se pudo iniciar sesion automaticamente con las credenciales guardadas."
-    },
-    message: "Buscojobs no pudo iniciar sesion automaticamente. Revisa usuario/contrasena guardados; si Buscojobs pide CAPTCHA/2FA, hay que reconectar una vez desde navegador o usar export/API oficial."
-  };
+  return scrapeBuscojobsWithBrowser(config, "Buscojobs: API/login simple no funciono; se intento navegador automatico. ");
 }
 
 async function scrapeBuscojobsWithCookies(config: Record<string, unknown>, cookieHeader: string, prefix = "") {
