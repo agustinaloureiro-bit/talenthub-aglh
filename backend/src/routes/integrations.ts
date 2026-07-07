@@ -16,10 +16,12 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
+const SYNC_ENGINE_VERSION = "2026-07-07.3";
+
 function maskConfig(config: Record<string, unknown> | null) {
   if (!config) return {};
   const masked = { ...config };
-  const visibleDiagnostics = new Set(["sessionStatus", "sessionRefreshedAt", "sessionFailedAt", "sessionLastError", "lastAgentMessage", "oauthStatus"]);
+  const visibleDiagnostics = new Set(["sessionStatus", "sessionRefreshedAt", "sessionFailedAt", "sessionLastError", "lastAgentMessage", "oauthStatus", "syncEngineVersion"]);
   for (const key of Object.keys(masked)) {
     if (visibleDiagnostics.has(key)) continue;
     if (/password|token|secret|cookie|session|key|browserStorageState|clientSecret|refreshToken/i.test(key) && masked[key]) {
@@ -2107,22 +2109,29 @@ async function syncIntegration(integrationId: string) {
   let scraperResult: AgentSyncResult | null = null;
   let scraperError: string | null = null;
   if (agent) {
+    await q(
+      "UPDATE integrations SET config=config || $1::jsonb, updated_at=now() WHERE id=$2",
+      [JSON.stringify({
+        sessionStatus: "syncing",
+        sessionLastError: null,
+        lastAgentMessage: `${agent.name}: sincronizando con motor ${SYNC_ENGINE_VERSION}.`,
+        syncEngineVersion: SYNC_ENGINE_VERSION
+      }), integrationId]
+    );
     try {
       scraperResult = await agent.sync(config);
       if (scraperResult.configUpdate) {
         await q(
           "UPDATE integrations SET config=config || $1::jsonb, updated_at=now() WHERE id=$2",
-          [JSON.stringify(scraperResult.configUpdate), integrationId]
+          [JSON.stringify({ syncEngineVersion: SYNC_ENGINE_VERSION, ...scraperResult.configUpdate }), integrationId]
         );
       }
     } catch (error: any) {
       scraperError = error?.message ?? `Error desconocido leyendo ${agent.name}.`;
-      if (integrationId === "buscojobs") {
-        await q(
-          "UPDATE integrations SET config=config || $1::jsonb, updated_at=now() WHERE id=$2",
-          [JSON.stringify({ sessionStatus: "requires_reconnect", sessionLastError: scraperError, sessionFailedAt: new Date().toISOString() }), integrationId]
-        );
-      }
+      await q(
+        "UPDATE integrations SET config=config || $1::jsonb, updated_at=now() WHERE id=$2",
+        [JSON.stringify({ sessionStatus: "error", sessionLastError: scraperError, sessionFailedAt: new Date().toISOString(), syncEngineVersion: SYNC_ENGINE_VERSION }), integrationId]
+      );
     }
   }
   const rowsToImport = scraperResult?.rows ?? rowsFromConfig(config);
@@ -2167,9 +2176,15 @@ async function syncIntegration(integrationId: string) {
   }
 
   if (scraperResult?.message) {
+    const resultStatus = status === "error" ? cleanText(scraperResult.configUpdate?.sessionStatus) || "error" : "connected";
     await q(
       "UPDATE integrations SET config=config || $1::jsonb, updated_at=now() WHERE id=$2",
-      [JSON.stringify({ lastAgentMessage: scraperResult.message }), integrationId]
+      [JSON.stringify({
+        sessionStatus: resultStatus,
+        sessionLastError: status === "error" ? (scraperResult.configUpdate?.sessionLastError ?? scraperResult.message) : null,
+        lastAgentMessage: scraperResult.message,
+        syncEngineVersion: SYNC_ENGINE_VERSION
+      }), integrationId]
     );
   }
 
