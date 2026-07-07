@@ -995,10 +995,9 @@ integrationsRouter.patch("/:id", requireRole("admin"), asyncHandler(async (req, 
   res.json({ data: { ...rows[0], config: maskConfig(rows[0].config) } });
 }));
 
-integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(async (req, res) => {
-  const integrationId = String(req.params.id);
+async function syncIntegration(integrationId: string) {
   const integration = await q("SELECT * FROM integrations WHERE id=$1", [integrationId]);
-  if (!integration.rowCount) return res.status(404).json({ error: "Integracion no encontrada" });
+  if (!integration.rowCount) return null;
 
   const started = Date.now();
   const config = integration.rows[0].config ?? {};
@@ -1036,10 +1035,12 @@ integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(asyn
       const result = await importCandidate(integrationId, candidate);
       if (result === "new") newRecords += 1;
       if (result === "updated") updatedRecords += 1;
-      if (result === "skipped") { /* omitted: no real identity/contact/CV */ }
+      if (result === "skipped") errors += 1;
     }
     status = errors > 0 ? "warning" : "success";
-    message = `Historico procesado: ${newRecords} nuevos, ${updatedRecords} actualizados, ${errors} omitidos.`;
+    message = scraperResult?.message
+      ? `${scraperResult.message} Importados: ${newRecords} nuevos, ${updatedRecords} actualizados, ${errors} omitidos.`
+      : `Historico procesado: ${newRecords} nuevos, ${updatedRecords} actualizados, ${errors} omitidos.`;
   } else if (scraperResult) {
     message = scraperResult.message;
   } else if (scraperError) {
@@ -1047,6 +1048,20 @@ integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(asyn
     errors = 1;
     message = `${agent?.name ?? integration.rows[0].name} no pudo sincronizar: ${scraperError}`;
   }
+
+  await q(
+    `INSERT INTO agent_runs (agent_id, run_type, status, finished_at, records_found, records_imported, errors, message, metadata)
+     VALUES ($1,'sync',$2,now(),$3,$4,$5,$6,$7::jsonb)`,
+    [
+      integrationId,
+      status,
+      rowsToImport.length,
+      newRecords + updatedRecords,
+      errors,
+      message,
+      JSON.stringify({ hasConfig, source: integration.rows[0].name })
+    ]
+  );
 
   const { rows } = await q(
     "INSERT INTO sync_logs (integration_id, source, finished_at, duration_ms, status, new_records, updated_records, errors, message) VALUES ($1,$2,now(),$3,$4,$5,$6,$7,$8) RETURNING *",
@@ -1056,5 +1071,39 @@ integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(asyn
     "UPDATE integrations SET last_sync_at=now(), total_imported=total_imported+$1, updated_at=now(), status=$2 WHERE id=$3",
     [newRecords, status === "error" ? "error" : "connected", integrationId]
   );
-  res.status(201).json({ data: rows[0] });
+  return rows[0];
+}
+
+export async function syncConnectedIntegrations() {
+  await ensureDefaultIntegrations();
+  const integrations = await q<{ id: string }>(
+    "SELECT id FROM integrations WHERE status='connected' ORDER BY name"
+  );
+  const results = [];
+  for (const row of integrations.rows) {
+    const result = await syncIntegration(row.id);
+    if (result) results.push(result);
+  }
+  return results;
+}
+
+integrationsRouter.post("/sync-all", requireRole("recruiter"), asyncHandler(async (_req, res) => {
+  const results = await syncConnectedIntegrations();
+  const imported = results.reduce((sum, row: any) => sum + Number(row.new_records ?? 0) + Number(row.updated_records ?? 0), 0);
+  const errors = results.reduce((sum, row: any) => sum + Number(row.errors ?? 0), 0);
+  res.status(201).json({
+    data: results,
+    meta: {
+      sources: results.length,
+      imported,
+      errors,
+      message: `Fuentes actualizadas: ${results.length}. Registros importados/actualizados: ${imported}. Errores u omitidos: ${errors}.`
+    }
+  });
+}));
+
+integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(async (req, res) => {
+  const result = await syncIntegration(String(req.params.id));
+  if (!result) return res.status(404).json({ error: "Integracion no encontrada" });
+  res.status(201).json({ data: result });
 }));

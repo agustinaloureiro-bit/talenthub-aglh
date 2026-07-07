@@ -214,14 +214,23 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
   const [query, setQuery] = useState("");
   const [seniority, setSeniority] = useState("");
   const [activeOnly, setActiveOnly] = useState(true);
+  const [refreshSources, setRefreshSources] = useState(true);
   const [results, setResults] = useState<any[]>([]);
+  const [searchStatus, setSearchStatus] = useState("");
   const [loading, setLoading] = useState(false);
   async function run() {
     if (!query.trim()) return;
     setLoading(true);
-    const response = await api<{ data: any[] }>("/search/talent", { method: "POST", body: JSON.stringify({ query, filters: { seniority: seniority || undefined, activeOnly } }) });
-    setResults(response.data);
-    setLoading(false);
+    setSearchStatus(refreshSources ? "Actualizando fuentes conectadas y buscando..." : "Buscando...");
+    try {
+      const response = await api<{ data: any[]; sync?: { ran: boolean; sources: number; imported: number; errors: number } }>("/search/talent", { method: "POST", body: JSON.stringify({ query, refreshSources, filters: { seniority: seniority || undefined, activeOnly } }) });
+      setResults(response.data);
+      setSearchStatus(response.sync?.ran ? `Fuentes consultadas: ${response.sync.sources}. Importados/actualizados: ${response.sync.imported}. Errores u omitidos: ${response.sync.errors}.` : "");
+    } catch (err: any) {
+      setSearchStatus(err.message || "No se pudo completar la busqueda.");
+    } finally {
+      setLoading(false);
+    }
   }
   return (
     <PagePad>
@@ -229,8 +238,10 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
       <div className="my-3 flex flex-wrap items-center gap-3">
         <select className="field max-w-48" value={seniority} onChange={(e) => setSeniority(e.target.value)}><option value="">Todo seniority</option><option>Junior</option><option>Semi-Senior</option><option>Senior</option><option>Lead</option><option>Manager</option></select>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)} /> Solo activos</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={refreshSources} onChange={(e) => setRefreshSources(e.target.checked)} /> Actualizar fuentes</label>
         <button className="btn-primary" onClick={run} disabled={!query.trim() || loading}><Search size={16} /> {loading ? "Buscando..." : "Buscar candidatos"}</button>
       </div>
+      {searchStatus && <div className="mb-3 rounded-md border border-slate-200 bg-white p-3 text-sm text-slate-600">{searchStatus}</div>}
       <div className="mb-3 text-sm text-slate-500">{results.length} candidatos encontrados Â· ordenados por compatibilidad</div>
       <div className="grid gap-3">{results.length === 0 && <Empty text="La bÃºsqueda todavÃ­a no devolviÃ³ candidatos reales." />}{results.map((c) => <CandidateRow key={c.id} candidate={{ ...c, qualityScore: c.score, sourceCount: 0, email: [], phone: [], languages: [], strengths: [], weaknesses: [], status: "active" }} onView={onView} reason={c.matchReason} />)}</div>
     </PagePad>
@@ -325,6 +336,16 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
       setSyncMessage(err.message || "No se pudo sincronizar.");
     }
   }
+  async function syncAll() {
+    setSyncMessage("Sincronizando todas las fuentes conectadas...");
+    try {
+      const result = await api<{ meta: { sources: number; imported: number; errors: number; message: string } }>("/integrations/sync-all", { method: "POST" });
+      setSyncMessage(result.meta.message);
+      load();
+    } catch (err: any) {
+      setSyncMessage(err.message || "No se pudieron sincronizar las fuentes.");
+    }
+  }
   async function applyBulk(e: FormEvent) {
     e.preventDefault();
     setBulkError("");
@@ -346,7 +367,7 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
   "gmail": { "username": "", "password": "" },
   "buscojobs": { "username": "", "password": "" }
 }`;
-  return <PagePad><div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">PegÃ¡ sesiones/API keys solo de cuentas propias y fuentes donde tengas permiso de extracciÃ³n. Los valores sensibles se guardan en el backend y luego se muestran ocultos.</div>{syncMessage && <div className="mb-4 rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700">{syncMessage}</div>}{canEdit && <div className="card mb-4 p-4"><button className="btn-primary" onClick={() => { setBulkOpen(!bulkOpen); if (!bulkText) setBulkText(template); }}><Settings size={16} /> Cargar todas las cuentas</button>{bulkOpen && <form onSubmit={applyBulk} className="mt-4 grid gap-3">{bulkError && <ErrorBox message={bulkError} />}<textarea className="field min-h-52 font-mono text-xs" value={bulkText} onChange={(e) => setBulkText(e.target.value)} /><button className="btn-primary w-fit"><Save size={16} /> Guardar todas</button></form>}</div>}<div className="mb-6 grid gap-4 md:grid-cols-2">{data.data.map((i: any) => <div className="card p-4" key={i.id}><div className="mb-2 flex items-center justify-between"><div className="font-bold">{i.name}</div><span className="rounded-full bg-slate-100 px-2 py-1 text-xs">{i.status}</span></div><p className="text-sm text-slate-500">Ãšltima sync: {i.last_sync_at ? new Date(i.last_sync_at).toLocaleString() : "Nunca"} Â· {i.total_imported} registros</p><div className="mt-3 flex flex-wrap gap-2">{canEdit && <select className="field max-w-44" value={i.status} onChange={(e) => save(i.id, e.target.value)}><option value="not_configured">No configurado</option><option value="connected">Conectado</option><option value="warning">Advertencia</option><option value="error">Error</option><option value="soon">PrÃ³ximamente</option></select>}{canEdit && <button className="btn-ghost" onClick={() => setEditing(editing === i.id ? null : i.id)}><Settings size={16} /> Configurar</button>}<button className="btn-primary" onClick={() => sync(i.id)}>Sincronizar</button></div>{editing === i.id && <IntegrationConfigPanelV2 integration={i} onSaved={() => { setEditing(null); load(); }} />}</div>)}</div><Table title="Log de sincronizaciones" rows={data.logs} empty="Sin logs registrados." columns={["source", "status", "new_records", "updated_records", "errors", "message"]} /><div className="mt-4"><Table title="Registros rechazados por no ser candidatos reales" rows={data.rejected ?? []} empty="Sin rechazos recientes." columns={["source_type", "extracted_name", "reason", "created_at"]} /></div></PagePad>;
+  return <PagePad><div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">PegÃ¡ sesiones/API keys solo de cuentas propias y fuentes donde tengas permiso de extracciÃ³n. Los valores sensibles se guardan en el backend y luego se muestran ocultos.</div>{syncMessage && <div className="mb-4 rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700">{syncMessage}</div>}{canEdit && <div className="card mb-4 flex flex-wrap gap-2 p-4"><button className="btn-primary" onClick={syncAll}>Sincronizar todo</button><button className="btn-primary" onClick={() => { setBulkOpen(!bulkOpen); if (!bulkText) setBulkText(template); }}><Settings size={16} /> Cargar todas las cuentas</button>{bulkOpen && <form onSubmit={applyBulk} className="mt-4 grid w-full gap-3">{bulkError && <ErrorBox message={bulkError} />}<textarea className="field min-h-52 font-mono text-xs" value={bulkText} onChange={(e) => setBulkText(e.target.value)} /><button className="btn-primary w-fit"><Save size={16} /> Guardar todas</button></form>}</div>}<div className="mb-6 grid gap-4 md:grid-cols-2">{data.data.map((i: any) => <div className="card p-4" key={i.id}><div className="mb-2 flex items-center justify-between"><div className="font-bold">{i.name}</div><span className="rounded-full bg-slate-100 px-2 py-1 text-xs">{i.status}</span></div><p className="text-sm text-slate-500">Ãšltima sync: {i.last_sync_at ? new Date(i.last_sync_at).toLocaleString() : "Nunca"} Â· {i.total_imported} registros</p><div className="mt-3 flex flex-wrap gap-2">{canEdit && <select className="field max-w-44" value={i.status} onChange={(e) => save(i.id, e.target.value)}><option value="not_configured">No configurado</option><option value="connected">Conectado</option><option value="warning">Advertencia</option><option value="error">Error</option><option value="soon">PrÃ³ximamente</option></select>}{canEdit && <button className="btn-ghost" onClick={() => setEditing(editing === i.id ? null : i.id)}><Settings size={16} /> Configurar</button>}<button className="btn-primary" onClick={() => sync(i.id)}>Sincronizar</button></div>{editing === i.id && <IntegrationConfigPanelV2 integration={i} onSaved={() => { setEditing(null); load(); }} />}</div>)}</div><Table title="Log de sincronizaciones" rows={data.logs} empty="Sin logs registrados." columns={["source", "status", "new_records", "updated_records", "errors", "message"]} /><div className="mt-4"><Table title="Registros rechazados por no ser candidatos reales" rows={data.rejected ?? []} empty="Sin rechazos recientes." columns={["source_type", "extracted_name", "reason", "created_at"]} /></div></PagePad>;
 }
 
 function IntegrationConfigPanelV2({ integration, onSaved }: { integration: any; onSaved: () => void }) {

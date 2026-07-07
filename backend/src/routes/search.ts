@@ -3,12 +3,14 @@ import { z } from "zod";
 import { q } from "../db/pool.js";
 import { asyncHandler } from "../middleware/errors.js";
 import { RecruitmentIntelligenceEngine } from "../intelligence/intelligenceEngine.js";
+import { syncConnectedIntegrations } from "./integrations.js";
 import type { TalentSearchFilters } from "../intelligence/types.js";
 
 export const searchRouter = Router();
 
 const searchSchema = z.object({
   query: z.string().min(1),
+  refreshSources: z.boolean().optional().default(false),
   filters: z.object({
     source: z.array(z.string()).optional(),
     seniority: z.string().optional(),
@@ -74,7 +76,19 @@ export async function searchTalent(query: string, filters: TalentSearchFilters =
 
 searchRouter.post("/talent", asyncHandler(async (req, res) => {
   const body = searchSchema.parse(req.body);
+  const syncResults = body.refreshSources ? await syncConnectedIntegrations() : [];
   await q("INSERT INTO saved_searches (user_id, query, filters) VALUES ($1,$2,$3)", [req.user!.id, body.query, JSON.stringify(body.filters)]);
   const result = await searchTalent(body.query, body.filters);
-  res.json({ data: result.data, query: result.query, explanation: result.explanation, mode: result.mode });
+  res.json({
+    data: result.data,
+    query: result.query,
+    explanation: result.explanation,
+    mode: result.mode,
+    sync: {
+      ran: body.refreshSources,
+      sources: syncResults.length,
+      imported: syncResults.reduce((sum: number, row: any) => sum + Number(row.new_records ?? 0) + Number(row.updated_records ?? 0), 0),
+      errors: syncResults.reduce((sum: number, row: any) => sum + Number(row.errors ?? 0), 0)
+    }
+  });
 }));
