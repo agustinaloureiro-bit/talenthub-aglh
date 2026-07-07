@@ -16,7 +16,7 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-07.3";
+const SYNC_ENGINE_VERSION = "2026-07-07.4";
 
 function maskConfig(config: Record<string, unknown> | null) {
   if (!config) return {};
@@ -478,6 +478,14 @@ function browserStorageStateFromConfig(config: Record<string, unknown>) {
   }
 }
 
+function hasBrowserSessionConfig(config: Record<string, unknown>) {
+  return Boolean(
+    cleanText(config.browserStorageState)
+    || cleanText(config.browserCookies)
+    || cookieHeaderFromConfig(config)
+  );
+}
+
 function cookieDomainFromUrl(url: string) {
   try {
     return new URL(url).hostname;
@@ -847,6 +855,16 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
     };
   }
   if (!auth) {
+    if (!hasBrowserSessionConfig(config)) {
+      return {
+        rows: [],
+        configUpdate: {
+          sessionStatus: "requires_oauth",
+          sessionLastError: "Gmail necesita OAuth de Google o una sesion/cookies guardadas para poder leer correos."
+        },
+        message: "Gmail no tiene OAuth ni sesion/cookies guardadas. No se puede sincronizar correos todavia."
+      };
+    }
     return googleWebFallback("gmail", "Gmail", config);
   }
   try {
@@ -892,6 +910,16 @@ async function scrapeDrive(config: Record<string, unknown>): Promise<AgentSyncRe
     };
   }
   if (!auth) {
+    if (!hasBrowserSessionConfig(config)) {
+      return {
+        rows: [],
+        configUpdate: {
+          sessionStatus: "requires_oauth",
+          sessionLastError: "Google Drive necesita OAuth de Google o una sesion/cookies guardadas para poder leer archivos."
+        },
+        message: "Google Drive no tiene OAuth ni sesion/cookies guardadas. No se puede sincronizar archivos todavia."
+      };
+    }
     return googleWebFallback("drive", "Google Drive", config);
   }
   try {
@@ -1022,6 +1050,56 @@ async function scrapeBuscojobsWithApi(config: Record<string, unknown>, prefix = 
   return {
     rows: [...deduped.values()],
     message: `${prefix}Buscojobs: ${offers.length} ofertas leidas, ${deduped.size} candidatos detectados. ${routeNotes.slice(0, 6).join(" | ")}`
+  };
+}
+
+async function scrapeBuscojobsWithFallback(config: Record<string, unknown>, reason: string, prefix = ""): Promise<AgentSyncResult> {
+  const notes: string[] = [];
+  const cookieHeader = cookieHeaderFromConfig(config);
+  if (cookieHeader) {
+    try {
+      return await scrapeBuscojobsWithCookies(config, cookieHeader, `${prefix}Buscojobs: la API fallo; se intento con cookies. `);
+    } catch (error: any) {
+      notes.push(`cookies: ${cleanText(error?.message).slice(0, 120)}`);
+    }
+  }
+
+  const refreshedCookies = await loginBuscojobsWithCredentials(config);
+  if (refreshedCookies) {
+    try {
+      const result = await scrapeBuscojobsWithCookies(config, refreshedCookies, `${prefix}Buscojobs: la API fallo; se reconecto con usuario/contrasena. `);
+      return {
+        ...result,
+        configUpdate: {
+          sessionCookies: refreshedCookies,
+          sessionStatus: "connected",
+          sessionRefreshedAt: new Date().toISOString(),
+          sessionLastError: null
+        }
+      };
+    } catch (error: any) {
+      notes.push(`login simple: ${cleanText(error?.message).slice(0, 120)}`);
+    }
+  }
+
+  try {
+    return await scrapeBuscojobsWithBrowser(
+      { ...config, apiKey: null, token: null, accessToken: null },
+      `${prefix}Buscojobs: la API fallo; se intento navegador automatico. `
+    );
+  } catch (error: any) {
+    notes.push(`navegador: ${cleanText(error?.message).slice(0, 120)}`);
+  }
+
+  const message = `Buscojobs no pudo sincronizar. API fallo: ${reason.slice(0, 140)}. Fallbacks: ${notes.join(" | ") || "sin cookies/sesion usable"}.`;
+  return {
+    rows: [],
+    configUpdate: {
+      sessionStatus: "requires_reconnect",
+      sessionFailedAt: new Date().toISOString(),
+      sessionLastError: message
+    },
+    message
   };
 }
 
@@ -1675,11 +1753,19 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
         const refreshedAuth = await loginBuscojobsApiWithCredentials(config);
         if (refreshedAuth) {
           const nextConfig = { ...config, ...refreshedAuth };
-          const result = await scrapeBuscojobsWithApi(nextConfig, "Buscojobs: token vencido; se renovo con usuario/contrasena. ");
-          return {
-            ...result,
-            configUpdate: refreshedAuth
-          };
+          try {
+            const result = await scrapeBuscojobsWithApi(nextConfig, "Buscojobs: token vencido; se renovo con usuario/contrasena. ");
+            return {
+              ...result,
+              configUpdate: refreshedAuth
+            };
+          } catch (nextError: any) {
+            const fallback = await scrapeBuscojobsWithFallback(nextConfig, cleanText(nextError?.message), "Buscojobs: token renovado pero API de postulantes fallo. ");
+            return {
+              ...fallback,
+              configUpdate: { ...refreshedAuth, ...fallback.configUpdate }
+            };
+          }
         }
 
         const refreshedCookies = await loginBuscojobsWithCredentials(config);
@@ -1710,26 +1796,26 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
           }
         };
       }
-      const cookieHeader = cookieHeaderFromConfig(config);
-      if (cookieHeader) {
-        return scrapeBuscojobsWithCookies(config, cookieHeader, `Buscojobs: la API fallo (${cleanText(error?.message).slice(0, 120)}); se intento con cookies. `);
-      }
-
-      return scrapeBuscojobsWithBrowser(
-        { ...config, apiKey: null, token: null, accessToken: null },
-        `Buscojobs: la API fallo (${cleanText(error?.message).slice(0, 120)}); se intento navegador automatico. `
-      );
+      return scrapeBuscojobsWithFallback(config, cleanText(error?.message));
     }
   }
 
   const refreshedAuth = await loginBuscojobsApiWithCredentials(config);
   if (refreshedAuth) {
     const nextConfig = { ...config, ...refreshedAuth };
-    const result = await scrapeBuscojobsWithApi(nextConfig, "Buscojobs: se inicio sesion API con usuario/contrasena guardados. ");
-    return {
-      ...result,
-      configUpdate: refreshedAuth
-    };
+    try {
+      const result = await scrapeBuscojobsWithApi(nextConfig, "Buscojobs: se inicio sesion API con usuario/contrasena guardados. ");
+      return {
+        ...result,
+        configUpdate: refreshedAuth
+      };
+    } catch (error: any) {
+      const fallback = await scrapeBuscojobsWithFallback(nextConfig, cleanText(error?.message), "Buscojobs: login API funciono pero API de postulantes fallo. ");
+      return {
+        ...fallback,
+        configUpdate: { ...refreshedAuth, ...fallback.configUpdate }
+      };
+    }
   }
 
   const cookieHeader = cookieHeaderFromConfig(config);
@@ -2067,9 +2153,26 @@ async function removeCookieCandidates() {
 
 }
 
+async function markStaleSyncingIntegrations() {
+  await q(
+    `UPDATE integrations
+     SET config = config || $1::jsonb,
+         updated_at = now(),
+         status = 'error'
+     WHERE config->>'sessionStatus' = 'syncing'
+       AND updated_at < now() - interval '3 minutes'`,
+    [JSON.stringify({
+      sessionStatus: "error",
+      sessionLastError: "La sincronizacion quedo sin respuesta del servidor. Vuelve a intentar con una fuente por vez.",
+      syncEngineVersion: SYNC_ENGINE_VERSION
+    })]
+  );
+}
+
 integrationsRouter.get("/", asyncHandler(async (_req, res) => {
   await ensureDefaultIntegrations();
   await removeCookieCandidates();
+  await markStaleSyncingIntegrations();
   const [integrations, logs, rejected] = await Promise.all([
     q("SELECT * FROM integrations ORDER BY name"),
     q("SELECT * FROM sync_logs ORDER BY started_at DESC LIMIT 20"),
