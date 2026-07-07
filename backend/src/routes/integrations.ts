@@ -966,10 +966,14 @@ async function tryFetchBuscojobsJson(url: string, config: Record<string, unknown
   try {
     return await fetchBuscojobsJson(url, config);
   } catch (error: any) {
-    if (/respondio 40[034]/i.test(error?.message ?? "")) return null;
-    if (/respondio 404/i.test(error?.message ?? "")) return null;
+    if (/respondio (40[034]|50\d)/i.test(error?.message ?? "")) return null;
     return null;
   }
+}
+
+function buscojobsOffersUrl(config: Record<string, unknown>) {
+  const auth = authFromConfig(config);
+  return `https://api.buscojobs.com/v3/uy/api/empresas/${auth.empresaId}/OfertasActivas?filter=${encodeURIComponent(JSON.stringify({ order: ["FechaInicio DESC"], limit: Number(config.maxOffers ?? 50), skip: 0 }))}`;
 }
 
 async function scrapeBuscojobsWithApi(config: Record<string, unknown>, prefix = ""): Promise<AgentSyncResult> {
@@ -977,8 +981,15 @@ async function scrapeBuscojobsWithApi(config: Record<string, unknown>, prefix = 
   const apiUrl = apiUrlFromCurl(config);
   if (!auth.authorization) throw new Error("Buscojobs no tiene token/API valido para consultar postulantes.");
 
-  const baseUrl = apiUrl ?? `https://api.buscojobs.com/v3/uy/api/empresas/${auth.empresaId}/OfertasActivas?filter=${encodeURIComponent(JSON.stringify({ order: ["FechaInicio DESC"], limit: Number(config.maxOffers ?? 50), skip: 0 }))}`;
-  const payload = await fetchBuscojobsJson(baseUrl, config);
+  let baseUrl = apiUrl ?? buscojobsOffersUrl(config);
+  let payload: any;
+  try {
+    payload = await fetchBuscojobsJson(baseUrl, config);
+  } catch (error: any) {
+    if (!apiUrl || /sesion\/API de Buscojobs vencio|JWTExpired|INVALID_TOKEN/i.test(error?.message ?? "")) throw error;
+    baseUrl = buscojobsOffersUrl(config);
+    payload = await fetchBuscojobsJson(baseUrl, config);
+  }
   const offers = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.rows) ? payload.rows : [];
   const directCandidates = candidatesFromBuscojobsPayload(payload);
   const baseLooksLikeApplicants = directCandidates.length > 0 && (
@@ -1697,7 +1708,15 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
           }
         };
       }
-      throw error;
+      const cookieHeader = cookieHeaderFromConfig(config);
+      if (cookieHeader) {
+        return scrapeBuscojobsWithCookies(config, cookieHeader, `Buscojobs: la API fallo (${cleanText(error?.message).slice(0, 120)}); se intento con cookies. `);
+      }
+
+      return scrapeBuscojobsWithBrowser(
+        { ...config, apiKey: null, token: null, accessToken: null },
+        `Buscojobs: la API fallo (${cleanText(error?.message).slice(0, 120)}); se intento navegador automatico. `
+      );
     }
   }
 
