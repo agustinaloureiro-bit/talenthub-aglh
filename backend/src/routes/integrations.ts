@@ -135,9 +135,31 @@ function parseCsv(text: string) {
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   if (lines.length < 2) return [];
   const separator = lines[0].includes(";") ? ";" : ",";
-  const headers = lines[0].split(separator).map((header) => header.trim());
+  const parseLine = (line: string) => {
+    const values: string[] = [];
+    let current = "";
+    let quoted = false;
+    for (let index = 0; index < line.length; index += 1) {
+      const char = line[index];
+      const next = line[index + 1];
+      if (char === "\"" && quoted && next === "\"") {
+        current += "\"";
+        index += 1;
+      } else if (char === "\"") {
+        quoted = !quoted;
+      } else if (char === separator && !quoted) {
+        values.push(current.trim());
+        current = "";
+      } else {
+        current += char;
+      }
+    }
+    values.push(current.trim());
+    return values;
+  };
+  const headers = parseLine(lines[0]).map((header) => header.trim());
   return lines.slice(1).map((line) => {
-    const values = line.split(separator).map((value) => value.trim());
+    const values = parseLine(line);
     return Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""]));
   });
 }
@@ -239,6 +261,42 @@ function arrayFromPayload(payload: any): Record<string, unknown>[] {
   return [];
 }
 
+function collectCandidateLikeRows(value: unknown, depth = 0): Record<string, unknown>[] {
+  if (!value || depth > 5) return [];
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectCandidateLikeRows(item, depth + 1));
+  }
+  if (typeof value !== "object") return [];
+
+  const row = value as Record<string, unknown>;
+  const nested = Object.values(row).flatMap((item) => collectCandidateLikeRows(item, depth + 1));
+  const isCandidateLike = hasMatchingKey(row, [
+    /postulante/,
+    /candidato/,
+    /curriculum|curriculo|\bcv\b/,
+    /persona/,
+    /^email$|^mail$|correo/,
+    /telefono|celular|mobile|phone/,
+    /linkedin/,
+    /fecha.*postul/
+  ]);
+  return isCandidateLike ? [row, ...nested] : nested;
+}
+
+function extractEmails(value: unknown) {
+  return unique([
+    ...listFrom(value),
+    ...(cleanText(value).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) ?? [])
+  ]);
+}
+
+function extractPhones(value: unknown) {
+  return unique([
+    ...listFrom(value),
+    ...(cleanText(value).match(/(?:\+?\d{1,3}\s?)?(?:0?9\d|2\d|4\d|[1-9]\d{1,3})[\s.-]?\d{3}[\s.-]?\d{3,4}/g) ?? [])
+  ]);
+}
+
 function offerIdFromRow(row: Record<string, unknown>) {
   return deepFirstText(row, ["Id", "id", "OfertaId", "ofertaId", "OfertaID", "ofertaID", "IdOferta", "idOferta", "Codigo", "codigo"])
     ?? firstMatchingKeyText(row, [/^id$/, /oferta.*id/, /id.*oferta/, /codigo/]);
@@ -251,18 +309,21 @@ function offerTitleFromRow(row: Record<string, unknown>) {
 }
 
 function candidateDocumentsFromRow(row: Record<string, unknown>, sourceType: string) {
-  const cvUrl = deepFirstText(row, ["CVUrl", "cvUrl", "CurriculumUrl", "curriculumUrl", "UrlCv", "urlCv", "ArchivoUrl", "archivoUrl", "FileUrl", "fileUrl", "DownloadUrl", "downloadUrl", "DocumentoUrl", "documentoUrl"]);
+  const cvUrl = deepFirstText(row, ["CVUrl", "cvUrl", "CurriculumUrl", "curriculumUrl", "UrlCv", "urlCv", "ArchivoUrl", "archivoUrl", "FileUrl", "fileUrl", "DownloadUrl", "downloadUrl", "DocumentoUrl", "documentoUrl", "CV", "cv", "Curriculum", "curriculum"]);
   const profileUrl = deepFirstText(row, ["PerfilUrl", "perfilUrl", "ProfileUrl", "profileUrl", "Url", "url"]);
-  const cvText = deepFirstText(row, ["CvTexto", "cvTexto", "TextoCV", "textoCV", "RawText", "rawText", "ResumenCV", "resumenCV"]);
+  const cvText = deepFirstText(row, ["CvTexto", "cvTexto", "TextoCV", "textoCV", "RawText", "rawText", "ResumenCV", "resumenCV", "CVTexto", "cv_texto", "CurriculumTexto", "Experiencia", "experiencia", "Formacion", "formacion", "Educacion", "educacion"]);
   const fileName = deepFirstText(row, ["FileName", "fileName", "NombreArchivo", "nombreArchivo", "CvNombre", "cvNombre"]);
   const documents = [];
 
-  if (cvUrl || cvText) {
+  const looksLikeUrl = cvUrl && /^https?:\/\//i.test(cvUrl);
+  const inlineCvText = cvText ?? (cvUrl && !looksLikeUrl && cvUrl.length > 80 ? cvUrl : null);
+
+  if (looksLikeUrl || inlineCvText) {
     documents.push({
       type: "cv",
       fileName: fileName || "CV importado",
-      fileUrl: cvUrl,
-      rawText: cvText,
+      fileUrl: looksLikeUrl ? cvUrl : null,
+      rawText: inlineCvText,
       sourceId: deepFirstText(row, ["CurriculumId", "curriculumId", "CvId", "cvId", "Id", "id"]),
       isPrimaryCv: true
     });
@@ -452,6 +513,24 @@ async function fetchApplicantsForOffer(config: Record<string, unknown>, offer: R
   return { rows: collected, route: workingRoute || "sin-ruta" };
 }
 
+function candidatesFromBuscojobsPayload(payload: unknown, offer: Record<string, unknown> = {}) {
+  const directRows = arrayFromPayload(payload);
+  const nestedRows = collectCandidateLikeRows(payload);
+  const candidates: CandidateImport[] = [];
+  const seenRows = new Set<Record<string, unknown>>();
+
+  for (const row of [...directRows, ...nestedRows]) {
+    if (seenRows.has(row)) continue;
+    seenRows.add(row);
+    const candidate = applicantFromRow(row, offer) ?? normalizeCandidate(row, "buscojobs");
+    if (candidate && isUsableCandidate(candidate, "buscojobs")) candidates.push(candidate);
+  }
+
+  const bySource = new Map<string, CandidateImport>();
+  for (const candidate of candidates) bySource.set(candidate.sourceId ?? `${candidate.fullName}:${candidate.email[0] ?? ""}:${candidate.phone[0] ?? ""}`, candidate);
+  return [...bySource.values()];
+}
+
 async function fetchBuscojobs(url: string, cookieHeader: string) {
   const response = await fetch(url, {
     headers: {
@@ -553,6 +632,17 @@ async function scrapeBuscojobs(config: Record<string, unknown>) {
     const baseUrl = apiUrl ?? `https://api.buscojobs.com/v3/uy/api/empresas/${auth.empresaId}/OfertasActivas?filter=${encodeURIComponent(JSON.stringify({ order: ["FechaInicio DESC"], limit: Number(config.maxOffers ?? 50), skip: 0 }))}`;
     const payload = await fetchBuscojobsJson(baseUrl, config);
     const offers = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.rows) ? payload.rows : [];
+    const directCandidates = candidatesFromBuscojobsPayload(payload);
+    const baseLooksLikeApplicants = directCandidates.length > 0 && (
+      /postul|candidat|curriculum|cv/i.test(baseUrl)
+      || directCandidates.length >= Math.max(1, Math.floor(offers.length * 0.5))
+    );
+    if (baseLooksLikeApplicants) {
+      return {
+        rows: directCandidates,
+        message: `Buscojobs: ${directCandidates.length} postulantes detectados directamente desde la llamada/API pegada.`
+      };
+    }
     const candidates: CandidateImport[] = [];
     const routeNotes: string[] = [];
     const maxOffers = Number(config.maxOffers ?? 50);
@@ -654,6 +744,8 @@ function rowsFromConfig(config: Record<string, unknown>) {
     if (Array.isArray(parsed?.records)) {
       return parsed.records.filter((item: unknown): item is Record<string, unknown> => typeof item === "object" && item !== null);
     }
+    const nested = collectCandidateLikeRows(parsed);
+    if (nested.length > 0) return nested;
   } catch {
     return parseCsv(raw);
   }
@@ -662,11 +754,11 @@ function rowsFromConfig(config: Record<string, unknown>) {
 }
 
 function normalizeCandidate(row: Record<string, unknown>, sourceType: string): CandidateImport | null {
-  const fullName = firstText(row, ["fullName", "full_name", "name", "nombre", "candidate", "candidato"]);
-  const firstName = firstText(row, ["firstName", "first_name", "nombre"]);
-  const lastName = firstText(row, ["lastName", "last_name", "apellido"]);
-  const email = unique(listFrom(row.email ?? row.emails ?? row.mail ?? row.correo));
-  const phone = unique(listFrom(row.phone ?? row.phones ?? row.telefono ?? row.celular ?? row.mobile));
+  const fullName = firstText(row, ["fullName", "full_name", "name", "nombre", "Nombre", "Nombre completo", "nombre completo", "Postulante", "postulante", "Candidato", "candidato", "Persona", "persona"]);
+  const firstName = firstText(row, ["firstName", "first_name", "primerNombre", "PrimerNombre", "nombres", "Nombres", "nombre"]);
+  const lastName = firstText(row, ["lastName", "last_name", "apellido", "Apellido", "apellidos", "Apellidos"]);
+  const email = extractEmails(deepFirstText(row, ["email", "emails", "mail", "Mail", "correo", "Correo", "Correo electronico", "Email"]));
+  const phone = extractPhones(deepFirstText(row, ["phone", "phones", "telefono", "Telefono", "teléfono", "Teléfono", "celular", "Celular", "mobile", "Mobile", "whatsapp", "WhatsApp"]));
   const resolvedName = fullName ?? unique([firstName ?? "", lastName ?? ""]).join(" ").trim();
 
   if (!resolvedName && email.length === 0 && phone.length === 0) return null;
@@ -683,13 +775,13 @@ function normalizeCandidate(row: Record<string, unknown>, sourceType: string): C
     city: firstText(row, ["city", "ciudad", "location", "ubicacion"]),
     country: firstText(row, ["country", "pais"]),
     linkedinUrl: firstText(row, ["linkedinUrl", "linkedin_url", "linkedin"]),
-    currentRole: compactLabel(firstText(row, ["currentRole", "current_role", "role", "cargo", "puesto", "position"])),
+    currentRole: compactLabel(firstText(row, ["currentRole", "current_role", "role", "cargo", "Cargo", "puesto", "Puesto", "position", "Postulacion", "postulacion", "Oferta", "oferta", "Vacante", "vacante"])),
     seniority: firstText(row, ["seniority", "seniorityLevel", "nivel"]),
     years,
-    tags: safeTags(listFrom(row.tags ?? row.skills ?? row.habilidades), sourceType),
-    summary: firstText(row, ["summary", "resumen", "notes", "notas"]),
+    tags: safeTags(listFrom(row.tags ?? row.skills ?? row.habilidades ?? row.competencias ?? row.area ?? row.Area), sourceType),
+    summary: firstText(row, ["summary", "resumen", "Resumen", "notes", "notas", "Notas", "experiencia", "Experiencia", "cvTexto", "textoCV"]),
     qualityScore: 0,
-    sourceId: firstText(row, ["id", "sourceId", "source_id", "candidateId", "candidate_id"]),
+    sourceId: firstText(row, ["id", "Id", "sourceId", "source_id", "candidateId", "candidate_id", "PostulanteId", "postulanteId", "CandidatoId", "candidatoId", "PostulacionId", "postulacionId"]),
     sourceUrl: firstText(row, ["url", "sourceUrl", "source_url", "profileUrl", "profile_url"]),
     documents: candidateDocumentsFromRow(row, sourceType),
     raw: row
@@ -929,7 +1021,11 @@ integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(asyn
 
   if (rowsToImport.length > 0) {
     for (const row of rowsToImport) {
-      const candidate = scraperResult && isAgentCandidate(row) ? row : normalizeCandidate(row, integrationId);
+      const candidate = scraperResult && isAgentCandidate(row)
+        ? row
+        : integrationId === "buscojobs"
+          ? (applicantFromRow(row as Record<string, unknown>, {}) ?? normalizeCandidate(row as Record<string, unknown>, integrationId))
+          : normalizeCandidate(row as Record<string, unknown>, integrationId);
       if (!candidate) {
         errors += 1;
         continue;
