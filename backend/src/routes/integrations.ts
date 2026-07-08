@@ -1417,6 +1417,11 @@ function isUsableCandidate(candidate: CandidateImport, sourceType = "") {
   const hasContact = candidate.email.length > 0 || candidate.phone.length > 0 || Boolean(candidate.linkedinUrl);
   const hasDocument = (candidate.documents ?? []).some((document) => Boolean(document.fileUrl || document.rawText));
   const hasRealName = candidateNameLooksReal(candidate.fullName);
+  const documentSource = sourceType === "drive" || sourceType === "gmail";
+
+  if (documentSource && hasDocument) {
+    return Boolean(hasRealName || hasContact || candidate.sourceId);
+  }
 
   if (sourceType === "buscojobs") {
     if (!hasRealName) return false;
