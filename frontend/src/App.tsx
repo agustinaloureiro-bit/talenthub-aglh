@@ -398,10 +398,13 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
   const [bulkText, setBulkText] = useState("");
   const [bulkError, setBulkError] = useState("");
   const [syncMessage, setSyncMessage] = useState("");
+  const [syncingAll, setSyncingAll] = useState(false);
+  const [syncingSource, setSyncingSource] = useState<string | null>(null);
   const load = () => api<any>("/integrations").then(setData);
   useEffect(() => { load(); }, []);
   async function save(id: string, status: string) { await api(`/integrations/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }); load(); }
   async function sync(id: string) {
+    setSyncingSource(id);
     setSyncMessage(`Sincronizando ${id}...`);
     try {
       const result = await api<{ data: any }>(`/integrations/${id}/sync`, { method: "POST" });
@@ -411,17 +414,22 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
     } catch (err: any) {
       setSyncMessage(err.message || "No se pudo sincronizar.");
       load();
+    } finally {
+      setSyncingSource(null);
     }
   }
   async function syncAll() {
+    setSyncingAll(true);
     setSyncMessage("Sincronizando todas las fuentes conectadas...");
     try {
       const result = await api<{ meta: { sources: number; imported: number; errors: number; message: string } }>("/integrations/sync-all", { method: "POST" });
-      setSyncMessage(result.meta.message);
+      setSyncMessage(`${result.meta.message} Si una fuente queda en rojo, abri Configurar en esa tarjeta para completar el paso pendiente.`);
       load();
     } catch (err: any) {
       setSyncMessage(err.message || "No se pudieron sincronizar las fuentes.");
       load();
+    } finally {
+      setSyncingAll(false);
     }
   }
   async function applyBulk(e: FormEvent) {
@@ -446,7 +454,89 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
   "drive": { "clientId": "", "clientSecret": "", "refreshToken": "", "sessionCookies": "", "searchUrls": "" },
   "buscojobs": { "username": "", "password": "" }
 }`;
-  return <PagePad><div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Guarda solo cuentas propias y fuentes donde tengas permiso de extraccion. Los valores sensibles quedan ocultos despues de guardarlos.</div>{data.meta?.syncEngineVersion && <div className="mb-4 rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-500">Motor de sincronizacion: {data.meta.syncEngineVersion}</div>}{syncMessage && <div className="mb-4 rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700">{syncMessage}</div>}{canEdit && <div className="card mb-4 flex flex-wrap gap-2 p-4"><button className="btn-primary" onClick={syncAll}>Sincronizar todo</button><button className="btn-primary" onClick={() => { setBulkOpen(!bulkOpen); if (!bulkText) setBulkText(template); }}><Settings size={16} /> Cargar todas las cuentas</button>{bulkOpen && <form onSubmit={applyBulk} className="mt-4 grid w-full gap-3">{bulkError && <ErrorBox message={bulkError} />}<textarea className="field min-h-52 font-mono text-xs" value={bulkText} onChange={(e) => setBulkText(e.target.value)} /><button className="btn-primary w-fit"><Save size={16} /> Guardar todas</button></form>}</div>}<div className="mb-6 grid gap-4 md:grid-cols-2">{data.data.map((i: any) => <div className="card p-4" key={i.id}><div className="mb-2 flex items-center justify-between"><div className="font-bold">{i.name}</div><span className="rounded-full bg-slate-100 px-2 py-1 text-xs">{i.status}</span></div><p className="text-sm text-slate-500">Ultima sync: {i.last_sync_at ? new Date(i.last_sync_at).toLocaleString() : "Nunca"} - {i.total_imported} registros</p><IntegrationDiagnostic integration={i} /><div className="mt-3 flex flex-wrap gap-2">{canEdit && <select className="field max-w-44" value={i.status} onChange={(e) => save(i.id, e.target.value)}><option value="not_configured">No configurado</option><option value="connected">Conectado</option><option value="warning">Advertencia</option><option value="error">Error</option><option value="soon">Proximamente</option></select>}{canEdit && <button className="btn-ghost" onClick={() => setEditing(editing === i.id ? null : i.id)}><Settings size={16} /> Configurar</button>}<button className="btn-primary" onClick={() => sync(i.id)}>Sincronizar</button></div>{editing === i.id && <IntegrationConfigPanelV2 integration={i} onSaved={() => { setEditing(null); load(); }} />}</div>)}</div><Table title="Log de sincronizaciones" rows={data.logs} empty="Sin logs registrados." columns={["source", "status", "new_records", "updated_records", "errors", "message"]} /><div className="mt-4"><Table title="Registros rechazados por no ser candidatos reales" rows={data.rejected ?? []} empty="Sin rechazos recientes." columns={["source_type", "extracted_name", "reason", "created_at"]} /></div></PagePad>;
+  const sources = data.data ?? [];
+  const readyCount = sources.filter((item: any) => item.status === "connected" && !String(item.config?.sessionStatus ?? "").startsWith("requires_")).length;
+  const errorCount = sources.filter((item: any) => item.status === "error" || String(item.config?.sessionStatus ?? "").startsWith("requires_")).length;
+  const importedCount = sources.reduce((sum: number, item: any) => sum + Number(item.total_imported ?? 0), 0);
+  return (
+    <PagePad>
+      <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+        Guarda solo cuentas propias y fuentes donde tengas permiso de extraccion. Los valores sensibles quedan ocultos despues de guardarlos.
+      </div>
+      {data.meta?.syncEngineVersion && <div className="mb-4 rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-500">Motor de sincronizacion: {data.meta.syncEngineVersion}</div>}
+      <div className="mb-4 grid gap-3 md:grid-cols-3">
+        <InfoMetric label="Fuentes listas" value={readyCount} />
+        <InfoMetric label="Fuentes con accion pendiente" value={errorCount} />
+        <InfoMetric label="Registros fuente leidos" value={importedCount} />
+      </div>
+      {syncMessage && <div className="mb-4 rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700">{syncMessage}</div>}
+      {canEdit && (
+        <div className="card mb-4 flex flex-wrap gap-2 p-4">
+          <button className="btn-primary" onClick={syncAll} disabled={syncingAll}>{syncingAll ? "Sincronizando..." : "Sincronizar todo"}</button>
+          <button className="btn-primary" onClick={() => { setBulkOpen(!bulkOpen); if (!bulkText) setBulkText(template); }}><Settings size={16} /> Cargar todas las cuentas</button>
+          {bulkOpen && (
+            <form onSubmit={applyBulk} className="mt-4 grid w-full gap-3">
+              {bulkError && <ErrorBox message={bulkError} />}
+              <textarea className="field min-h-52 font-mono text-xs" value={bulkText} onChange={(e) => setBulkText(e.target.value)} />
+              <button className="btn-primary w-fit"><Save size={16} /> Guardar todas</button>
+            </form>
+          )}
+        </div>
+      )}
+      <div className="mb-6 grid gap-4 md:grid-cols-2">
+        {sources.map((i: any) => {
+          const next = integrationNextStep(i);
+          const isSyncing = syncingSource === i.id;
+          return (
+            <div className="card p-4" key={i.id}>
+              <div className="mb-2 flex items-center justify-between">
+                <div className="font-bold">{i.name}</div>
+                <span className={`rounded-full px-2 py-1 text-xs ${i.status === "error" ? "bg-red-50 text-red-700" : i.status === "connected" ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>{i.status}</span>
+              </div>
+              <p className="text-sm text-slate-500">Ultima sync: {i.last_sync_at ? new Date(i.last_sync_at).toLocaleString() : "Nunca"} - {i.total_imported} registros</p>
+              <IntegrationDiagnostic integration={i} />
+              <div className={`mt-3 rounded-md border p-3 text-xs ${next.kind === "ok" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : next.kind === "warn" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-slate-200 bg-slate-50 text-slate-700"}`}>
+                <div className="font-semibold">{next.title}</div>
+                <div className="mt-1">{next.body}</div>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {canEdit && <select className="field max-w-44" value={i.status} onChange={(e) => save(i.id, e.target.value)}><option value="not_configured">No configurado</option><option value="connected">Conectado</option><option value="warning">Advertencia</option><option value="error">Error</option><option value="soon">Proximamente</option></select>}
+                {canEdit && <button className="btn-ghost" onClick={() => setEditing(editing === i.id ? null : i.id)}><Settings size={16} /> {next.action}</button>}
+                <button className="btn-primary" onClick={() => sync(i.id)} disabled={isSyncing || syncingAll}>{isSyncing ? "Sincronizando..." : "Sincronizar"}</button>
+              </div>
+              {editing === i.id && <IntegrationConfigPanelV2 integration={i} onSaved={() => { setEditing(null); load(); }} />}
+            </div>
+          );
+        })}
+      </div>
+      <Table title="Log de sincronizaciones" rows={data.logs} empty="Sin logs registrados." columns={["source", "status", "new_records", "updated_records", "errors", "message"]} />
+      <div className="mt-4"><Table title="Registros rechazados por no ser candidatos reales" rows={data.rejected ?? []} empty="Sin rechazos recientes." columns={["source_type", "extracted_name", "reason", "created_at"]} /></div>
+    </PagePad>
+  );
+}
+
+function InfoMetric({ label, value }: { label: string; value: number }) {
+  return <div className="rounded-lg border border-slate-200 bg-white p-3"><div className="text-xs font-semibold uppercase text-slate-500">{label}</div><div className="mt-1 text-2xl font-bold text-slate-900">{value}</div></div>;
+}
+
+function integrationNextStep(integration: any) {
+  const id = String(integration.id ?? "");
+  const config = integration.config ?? {};
+  const status = String(config.sessionStatus ?? integration.status ?? "");
+  const message = String(config.sessionLastError || config.lastAgentMessage || "");
+  if (integration.status === "connected" && !status.startsWith("requires_") && !message.toLowerCase().includes("fallo")) {
+    return { kind: "ok", title: "Lista para buscar", body: "Esta fuente esta conectada. Si hay candidatos disponibles, Sincronizar los importa a Candidatos y Talent Finder.", action: "Configurar" };
+  }
+  if (id === "gmail" || id === "drive") {
+    return { kind: "warn", title: "Falta conectar Google", body: "Abri Configurar y usa el bloque OAuth. Con eso TalentHub guarda un refresh token y no tenes que repetir el login cada vez.", action: "Conectar Google" };
+  }
+  if (id === "buscojobs") {
+    return { kind: "warn", title: "Falta detectar el endpoint real de postulantes", body: "Abri Configurar y deja guardado usuario/contrasena o un export historico. Si la API de postulantes cambia, el log va a mostrar exactamente donde fallo.", action: "Configurar Buscojobs" };
+  }
+  if (id === "aglh" || id === "yoiners") {
+    return { kind: "warn", title: "Falta sesion o URL de busqueda", body: "Abri Configurar y guarda URL/base, URL login, usuario/contrasena y las URLs donde aparecen candidatos. Tambien podes cargar un export como respaldo.", action: `Configurar ${integration.name}` };
+  }
+  return { kind: "neutral", title: "Pendiente de configuracion", body: "Esta fuente todavia no tiene datos suficientes para sincronizar candidatos reales.", action: "Configurar" };
 }
 
 function IntegrationDiagnostic({ integration }: { integration: any }) {

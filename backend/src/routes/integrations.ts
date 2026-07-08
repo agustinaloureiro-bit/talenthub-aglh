@@ -2429,11 +2429,28 @@ export async function syncConnectedIntegrations() {
        AND config <> '{}'::jsonb
      ORDER BY name`
   );
-  const results = [];
-  for (const row of integrations.rows) {
-    const result = await syncIntegration(row.id);
-    if (result) results.push(result);
+  const results = await runSyncQueue(integrations.rows, 2, async (row) => {
+    try {
+      return await syncIntegration(row.id);
+    } catch (err) {
+      console.error(`sync-all failed for ${row.id}`, err);
+      return null;
+    }
+  });
+  return results.filter(Boolean);
+}
+
+async function runSyncQueue<T, R>(items: T[], concurrency: number, worker: (item: T) => Promise<R>) {
+  const results: R[] = [];
+  let index = 0;
+  async function runNext() {
+    while (index < items.length) {
+      const current = items[index++];
+      results.push(await worker(current));
+    }
   }
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, runNext);
+  await Promise.all(workers);
   return results;
 }
 
