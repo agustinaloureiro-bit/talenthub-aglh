@@ -820,12 +820,13 @@ function candidateFromFreeText(sourceType: string, text: string, options: { sour
 }
 
 async function googleAccessToken(config: Record<string, unknown>) {
-  const direct = cleanText(config.accessToken ?? config.token ?? config.apiKey).replace(/^Bearer\s+/i, "");
-  if (direct) return { token: direct, configUpdate: {} };
   const refreshToken = cleanText(config.refreshToken);
   const clientId = cleanText(config.clientId);
   const clientSecret = cleanText(config.clientSecret);
-  if (!refreshToken || !clientId || !clientSecret) return null;
+  const direct = cleanText(config.accessToken ?? config.token ?? config.apiKey).replace(/^Bearer\s+/i, "");
+  if (!refreshToken || !clientId || !clientSecret) {
+    return direct ? { token: direct, configUpdate: {} } : null;
+  }
 
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
