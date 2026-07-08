@@ -575,6 +575,7 @@ function IntegrationConfigPanelV2({ integration, onSaved }: { integration: any; 
   const [oauthUrl, setOauthUrl] = useState("");
   const [oauthRedirectUri, setOauthRedirectUri] = useState("");
   const [oauthMessage, setOauthMessage] = useState("");
+  const defaultGoogleRedirectUri = `${window.location.origin}/api/integrations/google/callback`;
   async function saveConfig(e: FormEvent) {
     e.preventDefault();
     setSaving(true);
@@ -599,6 +600,11 @@ function IntegrationConfigPanelV2({ integration, onSaved }: { integration: any; 
   async function createOauthUrl() {
     setError("");
     setOauthMessage("");
+    if (!form.clientId.trim() || !form.clientSecret.trim()) {
+      setOauthRedirectUri(defaultGoogleRedirectUri);
+      setError("Primero crea el cliente OAuth en Google Cloud usando el Redirect URI que aparece abajo. Despues pega Client ID y Client secret aca.");
+      return;
+    }
     try {
       const response = await api<{ data: { url: string; redirectUri: string } }>(`/integrations/${integration.id}/google-oauth-url`, {
         method: "POST",
@@ -643,11 +649,15 @@ function IntegrationConfigPanelV2({ integration, onSaved }: { integration: any; 
       {integration.id === "buscojobs" && <p className="text-xs text-slate-500">Para Buscojobs, completa usuario/email y contrasena. TalentHub intenta iniciar sesion y guardar la sesion renovada al sincronizar.</p>}
       {isGoogle && (
         <div className="grid gap-3 rounded-md border border-slate-200 bg-white p-3">
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+            <div className="font-semibold">Redirect URI para Google Cloud</div>
+            <div className="mt-1 break-all font-mono">{oauthRedirectUri || defaultGoogleRedirectUri}</div>
+            <div className="mt-1">Copia esta URL en Google Cloud cuando te pida Authorized redirect URI.</div>
+          </div>
           <div className="flex flex-wrap gap-2">
             <button type="button" className="btn-ghost" onClick={createOauthUrl}>Generar link Google</button>
             {oauthUrl && <a className="btn-ghost" href={oauthUrl} target="_blank" rel="noreferrer">Abrir link</a>}
           </div>
-          {oauthRedirectUri && <div className="rounded-md bg-slate-50 p-2 text-xs text-slate-500">Redirect URI: {oauthRedirectUri}</div>}
           <div className="grid gap-2 md:grid-cols-[1fr_auto]">
             <input className="field" placeholder="Pega aca el codigo que devuelve Google" value={oauthCode} onChange={(e) => setOauthCode(e.target.value)} />
             <button type="button" className="btn-primary" onClick={connectOauthCode}>Conectar OAuth</button>
