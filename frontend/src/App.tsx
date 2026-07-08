@@ -481,6 +481,10 @@ function IntegrationConfigPanelV2({ integration, onSaved }: { integration: any; 
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [oauthCode, setOauthCode] = useState("");
+  const [oauthUrl, setOauthUrl] = useState("");
+  const [oauthRedirectUri, setOauthRedirectUri] = useState("");
+  const [oauthMessage, setOauthMessage] = useState("");
   async function saveConfig(e: FormEvent) {
     e.preventDefault();
     setSaving(true);
@@ -502,7 +506,72 @@ function IntegrationConfigPanelV2({ integration, onSaved }: { integration: any; 
   }
   const isGoogle = integration.id === "gmail" || integration.id === "drive";
   const isWebAgent = integration.id === "aglh" || integration.id === "yoiners" || integration.id === "buscojobs";
-  return <form onSubmit={saveConfig} className="mt-4 grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-4">{error && <ErrorBox message={error} />}<div className="grid gap-3 md:grid-cols-2">{isWebAgent && <Input label="URL/base" value={form.baseUrl} onChange={(v) => setForm({ ...form, baseUrl: v })} />}{isWebAgent && <Input label="URL login" value={form.loginUrl} onChange={(v) => setForm({ ...form, loginUrl: v })} />}{isGoogle && <Input label="Client ID" value={form.clientId} onChange={(v) => setForm({ ...form, clientId: v })} />}{isGoogle && <Input label="Client secret" type="password" value={form.clientSecret} onChange={(v) => setForm({ ...form, clientSecret: v })} />}{isGoogle && <Input label="Refresh token" type="password" value={form.refreshToken} onChange={(v) => setForm({ ...form, refreshToken: v })} />}{isGoogle && <Input label="Access token temporal" type="password" value={form.accessToken} onChange={(v) => setForm({ ...form, accessToken: v })} />}{!isGoogle && <Input label="Usuario/email" value={form.username} onChange={(v) => setForm({ ...form, username: v })} />}{!isGoogle && <Input label="Contrasena" type="password" value={form.password} onChange={(v) => setForm({ ...form, password: v })} />}<Input label={integration.id === "buscojobs" ? "Token/API opcional" : "API key/token opcional"} type="password" value={form.apiKey} onChange={(v) => setForm({ ...form, apiKey: v })} /></div>{integration.id === "buscojobs" && <p className="text-xs text-slate-500">Para Buscojobs, completa usuario/email y contrasena. TalentHub va a limpiar tokens vencidos e intentar iniciar sesion automaticamente al sincronizar.</p>}{isGoogle && <p className="text-xs text-slate-500">Para Gmail/Drive podes usar OAuth de Google o una sesion/cookies guardadas. Si la sesion vence, el agente intenta reutilizar lo ultimo guardado.</p>}{(integration.id === "aglh" || integration.id === "yoiners" || isGoogle) && <div className="grid gap-3 md:grid-cols-2"><div><label className="label">URLs donde buscar candidatos</label><textarea className="field min-h-24" placeholder="Una o varias URLs separadas por coma o punto y coma." value={form.searchUrls} onChange={(e) => setForm({ ...form, searchUrls: e.target.value })} /></div><Input label="Patron links candidatos" value={form.candidateLinkPattern} onChange={(v) => setForm({ ...form, candidateLinkPattern: v })} /></div>}<div><label className="label">Sesion/cookies exportadas</label><textarea className="field min-h-24" placeholder="Opcional. Dejalo vacio si no sabes que es." value={form.sessionCookies} onChange={(e) => setForm({ ...form, sessionCookies: e.target.value })} /></div><div><label className="label">Archivo historico exportado</label><input className="field" type="file" accept=".csv,.txt,.json" onChange={(e) => loadHistoricalFile(e.target.files?.[0])} /><p className="mt-1 text-xs text-slate-500">Si una plataforma bloquea login automatico, carga aca un exportado de candidatos como respaldo.</p></div><div><label className="label">Datos historicos JSON/CSV</label><textarea className="field min-h-40 font-mono text-xs" placeholder={`Pega aca un exportado de candidatos. Ejemplo CSV:\nnombre,email,telefono,cargo,ciudad\nAna Perez,ana@mail.com,099123456,Analista,Montevideo`} value={form.historicalData} onChange={(e) => setForm({ ...form, historicalData: e.target.value })} /></div><div><label className="label">Notas internas</label><textarea className="field min-h-20" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div><button className="btn-primary w-fit" disabled={saving}><Save size={16} /> {saving ? "Guardando..." : "Guardar configuracion"}</button></form>;
+  async function createOauthUrl() {
+    setError("");
+    setOauthMessage("");
+    try {
+      const response = await api<{ data: { url: string; redirectUri: string } }>(`/integrations/${integration.id}/google-oauth-url`, {
+        method: "POST",
+        body: JSON.stringify({ clientId: form.clientId, clientSecret: form.clientSecret })
+      });
+      setOauthUrl(response.data.url);
+      setOauthRedirectUri(response.data.redirectUri);
+      window.open(response.data.url, "_blank", "noopener,noreferrer");
+    } catch (err: any) {
+      setError(err.message || "No se pudo generar el link de Google.");
+    }
+  }
+  async function connectOauthCode() {
+    setError("");
+    setOauthMessage("");
+    try {
+      const response = await api<{ data: { message: string } }>(`/integrations/${integration.id}/google-oauth-code`, {
+        method: "POST",
+        body: JSON.stringify({ code: oauthCode, clientId: form.clientId, clientSecret: form.clientSecret })
+      });
+      setOauthMessage(response.data.message);
+      onSaved();
+    } catch (err: any) {
+      setError(err.message || "No se pudo conectar Google.");
+    }
+  }
+  return (
+    <form onSubmit={saveConfig} className="mt-4 grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-4">
+      {error && <ErrorBox message={error} />}
+      {oauthMessage && <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{oauthMessage}</div>}
+      <div className="grid gap-3 md:grid-cols-2">
+        {isWebAgent && <Input label="URL/base" value={form.baseUrl} onChange={(v) => setForm({ ...form, baseUrl: v })} />}
+        {isWebAgent && <Input label="URL login" value={form.loginUrl} onChange={(v) => setForm({ ...form, loginUrl: v })} />}
+        {isGoogle && <Input label="Client ID" value={form.clientId} onChange={(v) => setForm({ ...form, clientId: v })} />}
+        {isGoogle && <Input label="Client secret" type="password" value={form.clientSecret} onChange={(v) => setForm({ ...form, clientSecret: v })} />}
+        {isGoogle && <Input label="Refresh token" type="password" value={form.refreshToken} onChange={(v) => setForm({ ...form, refreshToken: v })} />}
+        {isGoogle && <Input label="Access token temporal" type="password" value={form.accessToken} onChange={(v) => setForm({ ...form, accessToken: v })} />}
+        {!isGoogle && <Input label="Usuario/email" value={form.username} onChange={(v) => setForm({ ...form, username: v })} />}
+        {!isGoogle && <Input label="Contrasena" type="password" value={form.password} onChange={(v) => setForm({ ...form, password: v })} />}
+        <Input label={integration.id === "buscojobs" ? "Token/API opcional" : "API key/token opcional"} type="password" value={form.apiKey} onChange={(v) => setForm({ ...form, apiKey: v })} />
+      </div>
+      {integration.id === "buscojobs" && <p className="text-xs text-slate-500">Para Buscojobs, completa usuario/email y contrasena. TalentHub intenta iniciar sesion y guardar la sesion renovada al sincronizar.</p>}
+      {isGoogle && (
+        <div className="grid gap-3 rounded-md border border-slate-200 bg-white p-3">
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className="btn-ghost" onClick={createOauthUrl}>Generar link Google</button>
+            {oauthUrl && <a className="btn-ghost" href={oauthUrl} target="_blank" rel="noreferrer">Abrir link</a>}
+          </div>
+          {oauthRedirectUri && <div className="rounded-md bg-slate-50 p-2 text-xs text-slate-500">Redirect URI: {oauthRedirectUri}</div>}
+          <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+            <input className="field" placeholder="Pega aca el codigo que devuelve Google" value={oauthCode} onChange={(e) => setOauthCode(e.target.value)} />
+            <button type="button" className="btn-primary" onClick={connectOauthCode}>Conectar OAuth</button>
+          </div>
+        </div>
+      )}
+      {(integration.id === "aglh" || integration.id === "yoiners" || isGoogle) && <div className="grid gap-3 md:grid-cols-2"><div><label className="label">URLs donde buscar candidatos</label><textarea className="field min-h-24" placeholder="Una o varias URLs separadas por coma o punto y coma." value={form.searchUrls} onChange={(e) => setForm({ ...form, searchUrls: e.target.value })} /></div><Input label="Patron links candidatos" value={form.candidateLinkPattern} onChange={(v) => setForm({ ...form, candidateLinkPattern: v })} /></div>}
+      <div><label className="label">Sesion/cookies exportadas</label><textarea className="field min-h-24" placeholder="Opcional. Dejalo vacio si no sabes que es." value={form.sessionCookies} onChange={(e) => setForm({ ...form, sessionCookies: e.target.value })} /></div>
+      <div><label className="label">Archivo historico exportado</label><input className="field" type="file" accept=".csv,.txt,.json" onChange={(e) => loadHistoricalFile(e.target.files?.[0])} /><p className="mt-1 text-xs text-slate-500">Si una plataforma bloquea login automatico, carga aca un exportado de candidatos como respaldo.</p></div>
+      <div><label className="label">Datos historicos JSON/CSV</label><textarea className="field min-h-40 font-mono text-xs" placeholder={`Pega aca un exportado de candidatos. Ejemplo CSV:\nnombre,email,telefono,cargo,ciudad\nAna Perez,ana@mail.com,099123456,Analista,Montevideo`} value={form.historicalData} onChange={(e) => setForm({ ...form, historicalData: e.target.value })} /></div>
+      <div><label className="label">Notas internas</label><textarea className="field min-h-20" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>
+      <button className="btn-primary w-fit" disabled={saving}><Save size={16} /> {saving ? "Guardando..." : "Guardar configuracion"}</button>
+    </form>
+  );
 }
 
 function IntegrationConfigPanel({ integration, onSaved }: { integration: any; onSaved: () => void }) {

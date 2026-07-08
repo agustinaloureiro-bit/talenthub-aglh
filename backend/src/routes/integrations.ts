@@ -3,9 +3,11 @@ import { z } from "zod";
 import { q } from "../db/pool.js";
 import { asyncHandler } from "../middleware/errors.js";
 import { requireRole } from "../middleware/auth.js";
+import { config as appConfig } from "../config.js";
 import type { AgentSyncResult, CandidateImport, IntegrationAgent } from "../agents/types.js";
 
 export const integrationsRouter = Router();
+export const integrationsPublicRouter = Router();
 
 const DEFAULT_INTEGRATIONS = [
   ["aglh", "AGLH Platform"],
@@ -16,7 +18,7 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-07.6";
+const SYNC_ENGINE_VERSION = "2026-07-08.1";
 
 function maskConfig(config: Record<string, unknown> | null) {
   if (!config) return {};
@@ -849,6 +851,66 @@ async function googleAccessToken(config: Record<string, unknown>) {
   };
 }
 
+function googleOAuthScopes(sourceType: "gmail" | "drive") {
+  return sourceType === "gmail"
+    ? ["https://www.googleapis.com/auth/gmail.readonly"]
+    : ["https://www.googleapis.com/auth/drive.readonly"];
+}
+
+function googleRedirectUri(config: Record<string, unknown>) {
+  return cleanText(config.redirectUri) || `${appConfig.corsOrigin.replace(/\/$/, "")}/api/integrations/google/callback`;
+}
+
+function googleOAuthUrl(sourceType: "gmail" | "drive", config: Record<string, unknown>) {
+  const clientId = cleanText(config.clientId);
+  if (!clientId) throw new Error("Falta Client ID de Google.");
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: googleRedirectUri(config),
+    response_type: "code",
+    access_type: "offline",
+    prompt: "consent",
+    state: sourceType,
+    scope: googleOAuthScopes(sourceType).join(" ")
+  });
+  return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+}
+
+async function exchangeGoogleOAuthCode(sourceType: "gmail" | "drive", config: Record<string, unknown>, code: string) {
+  const clientId = cleanText(config.clientId);
+  const clientSecret = cleanText(config.clientSecret);
+  if (!clientId || !clientSecret) throw new Error("Faltan Client ID y Client secret de Google.");
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      code,
+      redirect_uri: googleRedirectUri(config),
+      grant_type: "authorization_code"
+    })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.access_token) {
+    throw new Error(`Google no devolvio tokens validos: ${JSON.stringify(payload).slice(0, 180)}`);
+  }
+  if (!payload.refresh_token && !cleanText(config.refreshToken)) {
+    throw new Error("Google conecto, pero no devolvio refresh token. Usa el link nuevo con permiso completo/consentimiento.");
+  }
+  return {
+    clientId,
+    clientSecret,
+    refreshToken: payload.refresh_token ?? cleanText(config.refreshToken),
+    accessToken: payload.access_token,
+    oauthStatus: "connected",
+    sessionStatus: "connected",
+    sessionRefreshedAt: new Date().toISOString(),
+    sessionLastError: null,
+    lastAgentMessage: `${sourceType === "gmail" ? "Gmail" : "Google Drive"} conectado con OAuth.`
+  };
+}
+
 async function googleJson(url: string, token: string) {
   const response = await fetch(url, { headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
   const payload = await response.json().catch(() => ({}));
@@ -1386,8 +1448,14 @@ function applicantFromRow(row: Record<string, unknown>, offer: Record<string, un
   const fullName = deepFirstText(person, fullNameKeys)
     ?? unique([firstName, lastName].filter(Boolean) as string[]).join(" ")
     ?? firstMatchingKeyText(person, [/nombre.*completo/, /full.*name/, /postulante.*nombre/, /candidat.*nombre/]);
-  const email = unique(listFrom(deepFirstText(person, ["Email", "email", "Mail", "mail", "Correo", "correo"]) ?? deepFirstText(row, ["Email", "email", "Mail", "mail", "Correo", "correo"])));
-  const phone = unique(listFrom(deepFirstText(person, ["Telefono", "telefono", "Celular", "celular", "Mobile", "mobile", "Phone", "phone"]) ?? deepFirstText(row, ["Telefono", "telefono", "Celular", "celular", "Mobile", "mobile", "Phone", "phone"])));
+  const email = unique([
+    ...listFrom(deepFirstText(person, ["Email", "email", "Mail", "mail", "Correo", "correo", "EmailContacto", "emailContacto"]) ?? deepFirstText(row, ["Email", "email", "Mail", "mail", "Correo", "correo", "EmailContacto", "emailContacto"])),
+    ...extractEmails(JSON.stringify(row))
+  ]);
+  const phone = unique([
+    ...listFrom(deepFirstText(person, ["Telefono", "telefono", "Celular", "celular", "Mobile", "mobile", "Phone", "phone", "TelefonoContacto", "telefonoContacto"]) ?? deepFirstText(row, ["Telefono", "telefono", "Celular", "celular", "Mobile", "mobile", "Phone", "phone", "TelefonoContacto", "telefonoContacto"])),
+    ...extractPhones(JSON.stringify(row))
+  ]);
   const sourceId = deepFirstText(row, ["PostulacionId", "postulacionId", "PostulanteId", "postulanteId", "CandidatoId", "candidatoId", "CurriculumId", "curriculumId"])
     ?? firstMatchingKeyText(row, [/postul.*id/, /candidat.*id/, /curriculum.*id/])
     ?? deepFirstText(person, ["Id", "id"]);
@@ -2319,6 +2387,69 @@ integrationsRouter.patch("/:id", requireRole("admin"), asyncHandler(async (req, 
   );
   if (!rows[0]) return res.status(404).json({ error: "Integracion no encontrada" });
   res.json({ data: { ...rows[0], config: maskConfig(rows[0].config) } });
+}));
+
+integrationsPublicRouter.get("/google/callback", asyncHandler(async (req, res) => {
+  const id = String(req.query.state ?? "");
+  const code = cleanText(req.query.code);
+  if ((id !== "gmail" && id !== "drive") || !code) {
+    return res.status(400).send("<h1>TalentHub</h1><p>No se pudo conectar Google: falta codigo o fuente.</p>");
+  }
+  const current = await q("SELECT config FROM integrations WHERE id=$1", [id]);
+  const config = current.rows[0]?.config ?? {};
+  const update = await exchangeGoogleOAuthCode(id, config, code);
+  await q(
+    `INSERT INTO integrations (id, name, status, config)
+     VALUES ($1,$2,'connected',$3::jsonb)
+     ON CONFLICT (id) DO UPDATE SET config=integrations.config || $3::jsonb, status='connected', updated_at=now()`,
+    [id, DEFAULT_INTEGRATIONS.find(([key]) => key === id)?.[1] ?? id, JSON.stringify(update)]
+  );
+  res
+    .status(200)
+    .type("html")
+    .send(`<!doctype html><html><head><meta charset="utf-8"><title>TalentHub conectado</title></head><body style="font-family:system-ui;padding:32px"><h1>Google conectado</h1><p>${id === "gmail" ? "Gmail" : "Google Drive"} quedo conectado en TalentHub. Ya podes volver a la app y sincronizar.</p></body></html>`);
+}));
+
+integrationsRouter.post("/:id/google-oauth-url", requireRole("admin"), asyncHandler(async (req, res) => {
+  const id = String(req.params.id);
+  if (id !== "gmail" && id !== "drive") return res.status(400).json({ error: "OAuth de Google solo aplica a Gmail o Drive." });
+  const body = z.object({
+    clientId: z.string().min(1),
+    clientSecret: z.string().optional(),
+    redirectUri: z.string().optional()
+  }).parse(req.body);
+  const current = await q("SELECT config FROM integrations WHERE id=$1", [id]);
+  const config = { ...(current.rows[0]?.config ?? {}), ...body };
+  const url = googleOAuthUrl(id, config);
+  const redirectUri = googleRedirectUri(config);
+  await q(
+    `INSERT INTO integrations (id, name, status, config)
+     VALUES ($1,$2,'warning',$3::jsonb)
+     ON CONFLICT (id) DO UPDATE SET config=integrations.config || $3::jsonb, status='warning', updated_at=now()`,
+    [id, DEFAULT_INTEGRATIONS.find(([key]) => key === id)?.[1] ?? id, JSON.stringify({ clientId: body.clientId, clientSecret: body.clientSecret, redirectUri: body.redirectUri, oauthStatus: "waiting_code" })]
+  );
+  res.json({ data: { url, redirectUri } });
+}));
+
+integrationsRouter.post("/:id/google-oauth-code", requireRole("admin"), asyncHandler(async (req, res) => {
+  const id = String(req.params.id);
+  if (id !== "gmail" && id !== "drive") return res.status(400).json({ error: "OAuth de Google solo aplica a Gmail o Drive." });
+  const body = z.object({
+    code: z.string().min(4),
+    clientId: z.string().optional(),
+    clientSecret: z.string().optional(),
+    redirectUri: z.string().optional()
+  }).parse(req.body);
+  const current = await q("SELECT config FROM integrations WHERE id=$1", [id]);
+  const config = { ...(current.rows[0]?.config ?? {}), ...body };
+  const update = await exchangeGoogleOAuthCode(id, config, body.code.trim());
+  await q(
+    `INSERT INTO integrations (id, name, status, config)
+     VALUES ($1,$2,'connected',$3::jsonb)
+     ON CONFLICT (id) DO UPDATE SET config=integrations.config || $3::jsonb, status='connected', updated_at=now()`,
+    [id, DEFAULT_INTEGRATIONS.find(([key]) => key === id)?.[1] ?? id, JSON.stringify(update)]
+  );
+  res.json({ data: { status: "connected", message: update.lastAgentMessage } });
 }));
 
 async function syncIntegration(integrationId: string) {

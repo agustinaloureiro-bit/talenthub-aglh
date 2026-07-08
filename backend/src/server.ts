@@ -11,7 +11,7 @@ import { errorHandler } from "./middleware/errors.js";
 import { authRouter } from "./routes/auth.js";
 import { candidatesRouter } from "./routes/candidates.js";
 import { dashboardRouter } from "./routes/dashboard.js";
-import { integrationsRouter } from "./routes/integrations.js";
+import { integrationsPublicRouter, integrationsRouter } from "./routes/integrations.js";
 import { settingsRouter } from "./routes/settings.js";
 import { searchRouter } from "./routes/search.js";
 import { chatRouter } from "./routes/chat.js";
@@ -29,6 +29,7 @@ app.use(rateLimit({ windowMs: 60_000, limit: 300 }));
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 app.use("/api/auth", authRouter);
+app.use("/api/integrations", integrationsPublicRouter);
 app.use("/api/dashboard", requireAuth, dashboardRouter);
 app.use("/api/candidates", requireAuth, candidatesRouter);
 app.use("/api/search", requireAuth, searchRouter);
