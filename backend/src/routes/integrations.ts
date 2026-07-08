@@ -961,24 +961,24 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
   try {
     auth = await googleAccessToken(config);
   } catch (error: any) {
-    const fallback = await googleWebFallback("gmail", "Gmail", config);
     return {
-      ...fallback,
-      message: `Gmail OAuth no funciono (${cleanText(error?.message).slice(0, 120)}). ${fallback.message}`
+      rows: [],
+      configUpdate: {
+        sessionStatus: "requires_oauth",
+        sessionLastError: `Gmail OAuth no funciono: ${cleanText(error?.message).slice(0, 180)}`
+      },
+      message: `Gmail OAuth no funciono: ${cleanText(error?.message).slice(0, 180)}`
     };
   }
   if (!auth) {
-    if (!hasBrowserSessionConfig(config)) {
-      return {
-        rows: [],
-        configUpdate: {
-          sessionStatus: "requires_oauth",
-          sessionLastError: "Gmail necesita OAuth de Google o una sesion/cookies guardadas para poder leer correos."
-        },
-        message: "Gmail no tiene OAuth ni sesion/cookies guardadas. No se puede sincronizar correos todavia."
-      };
-    }
-    return googleWebFallback("gmail", "Gmail", config);
+    return {
+      rows: [],
+      configUpdate: {
+        sessionStatus: "requires_oauth",
+        sessionLastError: "Gmail necesita OAuth completo de Google: Client ID, Client secret y refresh token."
+      },
+      message: "Gmail no tiene OAuth completo. Conecta Google antes de sincronizar correos."
+    };
   }
   try {
     const query = cleanText(config.query) || "(cv OR curriculum OR resume OR candidato OR postulante OR linkedin OR selección OR seleccion) newer_than:3650d";
@@ -1003,10 +1003,14 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
       message: `Gmail: ${list.messages?.length ?? 0} correos revisados, ${rows.length} candidatos detectados.`
     };
   } catch (error: any) {
-    const fallback = await googleWebFallback("gmail", "Gmail", config);
     return {
-      ...fallback,
-      message: `Gmail API no funciono (${cleanText(error?.message).slice(0, 120)}). ${fallback.message}`
+      rows: [],
+      configUpdate: {
+        ...auth.configUpdate,
+        sessionStatus: "requires_oauth",
+        sessionLastError: `Gmail API no funciono: ${cleanText(error?.message).slice(0, 180)}`
+      },
+      message: `Gmail API no funciono: ${cleanText(error?.message).slice(0, 180)}`
     };
   }
 }
@@ -1016,24 +1020,24 @@ async function scrapeDrive(config: Record<string, unknown>): Promise<AgentSyncRe
   try {
     auth = await googleAccessToken(config);
   } catch (error: any) {
-    const fallback = await googleWebFallback("drive", "Google Drive", config);
     return {
-      ...fallback,
-      message: `Google Drive OAuth no funciono (${cleanText(error?.message).slice(0, 120)}). ${fallback.message}`
+      rows: [],
+      configUpdate: {
+        sessionStatus: "requires_oauth",
+        sessionLastError: `Google Drive OAuth no funciono: ${cleanText(error?.message).slice(0, 180)}`
+      },
+      message: `Google Drive OAuth no funciono: ${cleanText(error?.message).slice(0, 180)}`
     };
   }
   if (!auth) {
-    if (!hasBrowserSessionConfig(config)) {
-      return {
-        rows: [],
-        configUpdate: {
-          sessionStatus: "requires_oauth",
-          sessionLastError: "Google Drive necesita OAuth de Google o una sesion/cookies guardadas para poder leer archivos."
-        },
-        message: "Google Drive no tiene OAuth ni sesion/cookies guardadas. No se puede sincronizar archivos todavia."
-      };
-    }
-    return googleWebFallback("drive", "Google Drive", config);
+    return {
+      rows: [],
+      configUpdate: {
+        sessionStatus: "requires_oauth",
+        sessionLastError: "Google Drive necesita OAuth completo de Google: Client ID, Client secret y refresh token."
+      },
+      message: "Google Drive no tiene OAuth completo. Conecta Google antes de sincronizar archivos."
+    };
   }
   try {
     const maxResults = numberFromConfig(config.maxResults, 50);
@@ -1066,10 +1070,14 @@ async function scrapeDrive(config: Record<string, unknown>): Promise<AgentSyncRe
       message: `Google Drive: ${list.files?.length ?? 0} archivos revisados, ${rows.length} candidatos detectados.`
     };
   } catch (error: any) {
-    const fallback = await googleWebFallback("drive", "Google Drive", config);
     return {
-      ...fallback,
-      message: `Google Drive API no funciono (${cleanText(error?.message).slice(0, 120)}). ${fallback.message}`
+      rows: [],
+      configUpdate: {
+        ...auth.configUpdate,
+        sessionStatus: "requires_oauth",
+        sessionLastError: `Google Drive API no funciono: ${cleanText(error?.message).slice(0, 180)}`
+      },
+      message: `Google Drive API no funciono: ${cleanText(error?.message).slice(0, 180)}`
     };
   }
 }
