@@ -72,6 +72,35 @@ function expandedSearchTerms(query: string) {
     .map((term) => `%${term}%`);
 }
 
+const excludeFalseGmailCandidatesSql = `NOT (
+  (
+    EXISTS (
+      SELECT 1
+      FROM candidate_sources false_gmail_source
+      WHERE false_gmail_source.candidate_id = candidates.id
+        AND false_gmail_source.source_type = 'gmail'
+    )
+    OR 'gmail' = ANY(coalesce(candidates.ai_tags, '{}'::text[]))
+  )
+  AND cardinality(coalesce(candidates.email, '{}'::text[])) = 0
+  AND cardinality(coalesce(candidates.phone, '{}'::text[])) = 0
+  AND coalesce(candidates.linkedin_url, '') = ''
+  AND (
+    lower(coalesce(candidates.full_name, '')) = ANY(ARRAY[
+      'the google cloud team',
+      'google cloud team',
+      'google workspace team',
+      'google team',
+      'microsoft account team',
+      'linkedin notifications'
+    ])
+    OR lower(coalesce(candidates.ai_summary, '')) LIKE '%your request for work account access%'
+    OR lower(coalesce(candidates.ai_summary, '')) LIKE '%google cloud%'
+    OR lower(coalesce(candidates.ai_summary, '')) LIKE '%security alert%'
+    OR lower(coalesce(candidates.ai_summary, '')) LIKE '%billing%'
+  )
+)`;
+
 const importSchema = z.object({
   sourceType: z.string().trim().min(1).default("manual"),
   data: z.string().min(1)
@@ -293,7 +322,7 @@ async function upsertImportedCandidate(sourceType: string, candidate: ImportedCa
 candidatesRouter.get("/", asyncHandler(async (req, res) => {
   const search = String(req.query.search ?? "");
   const params: unknown[] = [];
-  let where = "WHERE duplicate_of IS NULL";
+  let where = `WHERE duplicate_of IS NULL AND ${excludeFalseGmailCandidatesSql}`;
   if (search) {
     params.push(`%${search}%`);
     params.push(expandedSearchTerms(search));
@@ -324,7 +353,7 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
   }
   const [{ rows }, total] = await Promise.all([
     q(`SELECT * FROM candidates ${where} ORDER BY updated_at DESC LIMIT 100`, params),
-    q<{ count: string }>("SELECT count(*)::text FROM candidates WHERE duplicate_of IS NULL")
+    q<{ count: string }>(`SELECT count(*)::text FROM candidates WHERE duplicate_of IS NULL AND ${excludeFalseGmailCandidatesSql}`)
   ]);
   res.json({ data: rows.map(mapCandidate), meta: { total: Number(total.rows[0]?.count ?? 0), returned: rows.length } });
 }));
