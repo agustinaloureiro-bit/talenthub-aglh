@@ -20,7 +20,7 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-09.3";
+const SYNC_ENGINE_VERSION = "2026-07-09.4";
 
 function maskConfig(config: Record<string, unknown> | null) {
   if (!config) return {};
@@ -1063,13 +1063,27 @@ function gmailShouldImport(parsed: ReturnType<typeof gmailMessageText>, attachme
   return gmailHasCandidateIntent(searchableText);
 }
 
-async function gmailAttachments(messageId: string, parts: any[], token: string) {
+async function gmailAttachments(messageId: string, parts: any[], token: string, deadlineMs = Date.now() + 45_000) {
   const attachments = [];
   for (const part of parts) {
+    if (Date.now() > deadlineMs) break;
     const fileName = cleanText(part.filename);
     const attachmentId = cleanText(part.body?.attachmentId);
     const mimeType = cleanText(part.mimeType);
     if (!fileName || !looksLikeCvAttachment(fileName, mimeType)) continue;
+    const size = Number(part.body?.size ?? 0);
+    if (Number.isFinite(size) && size > 4_000_000) {
+      attachments.push({
+        fileName,
+        mimeType,
+        rawText: fileName,
+        sourceId: `gmail:${messageId}:${attachmentId || fileName}`,
+        sourcePath: `https://mail.google.com/mail/u/0/#all/${messageId}`,
+        isPrimaryCv: true,
+        skippedReason: "archivo grande"
+      });
+      continue;
+    }
     try {
       const body = attachmentId
         ? await googleJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/attachments/${attachmentId}`, token)
@@ -1124,6 +1138,8 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
     };
   }
   try {
+    const startedAt = Date.now();
+    const deadlineMs = startedAt + numberFromConfig(config.gmailBudgetMs, 45_000);
     const configuredQuery = cleanText(config.query);
     const queries = configuredQuery
       ? [configuredQuery]
@@ -1131,14 +1147,18 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
           "(cv OR curriculum OR resume OR candidato OR postulante OR linkedin OR selección OR seleccion) newer_than:3650d",
           "has:attachment newer_than:3650d"
         ];
-    const maxResults = numberFromConfig(config.maxResults, 200);
+    const maxResults = numberFromConfig(config.maxResults, 50);
+    const maxMessages = numberFromConfig(config.maxMessages, 60);
     const messageIds = new Set<string>();
     for (const query of queries) {
+      if (Date.now() > deadlineMs) break;
       const listUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`;
       const list = await googleJson(listUrl, auth.token);
       for (const item of list.messages ?? []) {
         if (item.id) messageIds.add(String(item.id));
+        if (messageIds.size >= maxMessages) break;
       }
+      if (messageIds.size >= maxMessages) break;
     }
     const rows: CandidateImport[] = [];
     let reviewedAttachments = 0;
@@ -1147,11 +1167,16 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
     let skippedSystem = 0;
     let skippedNoSignal = 0;
     let parsedNoCandidate = 0;
+    let stoppedByTime = false;
     const sampleAttachments: string[] = [];
     for (const id of messageIds) {
+      if (Date.now() > deadlineMs) {
+        stoppedByTime = true;
+        break;
+      }
       const message = await googleJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`, auth.token);
       const parsed = gmailMessageText(message);
-      const attachments = await gmailAttachments(id, parsed.parts, auth.token);
+      const attachments = await gmailAttachments(id, parsed.parts, auth.token, deadlineMs);
       const candidateAttachments = attachments.filter(gmailAttachmentLooksCandidate);
       if (attachments.length > 0) messagesWithAttachments += 1;
       reviewedAttachments += attachments.length;
@@ -1191,7 +1216,7 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
       }
     }
     const sampleText = unique(sampleAttachments).slice(0, 5).join(", ");
-    const diagnostic = `Gmail: ${messageIds.size} correos encontrados, ${messagesWithAttachments} con adjuntos, ${reviewedAttachments} adjuntos PDF/Word/texto revisados, ${candidateAttachmentCount} con pinta de CV, ${rows.length} candidatos extraidos. Ignorados: ${skippedSystem} sistema, ${skippedNoSignal} sin senales, ${parsedNoCandidate} sin nombre/contacto.${sampleText ? ` Adjuntos ejemplo: ${sampleText}.` : ""}`;
+    const diagnostic = `Gmail: ${messageIds.size} correos encontrados, ${messagesWithAttachments} con adjuntos, ${reviewedAttachments} adjuntos PDF/Word/texto revisados, ${candidateAttachmentCount} con pinta de CV, ${rows.length} candidatos extraidos. Ignorados: ${skippedSystem} sistema, ${skippedNoSignal} sin senales, ${parsedNoCandidate} sin nombre/contacto.${stoppedByTime ? " Se corto por tiempo y guardo resultado parcial; volve a sincronizar para seguir." : ""}${sampleText ? ` Adjuntos ejemplo: ${sampleText}.` : ""}`;
     return {
       rows,
       configUpdate: { ...auth.configUpdate, sessionStatus: "connected", lastAgentMessage: diagnostic, sessionLastError: null },
