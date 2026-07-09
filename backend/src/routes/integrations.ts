@@ -20,7 +20,7 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-09.4";
+const SYNC_ENGINE_VERSION = "2026-07-09.5";
 
 function maskConfig(config: Record<string, unknown> | null) {
   if (!config) return {};
@@ -1140,26 +1140,27 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
   try {
     const startedAt = Date.now();
     const deadlineMs = startedAt + numberFromConfig(config.gmailBudgetMs, 45_000);
-    const configuredQuery = cleanText(config.query);
-    const queries = configuredQuery
-      ? [configuredQuery]
-      : [
-          "(cv OR curriculum OR resume OR candidato OR postulante OR linkedin OR selección OR seleccion) newer_than:3650d",
-          "has:attachment newer_than:3650d"
-        ];
-    const maxResults = numberFromConfig(config.maxResults, 50);
-    const maxMessages = numberFromConfig(config.maxMessages, 60);
-    const messageIds = new Set<string>();
-    for (const query of queries) {
-      if (Date.now() > deadlineMs) break;
-      const listUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`;
-      const list = await googleJson(listUrl, auth.token);
-      for (const item of list.messages ?? []) {
-        if (item.id) messageIds.add(String(item.id));
-        if (messageIds.size >= maxMessages) break;
-      }
-      if (messageIds.size >= maxMessages) break;
+    const query = cleanText(config.query) || "has:attachment newer_than:3650d";
+    const maxResults = Math.min(numberFromConfig(config.maxResults, 100), 100);
+    const maxMessages = numberFromConfig(config.maxMessages, 80);
+    const pendingIds = Array.isArray(config.gmailPendingMessageIds)
+      ? (config.gmailPendingMessageIds as unknown[]).map(cleanText).filter(Boolean)
+      : [];
+    let nextPageToken = cleanText(config.gmailNextPageToken);
+    let fetchedPage = false;
+    let totalMatchingMessages = Number(config.gmailTotalMatchingMessages ?? 0);
+    let batchMessageIds = pendingIds;
+    if (batchMessageIds.length === 0) {
+      const pageToken = cleanText(config.gmailNextPageToken);
+      const params = new URLSearchParams({ q: query, maxResults: String(maxResults) });
+      if (pageToken) params.set("pageToken", pageToken);
+      const list = await googleJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`, auth.token);
+      batchMessageIds = (list.messages ?? []).map((item: any) => cleanText(item.id)).filter(Boolean);
+      nextPageToken = cleanText(list.nextPageToken);
+      totalMatchingMessages = Number(list.resultSizeEstimate ?? totalMatchingMessages);
+      fetchedPage = true;
     }
+    const messageIds = batchMessageIds.slice(0, maxMessages);
     const rows: CandidateImport[] = [];
     let reviewedAttachments = 0;
     let messagesWithAttachments = 0;
@@ -1168,12 +1169,14 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
     let skippedNoSignal = 0;
     let parsedNoCandidate = 0;
     let stoppedByTime = false;
+    let processedMessages = 0;
     const sampleAttachments: string[] = [];
     for (const id of messageIds) {
       if (Date.now() > deadlineMs) {
         stoppedByTime = true;
         break;
       }
+      processedMessages += 1;
       const message = await googleJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`, auth.token);
       const parsed = gmailMessageText(message);
       const attachments = await gmailAttachments(id, parsed.parts, auth.token, deadlineMs);
@@ -1187,22 +1190,22 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
         else skippedNoSignal += 1;
         continue;
       }
-      const attachmentText = attachments.map((attachment) => `${attachment.fileName}\n${attachment.rawText ?? ""}`).join("\n");
-      const candidate = candidateFromFreeText("gmail", `${parsed.text}\n${attachmentText}`, {
-        sourceId: `gmail:${id}`,
-        sourceUrl: `https://mail.google.com/mail/u/0/#all/${id}`,
-        currentRole: parsed.subject,
-        fileName: candidateAttachments[0]?.fileName || attachments[0]?.fileName || parsed.subject || "Correo Gmail",
-        fallbackName: candidateAttachments[0]?.fileName || attachments[0]?.fileName || parsed.subject
-      });
-      if (!candidate) {
-        parsedNoCandidate += 1;
-        continue;
-      }
-      if (candidate) {
+      const attachmentsToImport = candidateAttachments.length ? candidateAttachments : attachments;
+      for (const attachment of attachmentsToImport.length ? attachmentsToImport : [{ fileName: parsed.subject || "Correo Gmail", rawText: parsed.bodyText, mimeType: "message/rfc822", sourceId: `gmail:${id}`, sourcePath: `https://mail.google.com/mail/u/0/#all/${id}`, isPrimaryCv: true }]) {
+        const candidate = candidateFromFreeText("gmail", `${parsed.text}\n${attachment.fileName}\n${attachment.rawText ?? ""}`, {
+          sourceId: attachment.sourceId || `gmail:${id}:${attachment.fileName}`,
+          sourceUrl: `https://mail.google.com/mail/u/0/#all/${id}`,
+          currentRole: parsed.subject,
+          fileName: attachment.fileName || parsed.subject || "Correo Gmail",
+          fallbackName: attachment.fileName || parsed.subject
+        });
+        if (!candidate) {
+          parsedNoCandidate += 1;
+          continue;
+        }
         candidate.documents = [
           ...(candidate.documents ?? []),
-          ...attachments.map((attachment) => ({
+          {
             type: "cv",
             fileName: attachment.fileName,
             rawText: attachment.rawText,
@@ -1210,16 +1213,30 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
             sourceId: attachment.sourceId,
             sourcePath: attachment.sourcePath,
             isPrimaryCv: attachment.isPrimaryCv
-          }))
+          }
         ];
         rows.push(candidate);
       }
     }
+    const remainingPendingIds = batchMessageIds.slice(processedMessages);
+    const hasMore = remainingPendingIds.length > 0 || Boolean(nextPageToken);
     const sampleText = unique(sampleAttachments).slice(0, 5).join(", ");
-    const diagnostic = `Gmail: ${messageIds.size} correos encontrados, ${messagesWithAttachments} con adjuntos, ${reviewedAttachments} adjuntos PDF/Word/texto revisados, ${candidateAttachmentCount} con pinta de CV, ${rows.length} candidatos extraidos. Ignorados: ${skippedSystem} sistema, ${skippedNoSignal} sin senales, ${parsedNoCandidate} sin nombre/contacto.${stoppedByTime ? " Se corto por tiempo y guardo resultado parcial; volve a sincronizar para seguir." : ""}${sampleText ? ` Adjuntos ejemplo: ${sampleText}.` : ""}`;
+    const progressText = totalMatchingMessages ? ` de aprox. ${totalMatchingMessages}` : "";
+    const diagnostic = `Gmail: procesados ${processedMessages}${progressText} correos de la tanda, ${messagesWithAttachments} con adjuntos, ${reviewedAttachments} adjuntos PDF/Word/texto revisados, ${candidateAttachmentCount} con pinta de CV, ${rows.length} candidatos extraidos. Ignorados: ${skippedSystem} sistema, ${skippedNoSignal} sin senales, ${parsedNoCandidate} sin nombre/contacto.${hasMore ? " Quedan mas correos: volve a sincronizar para seguir importando." : " Se llego al final de la busqueda guardada."}${stoppedByTime ? " Se corto por tiempo y guardo resultado parcial." : ""}${sampleText ? ` Adjuntos ejemplo: ${sampleText}.` : ""}`;
     return {
       rows,
-      configUpdate: { ...auth.configUpdate, sessionStatus: "connected", lastAgentMessage: diagnostic, sessionLastError: null },
+      configUpdate: {
+        ...auth.configUpdate,
+        sessionStatus: "connected",
+        lastAgentMessage: diagnostic,
+        sessionLastError: null,
+        gmailQuery: query,
+        gmailNextPageToken: remainingPendingIds.length ? nextPageToken : (nextPageToken || null),
+        gmailPendingMessageIds: remainingPendingIds,
+        gmailTotalMatchingMessages: totalMatchingMessages,
+        gmailLastFetchedNewPage: fetchedPage,
+        gmailHasMore: hasMore
+      },
       message: diagnostic
     };
   } catch (error: any) {
