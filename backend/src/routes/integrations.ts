@@ -778,14 +778,24 @@ function decodeBase64Url(value: string) {
   return Buffer.from(normalized, "base64").toString("utf8");
 }
 
-function nameFromFileName(fileName: string | null | undefined) {
-  const cleaned = cleanText(fileName)
+function cleanCandidateNameText(value: string) {
+  return cleanText(value)
     .replace(/\.[a-z0-9]{2,6}$/i, "")
     .replace(/\b(cv|curriculum|resume|candidato|postulante)\b/gi, " ")
+    .replace(/\b(actualizado|actualizada|final|nuevo|nueva|version|versi[oó]n|v\d+)\b/gi, " ")
     .replace(/[_\-().]+/g, " ")
+    .replace(/\b(fecha de nacimiento|nacimiento|domicilio|direcci[oó]n|address|cedula|c[eé]dula|documento|telefono|tel[eé]fono|celular|email|correo|uruguay)\b.*$/i, " ")
     .replace(/\s+/g, " ")
     .trim();
-  return candidateNameLooksReal(cleaned) ? cleaned : "";
+}
+
+function nameFromFileName(fileName: string | null | undefined) {
+  const cleaned = cleanCandidateNameText(cleanText(fileName));
+  if (candidateNameLooksReal(cleaned)) return cleaned;
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  if (words.length === 1 && /^[A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ']{2,}$/u.test(words[0])) return words[0];
+  if (words.length > 2 && candidateNameLooksReal(words.slice(0, 2).join(" "))) return words.slice(0, 2).join(" ");
+  return "";
 }
 
 function candidateFromFreeText(sourceType: string, text: string, options: { sourceId?: string | null; sourceUrl?: string | null; currentRole?: string | null; fileName?: string | null; fallbackName?: string | null } = {}): CandidateImport | null {
@@ -797,7 +807,7 @@ function candidateFromFreeText(sourceType: string, text: string, options: { sour
   const fallbackName = nameFromFileName(options.fallbackName ?? options.fileName);
   const firstLikelyName = content
     .split(/[|•\n\r,]/)
-    .map((part) => normalizeWhitespace(part))
+    .map((part) => cleanCandidateNameText(normalizeWhitespace(part)))
     .find((part) => candidateNameLooksReal(part) && part.toLowerCase() !== fallbackName.toLowerCase());
   const fromEmailName = email[0]?.split("@")[0]
     ?.replace(/[._-]+/g, " ")
@@ -1640,6 +1650,8 @@ function candidateNameLooksReal(name: string) {
   const words = cleaned.split(/\s+/).filter(Boolean);
   if (!cleaned || cleaned.length < 5 || cleaned.length > 90) return false;
   if (words.length < 2 || words.length > 6) return false;
+  if (/\b(fecha|nacimiento|domicilio|direcci[oó]n|cedula|c[eé]dula|documento|telefono|tel[eé]fono|celular|email|correo|uruguay)\b/i.test(cleaned)) return false;
+  if (/\d/.test(cleaned)) return false;
   if (/[/{}<>]|\[object Object\]/i.test(cleaned)) return false;
   if (looksLikeOfferText(cleaned)) return false;
   if (/^(autodromo|barra de carrasco|ciudad de la costa|comercial|comercial mercadeo|el pinar|fray bentos|jose pedro varela|libertad|lomas de solymar|malvin|melo|montevideo|neptunia|playa pascual|rivera|salinas|salto|solymar|suarez|toledo|treinta y tres|administracion de empresas|asistencia social|diseno grafico)$/i.test(cleaned)) return false;

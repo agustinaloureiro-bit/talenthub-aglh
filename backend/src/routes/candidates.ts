@@ -88,7 +88,7 @@ const excludeFalseGmailCandidatesSql = `NOT (
   AND cardinality(coalesce(candidates.phone, '{}'::text[])) = 0
   AND coalesce(candidates.linkedin_url, '') = ''
   AND (
-    lower(coalesce(candidates.full_name, '')) = ANY(ARRAY[
+    lower(trim(coalesce(candidates.full_name, ''))) = ANY(ARRAY[
       'the google cloud team',
       'google cloud team',
       'google workspace team',
@@ -98,8 +98,20 @@ const excludeFalseGmailCandidatesSql = `NOT (
     ])
     OR lower(coalesce(candidates.ai_summary, '')) LIKE '%your request for work account access%'
     OR lower(coalesce(candidates.ai_summary, '')) LIKE '%google cloud%'
+    OR lower(coalesce(candidates.ai_summary, '')) LIKE '%google workspace%'
     OR lower(coalesce(candidates.ai_summary, '')) LIKE '%security alert%'
     OR lower(coalesce(candidates.ai_summary, '')) LIKE '%billing%'
+    OR EXISTS (
+      SELECT 1
+      FROM documents false_gmail_doc
+      WHERE false_gmail_doc.candidate_id = candidates.id
+        AND false_gmail_doc.source_type = 'gmail'
+        AND (
+          lower(coalesce(false_gmail_doc.raw_text, '')) LIKE '%request for work account access%'
+          OR lower(coalesce(false_gmail_doc.raw_text, '')) LIKE '%google cloud%'
+          OR lower(coalesce(false_gmail_doc.file_name, '')) LIKE '%request for work account access%'
+        )
+    )
   )
 )`;
 
