@@ -20,7 +20,7 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-09.5";
+const SYNC_ENGINE_VERSION = "2026-07-09.6";
 
 function maskConfig(config: Record<string, unknown> | null) {
   if (!config) return {};
@@ -794,16 +794,17 @@ function candidateFromFreeText(sourceType: string, text: string, options: { sour
   const email = extractEmails(content);
   const phone = extractPhones(content);
   const explicitName = content.match(/(?:nombre|name|candidato|postulante)\s*[:\-]\s*([A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{4,80})/i)?.[1];
+  const fallbackName = nameFromFileName(options.fallbackName ?? options.fileName);
   const firstLikelyName = content
     .split(/[|•\n\r,]/)
     .map((part) => normalizeWhitespace(part))
-    .find((part) => candidateNameLooksReal(part));
+    .find((part) => candidateNameLooksReal(part) && part.toLowerCase() !== fallbackName.toLowerCase());
   const fromEmailName = email[0]?.split("@")[0]
     ?.replace(/[._-]+/g, " ")
     .replace(/\b\w/g, (char) => char.toUpperCase());
-  const fallbackName = nameFromFileName(options.fallbackName ?? options.fileName);
-  const fullName = explicitName || firstLikelyName || fallbackName || (fromEmailName && candidateNameLooksReal(fromEmailName) ? fromEmailName : "") || email[0] || phone[0];
+  const fullName = fallbackName || explicitName || firstLikelyName || (fromEmailName && candidateNameLooksReal(fromEmailName) ? fromEmailName : "") || email[0] || phone[0];
   if (!fullName) return null;
+  if (sourceType === "gmail" && /google cloud team|google workspace team|google team|microsoft account team|linkedin notifications/i.test(fullName)) return null;
 
   const role = compactLabel(options.currentRole ?? content.match(/(?:cargo|puesto|rol|postulaci[oó]n)\s*[:\-]\s*([^.;\n\r]{3,70})/i)?.[1], "Candidato importado");
   return {
@@ -981,6 +982,12 @@ function gmailHasCandidateIntent(text: string) {
   return /\b(cv|curriculum|currículo|resume|postulante|postulación|postulacion|candidato|búsqueda laboral|busqueda laboral|entrevista|selección|seleccion|linkedin\.com\/in|adjunto|postularme|me postulo|mi experiencia)\b/i.test(text);
 }
 
+function gmailLooksLikeSystemMessage(parsed: ReturnType<typeof gmailMessageText>) {
+  const text = `${parsed.from}\n${parsed.subject}\n${parsed.bodyText}`;
+  return gmailLooksLikeSystemSender(parsed.from)
+    || /google cloud|google workspace|security alert|work account access|request for work account|billing|facturaci[oó]n|password reset|verification code/i.test(text);
+}
+
 function decodeGmailAttachmentData(value: string) {
   return Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 }
@@ -1057,8 +1064,8 @@ function gmailAttachmentLooksCandidate(attachment: { fileName: string; rawText?:
 function gmailShouldImport(parsed: ReturnType<typeof gmailMessageText>, attachments: { fileName: string; rawText?: string }[]) {
   const searchableText = `${parsed.subject}\n${parsed.attachmentNames}\n${parsed.bodyText}`;
   const candidateAttachment = attachments.some(gmailAttachmentLooksCandidate);
+  if (gmailLooksLikeSystemMessage(parsed) && !candidateAttachment) return false;
   if (candidateAttachment) return true;
-  if (gmailLooksLikeSystemSender(parsed.from)) return false;
   if (attachments.length > 0) return true;
   return gmailHasCandidateIntent(searchableText);
 }
@@ -1186,13 +1193,15 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
       candidateAttachmentCount += candidateAttachments.length;
       sampleAttachments.push(...attachments.map((attachment) => attachment.fileName).filter(Boolean));
       if (!gmailShouldImport(parsed, attachments)) {
-        if (gmailLooksLikeSystemSender(parsed.from)) skippedSystem += 1;
+        if (gmailLooksLikeSystemMessage(parsed)) skippedSystem += 1;
         else skippedNoSignal += 1;
         continue;
       }
       const attachmentsToImport = candidateAttachments.length ? candidateAttachments : attachments;
       for (const attachment of attachmentsToImport.length ? attachmentsToImport : [{ fileName: parsed.subject || "Correo Gmail", rawText: parsed.bodyText, mimeType: "message/rfc822", sourceId: `gmail:${id}`, sourcePath: `https://mail.google.com/mail/u/0/#all/${id}`, isPrimaryCv: true }]) {
-        const candidate = candidateFromFreeText("gmail", `${parsed.text}\n${attachment.fileName}\n${attachment.rawText ?? ""}`, {
+        const documentText = `${attachment.fileName}\n${attachment.rawText ?? ""}`.trim();
+        const contextText = `${parsed.subject}\n${parsed.bodyText}`.slice(0, 1200);
+        const candidate = candidateFromFreeText("gmail", `${documentText}\n${contextText}`, {
           sourceId: attachment.sourceId || `gmail:${id}:${attachment.fileName}`,
           sourceUrl: `https://mail.google.com/mail/u/0/#all/${id}`,
           currentRole: parsed.subject,

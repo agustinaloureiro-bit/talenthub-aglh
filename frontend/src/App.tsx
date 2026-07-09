@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { AlertCircle, Bot, ChevronLeft, Database, ExternalLink, FileText, LayoutDashboard, LogOut, Mail, Phone, Plug, Plus, Save, Search, Send, Settings, UserRound, Users } from "lucide-react";
-import { api, currentUser, login, logout, type User } from "./lib/api";
+import { AlertCircle, Bot, ChevronLeft, Database, Download, ExternalLink, FileText, LayoutDashboard, LogOut, Mail, Phone, Plug, Plus, Save, Search, Send, Settings, UserRound, Users } from "lucide-react";
+import { API_URL, api, authHeaders, currentUser, login, logout, type User } from "./lib/api";
 
 type Page = "dashboard" | "finder" | "candidates" | "candidate" | "ai" | "integrations" | "settings";
 
@@ -372,7 +372,7 @@ function CandidateProfile({ id, canEdit }: { id: string; canEdit: boolean }) {
 function ChildList({ rows, empty, fields, canEdit, kind, id, onSaved }: any) {
   const [open, setOpen] = useState(false);
   if (kind === "documents") {
-    return <div className="grid gap-3">{canEdit && <button className="btn-primary w-fit" onClick={() => setOpen(!open)}><Plus size={16} /> Agregar</button>}{open && <ChildForm kind={kind} id={id} onSaved={() => { setOpen(false); onSaved(); }} />}<DocumentList rows={rows} empty={empty} /></div>;
+    return <div className="grid gap-3">{canEdit && <button className="btn-primary w-fit" onClick={() => setOpen(!open)}><Plus size={16} /> Agregar</button>}{open && <ChildForm kind={kind} id={id} onSaved={() => { setOpen(false); onSaved(); }} />}<DocumentList rows={rows} empty={empty} candidateId={id} /></div>;
   }
   return <div className="grid gap-3">{canEdit && <button className="btn-primary w-fit" onClick={() => setOpen(!open)}><Plus size={16} /> Agregar</button>}{open && <ChildForm kind={kind} id={id} onSaved={() => { setOpen(false); onSaved(); }} />}{rows.length === 0 && <Empty text={empty} />}{rows.map((row: any) => <div className="card p-4" key={row.id}>{fields.map((f: string) => <div key={f} className="text-sm"><span className="font-semibold text-slate-500">{f}: </span>{String(row[f] ?? "")}</div>)}</div>)}</div>;
 }
@@ -427,9 +427,22 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
     setSyncingSource(id);
     setSyncMessage(`Sincronizando ${id}...`);
     try {
-      const result = await api<{ data: any }>(`/integrations/${id}/sync`, { method: "POST" });
-      const log = result.data;
-      setSyncMessage(`${log.source}: ${log.new_records} nuevos, ${log.updated_records} actualizados, ${log.errors} errores. ${log.message ?? ""}`);
+      let totalNew = 0;
+      let totalUpdated = 0;
+      let totalErrors = 0;
+      let lastMessage = "";
+      const maxBatches = id === "gmail" ? 20 : 1;
+      for (let batch = 1; batch <= maxBatches; batch += 1) {
+        setSyncMessage(`${id === "gmail" ? "Gmail" : id}: procesando tanda ${batch}${maxBatches > 1 ? ` de hasta ${maxBatches}` : ""}...`);
+        const result = await api<{ data: any }>(`/integrations/${id}/sync`, { method: "POST" });
+        const log = result.data;
+        totalNew += Number(log.new_records ?? 0);
+        totalUpdated += Number(log.updated_records ?? 0);
+        totalErrors += Number(log.errors ?? 0);
+        lastMessage = String(log.message ?? "");
+        if (id !== "gmail" || !/Quedan mas correos|Se corto por tiempo/i.test(lastMessage)) break;
+      }
+      setSyncMessage(`${id === "gmail" ? "Gmail" : id}: ${totalNew} nuevos, ${totalUpdated} actualizados, ${totalErrors} errores/omitidos. ${lastMessage}`);
       load();
     } catch (err: any) {
       setSyncMessage(err.message || "No se pudo sincronizar.");
@@ -739,6 +752,25 @@ function bestDocumentUrl(document?: CandidateDocument | null) {
   return document?.file_url || document?.source_path || "";
 }
 
+async function downloadDocument(candidateId: string, document: CandidateDocument) {
+  const response = await fetch(`${API_URL}/candidates/${candidateId}/documents/${document.id}/download`, {
+    headers: authHeaders()
+  });
+  if (!response.ok) throw new Error("No se pudo descargar el documento.");
+  const blob = await response.blob();
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = disposition.match(/filename="?([^"]+)"?/i);
+  const fileName = match?.[1] || document.file_name || "documento";
+  const url = URL.createObjectURL(blob);
+  const link = window.document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  window.document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function ContactCard({ candidate }: { candidate: Candidate }) {
   const items = [
     ...candidate.email.map((value) => ({ icon: Mail, label: value, href: `mailto:${value}` })),
@@ -754,13 +786,14 @@ function DocumentMiniCard({ document, onOpenDocuments }: { document?: CandidateD
   return <div className="card p-4"><h3 className="mb-2 font-bold">CV principal</h3><p className="mb-3 text-sm text-slate-600">{shortText(document.file_name, 140)}</p><div className="flex flex-wrap gap-2">{url && <a className="btn-ghost" href={url} target="_blank" rel="noreferrer"><ExternalLink size={16} /> Abrir origen</a>}<button className="btn-primary" onClick={onOpenDocuments}><FileText size={16} /> Ver texto</button></div></div>;
 }
 
-function DocumentList({ rows, empty }: { rows: CandidateDocument[]; empty: string }) {
+function DocumentList({ rows, empty, candidateId }: { rows: CandidateDocument[]; empty: string; candidateId: string }) {
   const [openId, setOpenId] = useState<string | null>(null);
+  const [error, setError] = useState("");
   if (!rows.length) return <Empty text={empty} />;
   return <div className="grid gap-3">{rows.map((doc) => {
     const url = bestDocumentUrl(doc);
     const isOpen = openId === doc.id;
-    return <div className="card p-4" key={doc.id}><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex items-center gap-2 font-bold"><FileText size={17} /> <span className="break-words">{doc.file_name || "Documento importado"}</span></div><div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500"><span>{doc.type || "documento"}</span>{doc.source_type && <span>Fuente: {doc.source_type}</span>}{doc.mime_type && <span>{doc.mime_type}</span>}</div></div><div className="flex shrink-0 flex-wrap gap-2">{url && <a className="btn-ghost" href={url} target="_blank" rel="noreferrer"><ExternalLink size={16} /> Abrir</a>}{doc.raw_text && <button className="btn-primary" onClick={() => setOpenId(isOpen ? null : doc.id)}><FileText size={16} /> {isOpen ? "Ocultar texto" : "Leer CV"}</button>}</div></div>{isOpen && <pre className="mt-4 max-h-[520px] overflow-auto whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-700">{doc.raw_text}</pre>}</div>;
+    return <div className="card p-4" key={doc.id}><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex items-center gap-2 font-bold"><FileText size={17} /> <span className="break-words">{doc.file_name || "Documento importado"}</span></div><div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500"><span>{doc.type || "documento"}</span>{doc.source_type && <span>Fuente: {doc.source_type}</span>}{doc.mime_type && <span>{doc.mime_type}</span>}</div></div><div className="flex shrink-0 flex-wrap gap-2"><button className="btn-ghost" onClick={() => downloadDocument(candidateId, doc).catch((e) => setError(e.message))}><Download size={16} /> Descargar</button>{url && <a className="btn-ghost" href={url} target="_blank" rel="noreferrer"><ExternalLink size={16} /> Origen</a>}{doc.raw_text && <button className="btn-primary" onClick={() => setOpenId(isOpen ? null : doc.id)}><FileText size={16} /> {isOpen ? "Ocultar texto" : "Leer CV"}</button>}</div></div>{error && <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-700">{error}</div>}{isOpen && <pre className="mt-4 max-h-[520px] overflow-auto whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-700">{doc.raw_text}</pre>}</div>;
   })}</div>;
 }
 

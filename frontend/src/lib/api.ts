@@ -1,4 +1,4 @@
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000/api";
+export const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000/api";
 
 export type User = { id: string; name: string; email: string; role: "admin" | "recruiter" | "viewer" };
 
@@ -17,6 +17,11 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new ApiError(payload.error ?? "Error de API", response.status);
   return payload as T;
+}
+
+export function authHeaders(): Record<string, string> {
+  const token = localStorage.getItem("talenthub_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 export async function login(email: string, password: string) {

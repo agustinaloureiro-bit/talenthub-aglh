@@ -132,6 +132,32 @@ function unique(values: unknown[]) {
   return [...new Set(values.map(cleanText).filter(Boolean))];
 }
 
+function decodeBase64UrlBuffer(value: string) {
+  return Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+}
+
+async function googleAccessTokenFromConfig(config: Record<string, unknown>) {
+  const refreshToken = cleanText(config.refreshToken);
+  const clientId = cleanText(config.clientId);
+  const clientSecret = cleanText(config.clientSecret);
+  const direct = cleanText(config.accessToken ?? config.token ?? config.apiKey).replace(/^Bearer\s+/i, "");
+  if (!refreshToken || !clientId || !clientSecret) return direct || null;
+
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      grant_type: "refresh_token"
+    })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.access_token) return null;
+  return String(payload.access_token);
+}
+
 function listFrom(value: unknown) {
   if (Array.isArray(value)) return unique(value);
   return unique(String(value ?? "").split(/[,;|\n]+/));
@@ -418,6 +444,42 @@ candidatesRouter.get("/:id", asyncHandler(async (req, res) => {
     q("SELECT * FROM candidate_sources WHERE candidate_id=$1 ORDER BY last_synced_at DESC", [req.params.id])
   ]);
   res.json({ data: mapCandidate(rows[0]), work: work.rows, education: education.rows, documents: documents.rows, processes: processes.rows, sources: sources.rows });
+}));
+
+candidatesRouter.get("/:id/documents/:documentId/download", asyncHandler(async (req, res) => {
+  const { rows } = await q(
+    `SELECT id, candidate_id, file_name, file_url, mime_type, source_type, source_id, source_path
+     FROM documents
+     WHERE id=$1 AND candidate_id=$2
+     LIMIT 1`,
+    [req.params.documentId, req.params.id]
+  );
+  const document = rows[0];
+  if (!document) return res.status(404).json({ error: "Documento no encontrado" });
+
+  if (document.source_type === "gmail" && cleanText(document.source_id).startsWith("gmail:")) {
+    const [, messageId, attachmentId] = cleanText(document.source_id).split(":");
+    if (!messageId || !attachmentId) return res.status(404).json({ error: "El documento no tiene adjunto descargable guardado." });
+
+    const integration = await q<{ config: Record<string, unknown> }>("SELECT config FROM integrations WHERE id='gmail' LIMIT 1");
+    const token = await googleAccessTokenFromConfig(integration.rows[0]?.config ?? {});
+    if (!token) return res.status(401).json({ error: "Gmail necesita reconexion OAuth para descargar este adjunto." });
+
+    const response = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`, {
+      headers: { authorization: `Bearer ${token}`, accept: "application/json" }
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.data) return res.status(502).json({ error: "Gmail no devolvio el archivo adjunto." });
+    const buffer = decodeBase64UrlBuffer(String(payload.data));
+    res.setHeader("content-type", document.mime_type || "application/octet-stream");
+    res.setHeader("content-disposition", `attachment; filename="${cleanText(document.file_name) || "cv"}"`);
+    return res.send(buffer);
+  }
+
+  if (document.file_url || document.source_path) {
+    return res.redirect(document.file_url || document.source_path);
+  }
+  return res.status(404).json({ error: "Este documento no tiene archivo descargable." });
 }));
 
 candidatesRouter.patch("/:id", requireRole("recruiter"), asyncHandler(async (req, res) => {
