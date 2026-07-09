@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { AlertCircle, Bot, ChevronLeft, Database, LayoutDashboard, LogOut, Plug, Plus, Save, Search, Send, Settings, UserRound, Users } from "lucide-react";
+import { AlertCircle, Bot, ChevronLeft, Database, ExternalLink, FileText, LayoutDashboard, LogOut, Mail, Phone, Plug, Plus, Save, Search, Send, Settings, UserRound, Users } from "lucide-react";
 import { api, currentUser, login, logout, type User } from "./lib/api";
 
 type Page = "dashboard" | "finder" | "candidates" | "candidate" | "ai" | "integrations" | "settings";
@@ -22,7 +22,22 @@ type Candidate = {
   weaknesses: string[];
   qualityScore: number;
   sourceCount: number;
+  documentCount?: number;
+  primaryDocumentName?: string | null;
   status: string;
+};
+
+type CandidateDocument = {
+  id: string;
+  type?: string;
+  file_name?: string;
+  file_url?: string | null;
+  raw_text?: string | null;
+  mime_type?: string | null;
+  source_type?: string | null;
+  source_path?: string | null;
+  created_at?: string;
+  is_primary_cv?: boolean;
 };
 
 const nav = [
@@ -333,19 +348,21 @@ function CandidateProfile({ id, canEdit }: { id: string; canEdit: boolean }) {
   if (error) return <PagePad><ErrorBox message={error} /></PagePad>;
   if (!data) return <PagePad><Skeleton /></PagePad>;
   const c: Candidate = data.data;
+  const documents = (data.documents ?? []) as CandidateDocument[];
+  const primaryDocument = documents.find((doc) => doc.is_primary_cv) ?? documents[0];
   return (
     <PagePad>
       <section className="card mb-4 p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="flex gap-4"><Avatar name={c.fullName} /><div><h2 className="text-2xl font-extrabold">{c.fullName}</h2><p className="text-slate-500">{c.currentRole || "Sin rol actual"} Â· {[c.city, c.country].filter(Boolean).join(", ")}</p><TagList tags={c.tags} /></div></div>
+          <div className="flex min-w-0 gap-4"><Avatar name={c.fullName} /><div className="min-w-0"><h2 className="break-words text-2xl font-extrabold">{c.fullName}</h2><p className="text-slate-500">{c.currentRole || "Sin rol actual"} Â· {[c.city, c.country].filter(Boolean).join(", ") || "Sin ubicacion"}</p><TagList tags={c.tags} />{primaryDocument && <p className="mt-2 flex items-center gap-2 text-sm text-slate-500"><FileText size={15} /> {shortText(primaryDocument.file_name, 120)}</p>}</div></div>
           <Score score={c.qualityScore} />
         </div>
       </section>
       <div className="mb-4 flex flex-wrap gap-2">{["resumen", "experiencia", "formacion", "documentos", "procesos", "ia"].map((t) => <button key={t} onClick={() => setTab(t)} className={tab === t ? "btn-primary" : "btn-ghost"}>{t}</button>)}</div>
-      {tab === "resumen" && <div className="grid gap-4 md:grid-cols-2"><InfoCard title="Resumen IA" text={c.summary || "Sin resumen registrado."} /><InfoCard title="Contacto" text={[...c.email, ...c.phone, c.linkedinUrl].filter(Boolean).join("\n") || "Sin datos de contacto."} /><InfoCard title="Idiomas" text={c.languages?.map((l) => `${l.lang}: ${l.level}`).join("\n") || "Sin idiomas registrados."} /></div>}
+      {tab === "resumen" && <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]"><InfoCard title="Resumen" text={c.summary || primaryDocument?.raw_text?.slice(0, 1800) || "Sin resumen registrado."} /><div className="grid gap-4"><ContactCard candidate={c} /><DocumentMiniCard document={primaryDocument} onOpenDocuments={() => setTab("documentos")} /></div></div>}
       {tab === "experiencia" && <ChildList rows={data.work} empty="Sin experiencia registrada." fields={["company", "position", "start_date", "end_date", "description"]} canEdit={canEdit} kind="work" id={id} onSaved={load} />}
       {tab === "formacion" && <ChildList rows={data.education} empty="Sin formaciÃ³n registrada." fields={["institution", "degree", "field", "start_year", "end_year"]} canEdit={canEdit} kind="education" id={id} onSaved={load} />}
-      {tab === "documentos" && <ChildList rows={data.documents} empty="Sin documentos registrados." fields={["type", "file_name", "source_type", "created_at"]} canEdit={canEdit} kind="documents" id={id} onSaved={load} />}
+      {tab === "documentos" && <ChildList rows={documents} empty="Sin documentos registrados." fields={["type", "file_name", "source_type", "created_at"]} canEdit={canEdit} kind="documents" id={id} onSaved={load} />}
       {tab === "procesos" && <ChildList rows={data.processes} empty="Sin procesos registrados." fields={["process_name", "client", "stage", "event_date"]} canEdit={canEdit} kind="processes" id={id} onSaved={load} />}
       {tab === "ia" && <div className="grid gap-4 md:grid-cols-3"><InfoCard title="Fortalezas" text={c.strengths?.join("\n") || "Sin fortalezas registradas."} /><InfoCard title="Ãreas de oportunidad" text={c.weaknesses?.join("\n") || "Sin Ã¡reas registradas."} /><InfoCard title="Seniority" text={`${c.seniority || "Sin estimaciÃ³n"} ${c.years ? `Â· ${c.years} aÃ±os` : ""}`} /></div>}
     </PagePad>
@@ -354,6 +371,9 @@ function CandidateProfile({ id, canEdit }: { id: string; canEdit: boolean }) {
 
 function ChildList({ rows, empty, fields, canEdit, kind, id, onSaved }: any) {
   const [open, setOpen] = useState(false);
+  if (kind === "documents") {
+    return <div className="grid gap-3">{canEdit && <button className="btn-primary w-fit" onClick={() => setOpen(!open)}><Plus size={16} /> Agregar</button>}{open && <ChildForm kind={kind} id={id} onSaved={() => { setOpen(false); onSaved(); }} />}<DocumentList rows={rows} empty={empty} /></div>;
+  }
   return <div className="grid gap-3">{canEdit && <button className="btn-primary w-fit" onClick={() => setOpen(!open)}><Plus size={16} /> Agregar</button>}{open && <ChildForm kind={kind} id={id} onSaved={() => { setOpen(false); onSaved(); }} />}{rows.length === 0 && <Empty text={empty} />}{rows.map((row: any) => <div className="card p-4" key={row.id}>{fields.map((f: string) => <div key={f} className="text-sm"><span className="font-semibold text-slate-500">{f}: </span>{String(row[f] ?? "")}</div>)}</div>)}</div>;
 }
 
@@ -715,10 +735,40 @@ function shortText(value: string | undefined | null, max = 110) {
   return text.length > max ? `${text.slice(0, max - 1)}...` : text;
 }
 
+function bestDocumentUrl(document?: CandidateDocument | null) {
+  return document?.file_url || document?.source_path || "";
+}
+
+function ContactCard({ candidate }: { candidate: Candidate }) {
+  const items = [
+    ...candidate.email.map((value) => ({ icon: Mail, label: value, href: `mailto:${value}` })),
+    ...candidate.phone.map((value) => ({ icon: Phone, label: value, href: `tel:${value.replace(/\s+/g, "")}` })),
+    ...(candidate.linkedinUrl ? [{ icon: ExternalLink, label: "LinkedIn", href: candidate.linkedinUrl }] : [])
+  ];
+  return <div className="card p-4"><h3 className="mb-3 font-bold">Contacto</h3>{items.length === 0 ? <p className="text-sm text-slate-500">Sin datos de contacto.</p> : <div className="grid gap-2">{items.map(({ icon: Icon, label, href }) => <a key={`${href}-${label}`} className="flex min-w-0 items-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50" href={href} target={href.startsWith("http") ? "_blank" : undefined} rel="noreferrer"><Icon size={15} /><span className="truncate">{label}</span></a>)}</div>}</div>;
+}
+
+function DocumentMiniCard({ document, onOpenDocuments }: { document?: CandidateDocument; onOpenDocuments: () => void }) {
+  if (!document) return <div className="card p-4"><h3 className="mb-2 font-bold">CV</h3><p className="text-sm text-slate-500">Sin CV/documentos importados.</p></div>;
+  const url = bestDocumentUrl(document);
+  return <div className="card p-4"><h3 className="mb-2 font-bold">CV principal</h3><p className="mb-3 text-sm text-slate-600">{shortText(document.file_name, 140)}</p><div className="flex flex-wrap gap-2">{url && <a className="btn-ghost" href={url} target="_blank" rel="noreferrer"><ExternalLink size={16} /> Abrir origen</a>}<button className="btn-primary" onClick={onOpenDocuments}><FileText size={16} /> Ver texto</button></div></div>;
+}
+
+function DocumentList({ rows, empty }: { rows: CandidateDocument[]; empty: string }) {
+  const [openId, setOpenId] = useState<string | null>(null);
+  if (!rows.length) return <Empty text={empty} />;
+  return <div className="grid gap-3">{rows.map((doc) => {
+    const url = bestDocumentUrl(doc);
+    const isOpen = openId === doc.id;
+    return <div className="card p-4" key={doc.id}><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex items-center gap-2 font-bold"><FileText size={17} /> <span className="break-words">{doc.file_name || "Documento importado"}</span></div><div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500"><span>{doc.type || "documento"}</span>{doc.source_type && <span>Fuente: {doc.source_type}</span>}{doc.mime_type && <span>{doc.mime_type}</span>}</div></div><div className="flex shrink-0 flex-wrap gap-2">{url && <a className="btn-ghost" href={url} target="_blank" rel="noreferrer"><ExternalLink size={16} /> Abrir</a>}{doc.raw_text && <button className="btn-primary" onClick={() => setOpenId(isOpen ? null : doc.id)}><FileText size={16} /> {isOpen ? "Ocultar texto" : "Leer CV"}</button>}</div></div>{isOpen && <pre className="mt-4 max-h-[520px] overflow-auto whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-700">{doc.raw_text}</pre>}</div>;
+  })}</div>;
+}
+
 function CandidateRow({ candidate, onView, reason }: { candidate: Candidate; onView: (id: string) => void; reason?: string }) {
   const role = shortText(candidate.currentRole || "Sin rol", 90);
   const location = shortText(candidate.city || candidate.country || "Sin ciudad", 45);
-  return <div className="card flex flex-wrap items-center justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div><div className="truncate text-sm text-slate-500">{role} Â· {location} Â· {candidate.years ?? 0} aÃ±os</div><TagList tags={candidate.tags ?? []} />{reason && <p className="mt-1 truncate text-xs italic text-slate-500">{shortText(reason, 120)}</p>}</div></div><div className="flex shrink-0 items-center gap-3"><Score score={candidate.qualityScore} /><button className="btn-ghost" onClick={() => onView(candidate.id)}>Ver ficha</button></div></div>;
+  const documents = Number(candidate.documentCount ?? 0);
+  return <div className="card flex flex-wrap items-center justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div><div className="truncate text-sm text-slate-500">{role} Â· {location}{candidate.years ? ` Â· ${candidate.years} aÃ±os` : ""}</div><div className="mt-2 flex flex-wrap items-center gap-2">{documents > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600"><FileText size={13} /> {documents} CV/doc</span>}{candidate.primaryDocumentName && <span className="max-w-sm truncate text-xs text-slate-500">{shortText(candidate.primaryDocumentName, 70)}</span>}</div><TagList tags={candidate.tags ?? []} />{reason && <p className="mt-1 truncate text-xs italic text-slate-500">{shortText(reason, 120)}</p>}</div></div><div className="flex shrink-0 items-center gap-3"><Score score={candidate.qualityScore} /><button className="btn-ghost" onClick={() => onView(candidate.id)}>Ver ficha</button></div></div>;
 }
 
 type InputProps = {

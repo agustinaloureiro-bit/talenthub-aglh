@@ -48,6 +48,8 @@ function mapCandidate(row: any) {
     weaknesses: row.ai_weaknesses ?? [],
     qualityScore: row.quality_score,
     sourceCount: row.source_count,
+    documentCount: Number(row.document_count ?? 0),
+    primaryDocumentName: row.primary_document_name ?? null,
     status: row.status,
     createdAt: row.created_at
   };
@@ -352,7 +354,15 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
     )`;
   }
   const [{ rows }, total] = await Promise.all([
-    q(`SELECT * FROM candidates ${where} ORDER BY updated_at DESC LIMIT 100`, params),
+    q(
+      `SELECT candidates.*,
+        (SELECT count(*)::int FROM documents d WHERE d.candidate_id = candidates.id) AS document_count,
+        (SELECT d.file_name FROM documents d WHERE d.candidate_id = candidates.id ORDER BY d.is_primary_cv DESC, d.created_at DESC LIMIT 1) AS primary_document_name
+       FROM candidates ${where}
+       ORDER BY updated_at DESC
+       LIMIT 100`,
+      params
+    ),
     q<{ count: string }>(`SELECT count(*)::text FROM candidates WHERE duplicate_of IS NULL AND ${excludeFalseGmailCandidatesSql}`)
   ]);
   res.json({ data: rows.map(mapCandidate), meta: { total: Number(total.rows[0]?.count ?? 0), returned: rows.length } });

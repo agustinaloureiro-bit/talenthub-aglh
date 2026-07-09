@@ -74,7 +74,7 @@ async function saveDocuments(candidateId: string, sourceType: string, candidate:
       await q(
         `INSERT INTO documents (candidate_id, type, file_name, file_url, raw_text, mime_type, source_type, source_id, source_path, is_primary_cv)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-        [candidateId, document.type, fileName, document.fileUrl, document.rawText, document.mimeType, sourceType, document.sourceId, document.sourcePath, Boolean(document.isPrimaryCv)]
+        [candidateId, document.type, fileName, document.fileUrl ?? document.sourcePath, document.rawText, document.mimeType, sourceType, document.sourceId, document.sourcePath, Boolean(document.isPrimaryCv)]
       );
     }
   }
