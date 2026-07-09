@@ -20,7 +20,7 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-09.2";
+const SYNC_ENGINE_VERSION = "2026-07-09.3";
 
 function maskConfig(config: Record<string, unknown> | null) {
   if (!config) return {};
@@ -1059,6 +1059,7 @@ function gmailShouldImport(parsed: ReturnType<typeof gmailMessageText>, attachme
   const candidateAttachment = attachments.some(gmailAttachmentLooksCandidate);
   if (candidateAttachment) return true;
   if (gmailLooksLikeSystemSender(parsed.from)) return false;
+  if (attachments.length > 0) return true;
   return gmailHasCandidateIntent(searchableText);
 }
 
@@ -1130,7 +1131,7 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
           "(cv OR curriculum OR resume OR candidato OR postulante OR linkedin OR selección OR seleccion) newer_than:3650d",
           "has:attachment newer_than:3650d"
         ];
-    const maxResults = numberFromConfig(config.maxResults, 50);
+    const maxResults = numberFromConfig(config.maxResults, 200);
     const messageIds = new Set<string>();
     for (const query of queries) {
       const listUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`;
@@ -1141,13 +1142,26 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
     }
     const rows: CandidateImport[] = [];
     let reviewedAttachments = 0;
+    let messagesWithAttachments = 0;
+    let candidateAttachmentCount = 0;
+    let skippedSystem = 0;
+    let skippedNoSignal = 0;
+    let parsedNoCandidate = 0;
+    const sampleAttachments: string[] = [];
     for (const id of messageIds) {
       const message = await googleJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`, auth.token);
       const parsed = gmailMessageText(message);
       const attachments = await gmailAttachments(id, parsed.parts, auth.token);
       const candidateAttachments = attachments.filter(gmailAttachmentLooksCandidate);
+      if (attachments.length > 0) messagesWithAttachments += 1;
       reviewedAttachments += attachments.length;
-      if (!gmailShouldImport(parsed, attachments)) continue;
+      candidateAttachmentCount += candidateAttachments.length;
+      sampleAttachments.push(...attachments.map((attachment) => attachment.fileName).filter(Boolean));
+      if (!gmailShouldImport(parsed, attachments)) {
+        if (gmailLooksLikeSystemSender(parsed.from)) skippedSystem += 1;
+        else skippedNoSignal += 1;
+        continue;
+      }
       const attachmentText = attachments.map((attachment) => `${attachment.fileName}\n${attachment.rawText ?? ""}`).join("\n");
       const candidate = candidateFromFreeText("gmail", `${parsed.text}\n${attachmentText}`, {
         sourceId: `gmail:${id}`,
@@ -1156,6 +1170,10 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
         fileName: candidateAttachments[0]?.fileName || attachments[0]?.fileName || parsed.subject || "Correo Gmail",
         fallbackName: candidateAttachments[0]?.fileName || attachments[0]?.fileName || parsed.subject
       });
+      if (!candidate) {
+        parsedNoCandidate += 1;
+        continue;
+      }
       if (candidate) {
         candidate.documents = [
           ...(candidate.documents ?? []),
@@ -1172,10 +1190,12 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
         rows.push(candidate);
       }
     }
+    const sampleText = unique(sampleAttachments).slice(0, 5).join(", ");
+    const diagnostic = `Gmail: ${messageIds.size} correos encontrados, ${messagesWithAttachments} con adjuntos, ${reviewedAttachments} adjuntos PDF/Word/texto revisados, ${candidateAttachmentCount} con pinta de CV, ${rows.length} candidatos extraidos. Ignorados: ${skippedSystem} sistema, ${skippedNoSignal} sin senales, ${parsedNoCandidate} sin nombre/contacto.${sampleText ? ` Adjuntos ejemplo: ${sampleText}.` : ""}`;
     return {
       rows,
-      configUpdate: { ...auth.configUpdate, sessionStatus: "connected", lastAgentMessage: `Gmail: ${rows.length} candidatos detectados.` },
-      message: `Gmail: ${messageIds.size} correos revisados, ${reviewedAttachments} adjuntos CV/documentos revisados, ${rows.length} candidatos detectados.`
+      configUpdate: { ...auth.configUpdate, sessionStatus: "connected", lastAgentMessage: diagnostic, sessionLastError: null },
+      message: diagnostic
     };
   } catch (error: any) {
     return {
