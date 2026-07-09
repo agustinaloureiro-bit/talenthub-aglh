@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { inflateRawSync } from "zlib";
 import { z } from "zod";
 import { q } from "../db/pool.js";
 import { asyncHandler } from "../middleware/errors.js";
@@ -965,8 +966,111 @@ function gmailMessageText(message: any) {
   return {
     from: headers.from ?? "",
     subject: headers.subject ?? "",
-    text: htmlText(`${headers.from ?? ""}\n${headers.subject ?? ""}\n${attachmentNames}\n${bodyText}`)
+    text: htmlText(`${headers.from ?? ""}\n${headers.subject ?? ""}\n${attachmentNames}\n${bodyText}`),
+    parts
   };
+}
+
+function decodeGmailAttachmentData(value: string) {
+  return Buffer.from(value.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+}
+
+function xmlText(value: string) {
+  return decodeHtml(value
+    .replace(/<w:tab\s*\/>/gi, " ")
+    .replace(/<\/w:p>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+  );
+}
+
+function extractDocxText(buffer: Buffer) {
+  const chunks: string[] = [];
+  let offset = 0;
+  while (offset < buffer.length - 46) {
+    if (buffer.readUInt32LE(offset) !== 0x02014b50) {
+      offset += 1;
+      continue;
+    }
+    const method = buffer.readUInt16LE(offset + 10);
+    const compressedSize = buffer.readUInt32LE(offset + 20);
+    const fileNameLength = buffer.readUInt16LE(offset + 28);
+    const extraLength = buffer.readUInt16LE(offset + 30);
+    const commentLength = buffer.readUInt16LE(offset + 32);
+    const localOffset = buffer.readUInt32LE(offset + 42);
+    const fileName = buffer.slice(offset + 46, offset + 46 + fileNameLength).toString("utf8");
+    offset += 46 + fileNameLength + extraLength + commentLength;
+    if (!/^word\/(document|header\d*|footer\d*)\.xml$/i.test(fileName)) continue;
+    if (buffer.readUInt32LE(localOffset) !== 0x04034b50) continue;
+    const localNameLength = buffer.readUInt16LE(localOffset + 26);
+    const localExtraLength = buffer.readUInt16LE(localOffset + 28);
+    const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+    const compressed = buffer.slice(dataStart, dataStart + compressedSize);
+    const content = method === 8 ? inflateRawSync(compressed) : compressed;
+    chunks.push(xmlText(content.toString("utf8")));
+  }
+  return chunks.join("\n").slice(0, 30000);
+}
+
+function extractPdfText(buffer: Buffer) {
+  const raw = buffer.toString("latin1");
+  const literals = [...raw.matchAll(/\(([^()]{2,300})\)\s*T[jJ]/g)].map((match) => match[1]);
+  const readable = raw
+    .replace(/\\[nrtbf()\\]/g, " ")
+    .match(/[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9@._%+\-\s]{4,}/g)
+    ?.join(" ") ?? "";
+  return decodeHtml([...literals, readable].join(" ").replace(/\\([()\\])/g, "$1").replace(/\s+/g, " ")).slice(0, 30000);
+}
+
+function attachmentText(fileName: string, mimeType: string, buffer: Buffer) {
+  const lowerName = fileName.toLowerCase();
+  const lowerMime = mimeType.toLowerCase();
+  if (lowerMime.startsWith("text/")) return buffer.toString("utf8").slice(0, 30000);
+  if (lowerName.endsWith(".docx") || lowerMime.includes("wordprocessingml")) return extractDocxText(buffer);
+  if (lowerName.endsWith(".pdf") || lowerMime.includes("pdf")) return extractPdfText(buffer);
+  return "";
+}
+
+function looksLikeCvAttachment(fileName: string, mimeType: string) {
+  return /\.(pdf|docx?|rtf|txt)$/i.test(fileName)
+    || /pdf|word|officedocument|rtf|text/i.test(mimeType)
+    || /\b(cv|curriculum|resume|candidato|postulante)\b/i.test(fileName);
+}
+
+async function gmailAttachments(messageId: string, parts: any[], token: string) {
+  const attachments = [];
+  for (const part of parts) {
+    const fileName = cleanText(part.filename);
+    const attachmentId = cleanText(part.body?.attachmentId);
+    const mimeType = cleanText(part.mimeType);
+    if (!fileName || !looksLikeCvAttachment(fileName, mimeType)) continue;
+    try {
+      const body = attachmentId
+        ? await googleJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/attachments/${attachmentId}`, token)
+        : part.body?.data ? { data: part.body.data } : null;
+      if (!body?.data) continue;
+      const buffer = decodeGmailAttachmentData(String(body.data));
+      const rawText = attachmentText(fileName, mimeType, buffer);
+      attachments.push({
+        fileName,
+        mimeType,
+        rawText,
+        sourceId: `gmail:${messageId}:${attachmentId || fileName}`,
+        sourcePath: `https://mail.google.com/mail/u/0/#all/${messageId}`,
+        isPrimaryCv: true
+      });
+    } catch {
+      attachments.push({
+        fileName,
+        mimeType,
+        rawText: fileName,
+        sourceId: `gmail:${messageId}:${attachmentId || fileName}`,
+        sourcePath: `https://mail.google.com/mail/u/0/#all/${messageId}`,
+        isPrimaryCv: true
+      });
+    }
+  }
+  return attachments;
 }
 
 async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncResult> {
@@ -1002,13 +1106,30 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
     for (const item of list.messages ?? []) {
       const message = await googleJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${item.id}?format=full`, auth.token);
       const parsed = gmailMessageText(message);
-      const candidate = candidateFromFreeText("gmail", parsed.text, {
+      const attachments = await gmailAttachments(String(item.id), parsed.parts, auth.token);
+      const attachmentText = attachments.map((attachment) => `${attachment.fileName}\n${attachment.rawText ?? ""}`).join("\n");
+      const candidate = candidateFromFreeText("gmail", `${parsed.text}\n${attachmentText}`, {
         sourceId: `gmail:${item.id}`,
         sourceUrl: `https://mail.google.com/mail/u/0/#all/${item.id}`,
         currentRole: parsed.subject,
-        fileName: parsed.subject || "Correo Gmail"
+        fileName: attachments[0]?.fileName || parsed.subject || "Correo Gmail",
+        fallbackName: attachments[0]?.fileName || parsed.subject
       });
-      if (candidate) rows.push(candidate);
+      if (candidate) {
+        candidate.documents = [
+          ...(candidate.documents ?? []),
+          ...attachments.map((attachment) => ({
+            type: "cv",
+            fileName: attachment.fileName,
+            rawText: attachment.rawText,
+            mimeType: attachment.mimeType,
+            sourceId: attachment.sourceId,
+            sourcePath: attachment.sourcePath,
+            isPrimaryCv: attachment.isPrimaryCv
+          }))
+        ];
+        rows.push(candidate);
+      }
     }
     return {
       rows,
