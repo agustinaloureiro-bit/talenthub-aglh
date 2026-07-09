@@ -20,7 +20,7 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-08.1";
+const SYNC_ENGINE_VERSION = "2026-07-09.1";
 
 function maskConfig(config: Record<string, unknown> | null) {
   if (!config) return {};
@@ -966,9 +966,19 @@ function gmailMessageText(message: any) {
   return {
     from: headers.from ?? "",
     subject: headers.subject ?? "",
+    bodyText: htmlText(bodyText),
+    attachmentNames,
     text: htmlText(`${headers.from ?? ""}\n${headers.subject ?? ""}\n${attachmentNames}\n${bodyText}`),
     parts
   };
+}
+
+function gmailLooksLikeSystemSender(from: string) {
+  return /google cloud|google workspace|google payments|microsoft|linkedin notifications?|no-?reply|noreply|support|notifications?|security|alert|billing|facturacion|calendar|meet/i.test(from);
+}
+
+function gmailHasCandidateIntent(text: string) {
+  return /\b(cv|curriculum|currículo|resume|postulante|postulación|postulacion|candidato|búsqueda laboral|busqueda laboral|entrevista|selección|seleccion|linkedin\.com\/in|adjunto|postularme|me postulo|mi experiencia)\b/i.test(text);
 }
 
 function decodeGmailAttachmentData(value: string) {
@@ -1035,6 +1045,20 @@ function looksLikeCvAttachment(fileName: string, mimeType: string) {
   return /\.(pdf|docx?|rtf|txt)$/i.test(fileName)
     || /pdf|word|officedocument|rtf|text/i.test(mimeType)
     || /\b(cv|curriculum|resume|candidato|postulante)\b/i.test(fileName);
+}
+
+function gmailAttachmentLooksCandidate(attachment: { fileName: string; rawText?: string }) {
+  const text = `${attachment.fileName}\n${attachment.rawText ?? ""}`;
+  if (/\b(cv|curriculum|currículo|resume|candidato|postulante)\b/i.test(attachment.fileName)) return true;
+  return extractEmails(text).length > 0 || extractPhones(text).length > 0 || gmailHasCandidateIntent(text);
+}
+
+function gmailShouldImport(parsed: ReturnType<typeof gmailMessageText>, attachments: { fileName: string; rawText?: string }[]) {
+  const searchableText = `${parsed.subject}\n${parsed.attachmentNames}\n${parsed.bodyText}`;
+  const candidateAttachment = attachments.some(gmailAttachmentLooksCandidate);
+  if (candidateAttachment) return true;
+  if (gmailLooksLikeSystemSender(parsed.from)) return false;
+  return gmailHasCandidateIntent(searchableText);
 }
 
 async function gmailAttachments(messageId: string, parts: any[], token: string) {
@@ -1107,6 +1131,7 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
       const message = await googleJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${item.id}?format=full`, auth.token);
       const parsed = gmailMessageText(message);
       const attachments = await gmailAttachments(String(item.id), parsed.parts, auth.token);
+      if (!gmailShouldImport(parsed, attachments)) continue;
       const attachmentText = attachments.map((attachment) => `${attachment.fileName}\n${attachment.rawText ?? ""}`).join("\n");
       const candidate = candidateFromFreeText("gmail", `${parsed.text}\n${attachmentText}`, {
         sourceId: `gmail:${item.id}`,
