@@ -777,7 +777,17 @@ function decodeBase64Url(value: string) {
   return Buffer.from(normalized, "base64").toString("utf8");
 }
 
-function candidateFromFreeText(sourceType: string, text: string, options: { sourceId?: string | null; sourceUrl?: string | null; currentRole?: string | null; fileName?: string | null } = {}): CandidateImport | null {
+function nameFromFileName(fileName: string | null | undefined) {
+  const cleaned = cleanText(fileName)
+    .replace(/\.[a-z0-9]{2,6}$/i, "")
+    .replace(/\b(cv|curriculum|resume|candidato|postulante)\b/gi, " ")
+    .replace(/[_\-().]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return candidateNameLooksReal(cleaned) ? cleaned : "";
+}
+
+function candidateFromFreeText(sourceType: string, text: string, options: { sourceId?: string | null; sourceUrl?: string | null; currentRole?: string | null; fileName?: string | null; fallbackName?: string | null } = {}): CandidateImport | null {
   const content = normalizeWhitespace(text);
   if (!content || content.length < 8) return null;
   const email = extractEmails(content);
@@ -790,7 +800,8 @@ function candidateFromFreeText(sourceType: string, text: string, options: { sour
   const fromEmailName = email[0]?.split("@")[0]
     ?.replace(/[._-]+/g, " ")
     .replace(/\b\w/g, (char) => char.toUpperCase());
-  const fullName = explicitName || firstLikelyName || (fromEmailName && candidateNameLooksReal(fromEmailName) ? fromEmailName : "") || email[0] || phone[0];
+  const fallbackName = nameFromFileName(options.fallbackName ?? options.fileName);
+  const fullName = explicitName || firstLikelyName || fallbackName || (fromEmailName && candidateNameLooksReal(fromEmailName) ? fromEmailName : "") || email[0] || phone[0];
   if (!fullName) return null;
 
   const role = compactLabel(options.currentRole ?? content.match(/(?:cargo|puesto|rol|postulaci[oó]n)\s*[:\-]\s*([^.;\n\r]{3,70})/i)?.[1], "Candidato importado");
@@ -810,6 +821,7 @@ function candidateFromFreeText(sourceType: string, text: string, options: { sour
     documents: [{
       type: "cv",
       fileName: options.fileName || `${fullName} - ${sourceType}`,
+      fileUrl: options.sourceUrl ?? null,
       rawText: content,
       sourceId: options.sourceId ?? null,
       sourcePath: options.sourceUrl ?? null,
@@ -1061,7 +1073,8 @@ async function scrapeDrive(config: Record<string, unknown>): Promise<AgentSyncRe
       const candidate = candidateFromFreeText("drive", text, {
         sourceId: `drive:${file.id}`,
         sourceUrl: file.webViewLink,
-        fileName: file.name
+        fileName: file.name,
+        fallbackName: file.name
       });
       if (candidate) rows.push(candidate);
     }
@@ -2381,7 +2394,8 @@ async function syncIntegration(integrationId: string) {
       if (result === "updated") updatedRecords += 1;
       if (result === "skipped") errors += 1;
     }
-    status = errors > 0 ? "warning" : "success";
+    const savedRecords = newRecords + updatedRecords;
+    status = savedRecords > 0 ? (errors > 0 ? "warning" : "success") : (errors > 0 ? "error" : "warning");
     message = scraperResult?.message
       ? `${scraperResult.message} Importados: ${newRecords} nuevos, ${updatedRecords} actualizados, ${errors} omitidos.`
       : `Historico procesado: ${newRecords} nuevos, ${updatedRecords} actualizados, ${errors} omitidos.`;
@@ -2404,7 +2418,7 @@ async function syncIntegration(integrationId: string) {
       [JSON.stringify({
         sessionStatus: resultStatus,
         sessionLastError: status === "error" ? (scraperResult.configUpdate?.sessionLastError ?? scraperResult.message) : null,
-        lastAgentMessage: scraperResult.message,
+        lastAgentMessage: message,
         syncEngineVersion: SYNC_ENGINE_VERSION
       }), integrationId]
     );
@@ -2430,7 +2444,7 @@ async function syncIntegration(integrationId: string) {
   );
   await q(
     "UPDATE integrations SET last_sync_at=now(), total_imported=total_imported+$1, updated_at=now(), status=$2 WHERE id=$3",
-    [newRecords, status === "error" ? "error" : "connected", integrationId]
+    [newRecords + updatedRecords, status === "error" ? "error" : "connected", integrationId]
   );
   return rows[0];
 }
