@@ -993,6 +993,10 @@ function gmailHasCandidateIntent(text: string) {
   return /\b(cv|curriculum|currículo|resume|postulante|postulación|postulacion|candidato|búsqueda laboral|busqueda laboral|entrevista|selección|seleccion|linkedin\.com\/in|adjunto|postularme|me postulo|mi experiencia)\b/i.test(text);
 }
 
+function gmailHasCandidateProfileSignal(text: string) {
+  return /\b(experiencia|educaci[oó]n|formaci[oó]n|habilidades|competencias|referencias|objetivo laboral|perfil profesional|datos personales|c[eé]dula|tel[eé]fono|celular|linkedin\.com\/in|mail|email|correo)\b/i.test(text);
+}
+
 function gmailLooksLikeSystemMessage(parsed: ReturnType<typeof gmailMessageText>) {
   const text = `${parsed.from}\n${parsed.subject}\n${parsed.bodyText}`;
   return gmailLooksLikeSystemSender(parsed.from)
@@ -1069,7 +1073,7 @@ function gmailAttachmentLooksCandidate(attachment: { fileName: string; rawText?:
   const text = `${attachment.fileName}\n${attachment.rawText ?? ""}`;
   if (/\b(cv|curriculum|currículo|resume|candidato|postulante)\b/i.test(attachment.fileName)) return true;
   if (nameFromFileName(attachment.fileName)) return true;
-  return extractEmails(text).length > 0 || extractPhones(text).length > 0 || gmailHasCandidateIntent(text);
+  return (extractEmails(text).length > 0 || extractPhones(text).length > 0) && (gmailHasCandidateIntent(text) || gmailHasCandidateProfileSignal(text));
 }
 
 function gmailShouldImport(parsed: ReturnType<typeof gmailMessageText>, attachments: { fileName: string; rawText?: string }[]) {
@@ -1077,8 +1081,7 @@ function gmailShouldImport(parsed: ReturnType<typeof gmailMessageText>, attachme
   const candidateAttachment = attachments.some(gmailAttachmentLooksCandidate);
   if (gmailLooksLikeSystemMessage(parsed) && !candidateAttachment) return false;
   if (candidateAttachment) return true;
-  if (attachments.length > 0) return true;
-  return gmailHasCandidateIntent(searchableText);
+  return gmailHasCandidateIntent(searchableText) && gmailHasCandidateProfileSignal(searchableText);
 }
 
 async function gmailAttachments(messageId: string, parts: any[], token: string, deadlineMs = Date.now() + 45_000) {

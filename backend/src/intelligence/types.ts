@@ -25,6 +25,10 @@ export type TalentCandidateResult = {
   years?: number | null;
   tags: string[];
   qualityScore: number;
+  sourceCount?: number;
+  documentCount?: number;
+  primaryDocumentName?: string | null;
+  documentSnippet?: string | null;
   score: number;
   matchReason: string;
 };

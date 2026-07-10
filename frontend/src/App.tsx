@@ -334,7 +334,7 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
       </div>
       {searchStatus && <div className="mb-3 rounded-md border border-slate-200 bg-white p-3 text-sm text-slate-600">{searchStatus}</div>}
       <div className="mb-3 text-sm text-slate-500">{results.length} candidatos encontrados Â· ordenados por compatibilidad</div>
-      <div className="grid gap-3">{results.length === 0 && <Empty text="La bÃºsqueda todavÃ­a no devolviÃ³ candidatos reales." />}{results.map((c) => <CandidateRow key={c.id} candidate={{ ...c, qualityScore: c.score, sourceCount: 0, email: [], phone: [], languages: [], strengths: [], weaknesses: [], status: "active" }} onView={onView} reason={c.matchReason} />)}</div>
+      <div className="grid gap-3">{results.length === 0 && <Empty text="La bÃºsqueda todavÃ­a no devolviÃ³ candidatos reales." />}{results.map((c) => <CandidateRow key={c.id} candidate={{ ...c, qualityScore: c.score, sourceCount: c.sourceCount ?? 0, documentCount: c.documentCount ?? 0, primaryDocumentName: c.primaryDocumentName ?? null, email: [], phone: [], languages: [], strengths: [], weaknesses: [], status: "active" }} onView={onView} reason={c.matchReason} />)}</div>
     </PagePad>
   );
 }
@@ -423,26 +423,34 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
   const load = () => api<any>("/integrations").then(setData);
   useEffect(() => { load(); }, []);
   async function save(id: string, status: string) { await api(`/integrations/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }); load(); }
+  function sourceCanContinue(id: string, message: string) {
+    return id === "gmail" && /Quedan mas correos|Se corto por tiempo/i.test(message);
+  }
+  async function syncSourceBatches(id: string, maxBatches: number, label = id) {
+    let totalNew = 0;
+    let totalUpdated = 0;
+    let totalErrors = 0;
+    let batches = 0;
+    let lastMessage = "";
+    for (let batch = 1; batch <= maxBatches; batch += 1) {
+      batches = batch;
+      setSyncMessage(`${label}: procesando tanda ${batch}${maxBatches > 1 ? ` de hasta ${maxBatches}` : ""}...`);
+      const result = await api<{ data: any }>(`/integrations/${id}/sync`, { method: "POST" });
+      const log = result.data;
+      totalNew += Number(log.new_records ?? 0);
+      totalUpdated += Number(log.updated_records ?? 0);
+      totalErrors += Number(log.errors ?? 0);
+      lastMessage = String(log.message ?? "");
+      if (!sourceCanContinue(id, lastMessage)) break;
+    }
+    return { totalNew, totalUpdated, totalErrors, batches, lastMessage };
+  }
   async function sync(id: string) {
     setSyncingSource(id);
     setSyncMessage(`Sincronizando ${id}...`);
     try {
-      let totalNew = 0;
-      let totalUpdated = 0;
-      let totalErrors = 0;
-      let lastMessage = "";
-      const maxBatches = id === "gmail" ? 60 : 1;
-      for (let batch = 1; batch <= maxBatches; batch += 1) {
-        setSyncMessage(`${id === "gmail" ? "Gmail" : id}: procesando tanda ${batch}${maxBatches > 1 ? ` de hasta ${maxBatches}` : ""}...`);
-        const result = await api<{ data: any }>(`/integrations/${id}/sync`, { method: "POST" });
-        const log = result.data;
-        totalNew += Number(log.new_records ?? 0);
-        totalUpdated += Number(log.updated_records ?? 0);
-        totalErrors += Number(log.errors ?? 0);
-        lastMessage = String(log.message ?? "");
-        if (id !== "gmail" || !/Quedan mas correos|Se corto por tiempo/i.test(lastMessage)) break;
-      }
-      setSyncMessage(`${id === "gmail" ? "Gmail" : id}: ${totalNew} nuevos, ${totalUpdated} actualizados, ${totalErrors} errores/omitidos. ${lastMessage}`);
+      const result = await syncSourceBatches(id, id === "gmail" ? 60 : 1, id === "gmail" ? "Gmail" : id);
+      setSyncMessage(`${id === "gmail" ? "Gmail" : id}: ${result.totalNew} nuevos, ${result.totalUpdated} actualizados, ${result.totalErrors} errores/omitidos. ${result.lastMessage}`);
       load();
     } catch (err: any) {
       setSyncMessage(err.message || "No se pudo sincronizar.");
@@ -455,8 +463,19 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
     setSyncingAll(true);
     setSyncMessage("Sincronizando todas las fuentes conectadas...");
     try {
-      const result = await api<{ meta: { sources: number; imported: number; errors: number; message: string } }>("/integrations/sync-all", { method: "POST" });
-      setSyncMessage(`${result.meta.message} Si una fuente queda en rojo, abri Configurar en esa tarjeta para completar el paso pendiente.`);
+      const result = await api<{ data: any[]; meta: { sources: number; imported: number; errors: number; message: string } }>("/integrations/sync-all", { method: "POST" });
+      let imported = Number(result.meta.imported ?? 0);
+      let errors = Number(result.meta.errors ?? 0);
+      const gmailLog = (result.data ?? []).find((row) => row.integration_id === "gmail" || String(row.source ?? "").toLowerCase() === "gmail");
+      const gmailMessage = String(gmailLog?.message ?? "");
+      let extraMessage = "";
+      if (sourceCanContinue("gmail", gmailMessage)) {
+        const gmail = await syncSourceBatches("gmail", 60, "Gmail historico");
+        imported += gmail.totalNew + gmail.totalUpdated;
+        errors += gmail.totalErrors;
+        extraMessage = ` Gmail continuo ${gmail.batches} tandas extra: ${gmail.totalNew} nuevos, ${gmail.totalUpdated} actualizados. ${gmail.lastMessage}`;
+      }
+      setSyncMessage(`Fuentes actualizadas: ${result.meta.sources}. Registros importados/actualizados: ${imported}. Errores u omitidos: ${errors}.${extraMessage} Si una fuente queda en rojo, abri Configurar en esa tarjeta para completar el paso pendiente.`);
       load();
     } catch (err: any) {
       setSyncMessage(err.message || "No se pudieron sincronizar las fuentes.");

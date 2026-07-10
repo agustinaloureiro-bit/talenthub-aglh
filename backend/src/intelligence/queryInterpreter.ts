@@ -15,6 +15,11 @@ const SENIORITY_PATTERNS: Array<[RegExp, string]> = [
 ];
 
 const ROLE_HINTS = [
+  "abogado",
+  "abogada",
+  "legal",
+  "asesor legal",
+  "asesora legal",
   "ingeniero industrial",
   "ingeniero",
   "analista",

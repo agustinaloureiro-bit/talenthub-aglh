@@ -52,13 +52,25 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
   const searchText = "coalesce(c.full_name,'') || ' ' || coalesce(c.current_role,'') || ' ' || coalesce(c.ai_summary,'') || ' ' || coalesce(array_to_string(c.ai_tags,' '),'') || ' ' || coalesce(doc.text,'')";
   const { rows } = await q(
     `SELECT c.*,
+      coalesce(src.source_count, 0)::int AS source_count,
+      coalesce(doc.document_count, 0)::int AS document_count,
+      doc.primary_document_name,
+      left(coalesce(doc.text, ''), 1200) AS document_snippet,
       ts_rank_cd(to_tsvector('spanish', ${searchText}), plainto_tsquery('spanish', $1)) AS rank
      FROM candidates c
      LEFT JOIN LATERAL (
-       SELECT string_agg(coalesce(d.raw_text,'') || ' ' || coalesce(d.file_name,''), ' ') AS text
+       SELECT
+         string_agg(coalesce(d.raw_text,'') || ' ' || coalesce(d.file_name,''), ' ') AS text,
+         count(*)::int AS document_count,
+         (array_agg(d.file_name ORDER BY d.is_primary_cv DESC, d.created_at DESC))[1] AS primary_document_name
        FROM documents d
        WHERE d.candidate_id = c.id
      ) doc ON true
+     LEFT JOIN LATERAL (
+       SELECT count(*)::int AS source_count
+       FROM candidate_sources cs
+       WHERE cs.candidate_id = c.id
+     ) src ON true
      ${where}
        AND (
          to_tsvector('spanish', ${searchText}) @@ plainto_tsquery('spanish', $1)
@@ -87,6 +99,10 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     years: row.ai_seniority_years,
     tags: row.ai_tags ?? [],
     qualityScore: row.quality_score,
+    sourceCount: Number(row.source_count ?? 0),
+    documentCount: Number(row.document_count ?? 0),
+    primaryDocumentName: row.primary_document_name ?? null,
+    documentSnippet: row.document_snippet ?? null,
     score: Math.min(100, Math.max(0, Math.round((Number(row.rank) * 60) + (row.quality_score * 0.4)))),
     matchReason: row.rank > 0 ? "Coincide por texto, rol, competencias o resumen registrado." : "Sin coincidencia semantica directa; ordenado por calidad del perfil."
   }));
