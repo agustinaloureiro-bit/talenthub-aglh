@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { interpretTalentQuery } from "../src/intelligence/queryInterpreter.js";
-import { rerankCandidates } from "../src/intelligence/candidateRanker.js";
-import type { TalentCandidateResult } from "../src/intelligence/types.js";
+
+const { interpretTalentQuery } = await import("../dist/intelligence/queryInterpreter.js");
+const { rerankCandidates } = await import("../dist/intelligence/candidateRanker.js");
 
 test("interpreta abogado con ingles como rol e idioma", () => {
   const interpreted = interpretTalentQuery("Necesito un abogado con inglés.");
@@ -15,7 +15,7 @@ test("interpreta abogado con ingles como rol e idioma", () => {
 
 test("prioriza candidatos con evidencia en documentos/CV", () => {
   const interpreted = interpretTalentQuery("Necesito un abogado con inglés.");
-  const candidates: TalentCandidateResult[] = [
+  const candidates = [
     {
       id: "sin-cv",
       fullName: "Persona General",

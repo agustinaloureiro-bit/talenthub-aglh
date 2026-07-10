@@ -84,9 +84,6 @@ const excludeFalseGmailCandidatesSql = `NOT (
     )
     OR 'gmail' = ANY(coalesce(candidates.ai_tags, '{}'::text[]))
   )
-  AND cardinality(coalesce(candidates.email, '{}'::text[])) = 0
-  AND cardinality(coalesce(candidates.phone, '{}'::text[])) = 0
-  AND coalesce(candidates.linkedin_url, '') = ''
   AND (
     lower(trim(coalesce(candidates.full_name, ''))) = ANY(ARRAY[
       'the google cloud team',
@@ -96,11 +93,19 @@ const excludeFalseGmailCandidatesSql = `NOT (
       'microsoft account team',
       'linkedin notifications'
     ])
-    OR lower(coalesce(candidates.ai_summary, '')) LIKE '%your request for work account access%'
-    OR lower(coalesce(candidates.ai_summary, '')) LIKE '%google cloud%'
-    OR lower(coalesce(candidates.ai_summary, '')) LIKE '%google workspace%'
-    OR lower(coalesce(candidates.ai_summary, '')) LIKE '%security alert%'
-    OR lower(coalesce(candidates.ai_summary, '')) LIKE '%billing%'
+    OR lower(coalesce(candidates.current_role, '')) LIKE '%work account access%'
+    OR (
+      cardinality(coalesce(candidates.email, '{}'::text[])) = 0
+      AND cardinality(coalesce(candidates.phone, '{}'::text[])) = 0
+      AND coalesce(candidates.linkedin_url, '') = ''
+      AND (
+        lower(coalesce(candidates.ai_summary, '')) LIKE '%your request for work account access%'
+        OR lower(coalesce(candidates.ai_summary, '')) LIKE '%google cloud%'
+        OR lower(coalesce(candidates.ai_summary, '')) LIKE '%google workspace%'
+        OR lower(coalesce(candidates.ai_summary, '')) LIKE '%security alert%'
+        OR lower(coalesce(candidates.ai_summary, '')) LIKE '%billing%'
+      )
+    )
     OR EXISTS (
       SELECT 1
       FROM documents false_gmail_doc
@@ -128,9 +133,6 @@ async function cleanupFalseGmailCandidates() {
          )
          OR 'gmail' = ANY(coalesce(c.ai_tags, '{}'::text[]))
        )
-       AND cardinality(coalesce(c.email, '{}'::text[])) = 0
-       AND cardinality(coalesce(c.phone, '{}'::text[])) = 0
-       AND coalesce(c.linkedin_url, '') = ''
        AND (
          lower(trim(coalesce(c.full_name, ''))) = ANY(ARRAY[
            'the google cloud team',
@@ -141,12 +143,19 @@ async function cleanupFalseGmailCandidates() {
            'linkedin notifications'
          ])
          OR lower(coalesce(c.current_role, '')) LIKE '%work account access%'
-         OR lower(coalesce(c.ai_summary, '')) LIKE '%your request for work account access%'
-         OR lower(coalesce(c.ai_summary, '')) LIKE '%google cloud%'
-         OR lower(coalesce(c.ai_summary, '')) LIKE '%google workspace%'
-         OR lower(coalesce(c.ai_summary, '')) LIKE '%security alert%'
-         OR lower(coalesce(c.ai_summary, '')) LIKE '%billing%'
-         OR lower(coalesce(c.ai_summary, '')) LIKE '%verification code%'
+         OR (
+           cardinality(coalesce(c.email, '{}'::text[])) = 0
+           AND cardinality(coalesce(c.phone, '{}'::text[])) = 0
+           AND coalesce(c.linkedin_url, '') = ''
+           AND (
+             lower(coalesce(c.ai_summary, '')) LIKE '%your request for work account access%'
+             OR lower(coalesce(c.ai_summary, '')) LIKE '%google cloud%'
+             OR lower(coalesce(c.ai_summary, '')) LIKE '%google workspace%'
+             OR lower(coalesce(c.ai_summary, '')) LIKE '%security alert%'
+             OR lower(coalesce(c.ai_summary, '')) LIKE '%billing%'
+             OR lower(coalesce(c.ai_summary, '')) LIKE '%verification code%'
+           )
+         )
          OR EXISTS (
            SELECT 1
            FROM documents d
