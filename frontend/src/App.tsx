@@ -431,7 +431,7 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
       let totalUpdated = 0;
       let totalErrors = 0;
       let lastMessage = "";
-      const maxBatches = id === "gmail" ? 20 : 1;
+      const maxBatches = id === "gmail" ? 60 : 1;
       for (let batch = 1; batch <= maxBatches; batch += 1) {
         setSyncMessage(`${id === "gmail" ? "Gmail" : id}: procesando tanda ${batch}${maxBatches > 1 ? ` de hasta ${maxBatches}` : ""}...`);
         const result = await api<{ data: any }>(`/integrations/${id}/sync`, { method: "POST" });

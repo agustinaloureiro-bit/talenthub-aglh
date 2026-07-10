@@ -20,7 +20,8 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-09.6";
+const SYNC_ENGINE_VERSION = "2026-07-10.1";
+const DEFAULT_GMAIL_QUERY = "has:attachment (filename:pdf OR filename:doc OR filename:docx OR filename:rtf OR filename:txt) newer_than:3650d";
 
 function maskConfig(config: Record<string, unknown> | null) {
   if (!config) return {};
@@ -1157,18 +1158,20 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
   try {
     const startedAt = Date.now();
     const deadlineMs = startedAt + numberFromConfig(config.gmailBudgetMs, 45_000);
-    const query = cleanText(config.query) || "has:attachment newer_than:3650d";
-    const maxResults = Math.min(numberFromConfig(config.maxResults, 100), 100);
-    const maxMessages = numberFromConfig(config.maxMessages, 80);
-    const pendingIds = Array.isArray(config.gmailPendingMessageIds)
+    const query = cleanText(config.query) || DEFAULT_GMAIL_QUERY;
+    const maxResults = Math.min(numberFromConfig(config.maxResults, 500), 500);
+    const maxMessages = Math.min(numberFromConfig(config.maxMessages, 120), 120);
+    const storedQuery = cleanText(config.gmailQuery);
+    const resetStoredQueue = Boolean(storedQuery && storedQuery !== query);
+    const pendingIds = !resetStoredQueue && Array.isArray(config.gmailPendingMessageIds)
       ? (config.gmailPendingMessageIds as unknown[]).map(cleanText).filter(Boolean)
       : [];
-    let nextPageToken = cleanText(config.gmailNextPageToken);
+    let nextPageToken = resetStoredQueue ? "" : cleanText(config.gmailNextPageToken);
     let fetchedPage = false;
     let totalMatchingMessages = Number(config.gmailTotalMatchingMessages ?? 0);
     let batchMessageIds = pendingIds;
     if (batchMessageIds.length === 0) {
-      const pageToken = cleanText(config.gmailNextPageToken);
+      const pageToken = resetStoredQueue ? "" : cleanText(config.gmailNextPageToken);
       const params = new URLSearchParams({ q: query, maxResults: String(maxResults) });
       if (pageToken) params.set("pageToken", pageToken);
       const list = await googleJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`, auth.token);
