@@ -449,7 +449,7 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
     setSyncingSource(id);
     setSyncMessage(`Sincronizando ${id}...`);
     try {
-      const result = await syncSourceBatches(id, id === "gmail" ? 60 : 1, id === "gmail" ? "Gmail" : id);
+      const result = await syncSourceBatches(id, id === "gmail" ? 200 : 1, id === "gmail" ? "Gmail" : id);
       setSyncMessage(`${id === "gmail" ? "Gmail" : id}: ${result.totalNew} nuevos, ${result.totalUpdated} actualizados, ${result.totalErrors} errores/omitidos. ${result.lastMessage}`);
       load();
     } catch (err: any) {
@@ -470,7 +470,7 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
       const gmailMessage = String(gmailLog?.message ?? "");
       let extraMessage = "";
       if (sourceCanContinue("gmail", gmailMessage)) {
-        const gmail = await syncSourceBatches("gmail", 60, "Gmail historico");
+        const gmail = await syncSourceBatches("gmail", 200, "Gmail historico");
         imported += gmail.totalNew + gmail.totalUpdated;
         errors += gmail.totalErrors;
         extraMessage = ` Gmail continuo ${gmail.batches} tandas extra: ${gmail.totalNew} nuevos, ${gmail.totalUpdated} actualizados. ${gmail.lastMessage}`;

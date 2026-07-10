@@ -782,9 +782,9 @@ function decodeBase64Url(value: string) {
 function cleanCandidateNameText(value: string) {
   return cleanText(value)
     .replace(/\.[a-z0-9]{2,6}$/i, "")
-    .replace(/\b(cv|curriculum|resume|candidato|postulante)\b/gi, " ")
-    .replace(/\b(actualizado|actualizada|final|nuevo|nueva|version|versi[oó]n|v\d+)\b/gi, " ")
     .replace(/[_\-().]+/g, " ")
+    .replace(/(^|\s)(cv|curriculum|resume|candidato|postulante)(?=\s|$)/gi, " ")
+    .replace(/(^|\s)(actualizado|actualizada|final|nuevo|nueva|version|versi[oó]n|v\d+)(?=\s|$)/gi, " ")
     .replace(/\b(fecha de nacimiento|nacimiento|domicilio|direcci[oó]n|address|cedula|c[eé]dula|documento|telefono|tel[eé]fono|celular|email|correo|uruguay)\b.*$/i, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -799,7 +799,7 @@ function nameFromFileName(fileName: string | null | undefined) {
   return "";
 }
 
-function candidateFromFreeText(sourceType: string, text: string, options: { sourceId?: string | null; sourceUrl?: string | null; currentRole?: string | null; fileName?: string | null; fallbackName?: string | null } = {}): CandidateImport | null {
+export function candidateFromFreeText(sourceType: string, text: string, options: { sourceId?: string | null; sourceUrl?: string | null; currentRole?: string | null; fileName?: string | null; fallbackName?: string | null } = {}): CandidateImport | null {
   const content = normalizeWhitespace(text);
   if (!content || content.length < 8) return null;
   const email = extractEmails(content);
