@@ -801,7 +801,7 @@ function nameFromFileName(fileName: string | null | undefined) {
 
 function nameFromEmailAddress(email: string | null | undefined) {
   const localPart = cleanText(email).split("@")[0] ?? "";
-  if (!localPart || /^(info|rrhh|recursos|seleccion|selección|admin|contacto|noreply|no-reply|notifications?|support)$/i.test(localPart)) return "";
+  if (!localPart || emailLooksInternalOrSystem(email)) return "";
   const candidate = localPart
     .replace(/\d+/g, " ")
     .replace(/[._-]+/g, " ")
@@ -811,7 +811,25 @@ function nameFromEmailAddress(email: string | null | undefined) {
   return candidateNameLooksReal(candidate) ? candidate : "";
 }
 
+function emailLooksInternalOrSystem(value: string | null | undefined) {
+  const email = cleanText(value).toLowerCase();
+  const localPart = email.split("@")[0] ?? "";
+  const domain = email.split("@")[1] ?? "";
+  return /^(info|rrhh|recursos|seleccion|selección|admin|contacto|noreply|no-reply|notifications?|support|security|billing)$/i.test(localPart)
+    || /seleccion|selección|rrhh|recursos|talento|talent|recruit/i.test(localPart)
+    || /^aglh\.com(\.uy)?$/i.test(domain)
+    || /google|microsoft|linkedin/i.test(domain);
+}
+
+function mailHeaderLooksInternalOrSystem(value: string | null | undefined) {
+  const header = cleanText(value).toLowerCase();
+  const email = extractEmails(header)[0] ?? "";
+  return /no-?reply|noreply|notification|support|security|billing|google|microsoft|linkedin/i.test(header)
+    || emailLooksInternalOrSystem(email);
+}
+
 function nameFromMailHeader(value: string | null | undefined) {
+  if (mailHeaderLooksInternalOrSystem(value)) return "";
   const header = cleanText(value);
   if (!header) return "";
   const displayName = cleanCandidateNameText(header.replace(/<[^>]+>/g, " ").replace(/["']/g, " "));
@@ -819,11 +837,17 @@ function nameFromMailHeader(value: string | null | undefined) {
   return nameFromEmailAddress(extractEmails(header)[0]);
 }
 
-export function candidateFromFreeText(sourceType: string, text: string, options: { sourceId?: string | null; sourceUrl?: string | null; currentRole?: string | null; fileName?: string | null; fallbackName?: string | null; sender?: string | null } = {}): CandidateImport | null {
-  const content = normalizeWhitespace(text);
+export function candidateFromFreeText(sourceType: string, text: string, options: { sourceId?: string | null; sourceUrl?: string | null; currentRole?: string | null; fileName?: string | null; fallbackName?: string | null; sender?: string | null; contactText?: string | null } = {}): CandidateImport | null {
+  const rawContent = normalizeWhitespace(text);
+  const sanitizedContent = cleanDocumentTextForImport(rawContent);
+  const content = sanitizedContent || normalizeWhitespace(options.fileName ?? "");
   if (!content || content.length < 8) return null;
-  const email = unique([...extractEmails(content), ...extractEmails(options.sender)]).map((item) => item.toLowerCase());
-  const phone = extractPhones(content);
+  const contactText = normalizeWhitespace(options.contactText ?? content);
+  const senderContact = mailHeaderLooksInternalOrSystem(options.sender) ? "" : cleanText(options.sender);
+  const email = unique([...extractEmails(contactText), ...extractEmails(senderContact)])
+    .map((item) => item.toLowerCase())
+    .filter((item) => !emailLooksInternalOrSystem(item));
+  const phone = extractPhones(contactText);
   const explicitName = content.match(/(?:nombre|name|candidato|postulante)\s*[:\-]\s*([A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{4,80})/i)?.[1];
   const fallbackName = nameFromFileName(options.fallbackName ?? options.fileName);
   const senderName = nameFromMailHeader(options.sender);
@@ -1075,12 +1099,25 @@ function extractPdfText(buffer: Buffer) {
   return decodeHtml([...literals, readable].join(" ").replace(/\\([()\\])/g, "$1").replace(/\s+/g, " ")).slice(0, 30000);
 }
 
+function cleanDocumentTextForImport(value: string) {
+  const text = normalizeWhitespace(value);
+  if (!text) return "";
+  const lower = text.toLowerCase();
+  const binaryPdfSignals = (lower.match(/%pdf-|endobj|xref|startxref|\/flatedecode|\/xobject|\/font|\/colorspace/g) ?? []).length;
+  if (binaryPdfSignals >= 3) return "";
+  if (/^%pdf-/.test(lower)) return "";
+  const alpha = (text.match(/[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/g) ?? []).length;
+  const odd = (text.match(/[^\sA-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9@._%+\-:,;()/]/g) ?? []).length;
+  if (text.length > 200 && odd > alpha * 0.35) return "";
+  return text;
+}
+
 function attachmentText(fileName: string, mimeType: string, buffer: Buffer) {
   const lowerName = fileName.toLowerCase();
   const lowerMime = mimeType.toLowerCase();
-  if (lowerMime.startsWith("text/")) return buffer.toString("utf8").slice(0, 30000);
-  if (lowerName.endsWith(".docx") || lowerMime.includes("wordprocessingml")) return extractDocxText(buffer);
-  if (lowerName.endsWith(".pdf") || lowerMime.includes("pdf")) return extractPdfText(buffer);
+  if (lowerMime.startsWith("text/")) return cleanDocumentTextForImport(buffer.toString("utf8").slice(0, 30000));
+  if (lowerName.endsWith(".docx") || lowerMime.includes("wordprocessingml")) return cleanDocumentTextForImport(extractDocxText(buffer));
+  if (lowerName.endsWith(".pdf") || lowerMime.includes("pdf")) return cleanDocumentTextForImport(extractPdfText(buffer));
   return "";
 }
 
@@ -1092,9 +1129,12 @@ function looksLikeCvAttachment(fileName: string, mimeType: string) {
 
 function gmailAttachmentLooksCandidate(attachment: { fileName: string; rawText?: string }) {
   const text = `${attachment.fileName}\n${attachment.rawText ?? ""}`;
-  if (/\b(cv|curriculum|currículo|resume|candidato|postulante)\b/i.test(attachment.fileName)) return true;
-  if (nameFromFileName(attachment.fileName)) return true;
-  return (extractEmails(text).length > 0 || extractPhones(text).length > 0) && (gmailHasCandidateIntent(text) || gmailHasCandidateProfileSignal(text));
+  const hasNameInFile = Boolean(nameFromFileName(attachment.fileName));
+  const hasContact = extractEmails(text).length > 0 || extractPhones(text).length > 0;
+  const hasCandidateWord = /\b(cv|curriculum|currículo|resume|candidato|postulante)\b/i.test(attachment.fileName);
+  if (hasNameInFile && (hasCandidateWord || hasContact || gmailHasCandidateProfileSignal(text))) return true;
+  if (hasContact && (gmailHasCandidateIntent(text) || gmailHasCandidateProfileSignal(text))) return true;
+  return false;
 }
 
 function gmailShouldImport(parsed: ReturnType<typeof gmailMessageText>, attachments: { fileName: string; rawText?: string }[]) {
@@ -1235,25 +1275,27 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
         continue;
       }
       const attachmentsToImport = candidateAttachments.length ? candidateAttachments : attachments;
-      for (const attachment of attachmentsToImport.length ? attachmentsToImport : [{ fileName: parsed.subject || "Correo Gmail", rawText: parsed.bodyText, mimeType: "message/rfc822", sourceId: `gmail:${id}`, sourcePath: `https://mail.google.com/mail/u/0/#all/${id}`, isPrimaryCv: true }]) {
+      for (const attachment of attachmentsToImport.length ? attachmentsToImport : [{ fileName: parsed.subject || "Correo Gmail", rawText: cleanDocumentTextForImport(parsed.bodyText), mimeType: "message/rfc822", sourceId: `gmail:${id}`, sourcePath: `https://mail.google.com/mail/u/0/#all/${id}`, isPrimaryCv: true }]) {
         const documentText = `${attachment.fileName}\n${attachment.rawText ?? ""}`.trim();
-        const contextText = `${parsed.from}\n${parsed.subject}\n${parsed.bodyText}`.slice(0, 1200);
-        const candidate = candidateFromFreeText("gmail", `${documentText}\n${contextText}`, {
+        const contactText = `${documentText}\n${parsed.from}`.slice(0, 5000);
+        const candidate = candidateFromFreeText("gmail", documentText, {
           sourceId: attachment.sourceId || `gmail:${id}:${attachment.fileName}`,
           sourceUrl: `https://mail.google.com/mail/u/0/#all/${id}`,
           currentRole: parsed.subject,
           fileName: attachment.fileName || parsed.subject || "Correo Gmail",
           fallbackName: attachment.fileName || parsed.subject,
-          sender: parsed.from
+          sender: parsed.from,
+          contactText
         });
         if (!candidate) {
           parsedNoCandidate += 1;
           continue;
         }
+        const cleanRawText = cleanDocumentTextForImport(attachment.rawText || candidate.documents?.[0]?.rawText || documentText);
         candidate.documents = [{
           type: "cv",
           fileName: attachment.fileName || candidate.documents?.[0]?.fileName || parsed.subject || "CV Gmail",
-          rawText: attachment.rawText || candidate.documents?.[0]?.rawText || documentText,
+          rawText: cleanRawText || undefined,
           mimeType: attachment.mimeType,
           sourceId: attachment.sourceId || candidate.sourceId,
           sourcePath: attachment.sourcePath || candidate.sourceUrl,
@@ -1614,10 +1656,18 @@ function extractEmails(value: unknown) {
 }
 
 function extractPhones(value: unknown) {
-  return unique([
-    ...listFrom(value),
-    ...(cleanText(value).match(/(?:\+?\d{1,3}\s?)?(?:0?9\d|2\d|4\d|[1-9]\d{1,3})[\s.-]?\d{3}[\s.-]?\d{3,4}/g) ?? [])
-  ]);
+  const values = Array.isArray(value) ? value : [value];
+  const matches = values.flatMap((item) => cleanText(item).match(/(?:\+?\d{1,3}[\s.-]?)?(?:0?9\d|2\d|4\d|[1-9]\d{1,3})[\s.-]?\d{3}[\s.-]?\d{3,4}/g) ?? []);
+  return unique(matches)
+    .map((phone) => phone.replace(/[^\d+]+/g, " ").replace(/\s+/g, " ").trim())
+    .filter((phone) => {
+      const digits = phone.replace(/\D/g, "");
+      if (digits.length < 7 || digits.length > 15) return false;
+      if (/^0+$/.test(digits)) return false;
+      if (/^(\d)\1{6,}$/.test(digits)) return false;
+      if (/^(?:0 ?){4,}/.test(phone)) return false;
+      return true;
+    });
 }
 
 function offerIdFromRow(row: Record<string, unknown>) {
@@ -1702,8 +1752,9 @@ function isUsableCandidate(candidate: CandidateImport, sourceType = "") {
   const hasRealName = candidateNameLooksReal(candidate.fullName);
   const documentSource = sourceType === "drive" || sourceType === "gmail";
 
-  if (documentSource && hasDocument) {
-    return Boolean(hasRealName || hasContact || candidate.sourceId);
+  if (documentSource) {
+    if (!hasDocument) return false;
+    return Boolean(hasRealName || hasContact);
   }
 
   if (sourceType === "buscojobs") {

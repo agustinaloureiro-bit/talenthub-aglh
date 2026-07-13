@@ -104,6 +104,10 @@ const excludeFalseGmailCandidatesSql = `NOT (
         OR lower(coalesce(candidates.ai_summary, '')) LIKE '%google workspace%'
         OR lower(coalesce(candidates.ai_summary, '')) LIKE '%security alert%'
         OR lower(coalesce(candidates.ai_summary, '')) LIKE '%billing%'
+        OR lower(coalesce(candidates.ai_summary, '')) LIKE '%%pdf-1.%'
+        OR lower(coalesce(candidates.ai_summary, '')) LIKE '%google docs renderer%'
+        OR lower(coalesce(candidates.ai_summary, '')) LIKE '%comparto%contigo%'
+        OR lower(coalesce(candidates.ai_summary, '')) LIKE '%shared%with you%'
       )
     )
     OR EXISTS (
@@ -114,6 +118,10 @@ const excludeFalseGmailCandidatesSql = `NOT (
         AND (
           lower(coalesce(false_gmail_doc.raw_text, '')) LIKE '%request for work account access%'
           OR lower(coalesce(false_gmail_doc.raw_text, '')) LIKE '%google cloud%'
+          OR lower(coalesce(false_gmail_doc.raw_text, '')) LIKE '%%pdf-1.%'
+          OR lower(coalesce(false_gmail_doc.raw_text, '')) LIKE '%google docs renderer%'
+          OR lower(coalesce(false_gmail_doc.raw_text, '')) LIKE '%comparto%contigo%'
+          OR lower(coalesce(false_gmail_doc.raw_text, '')) LIKE '%shared%with you%'
           OR lower(coalesce(false_gmail_doc.file_name, '')) LIKE '%request for work account access%'
         )
     )
@@ -154,6 +162,10 @@ async function cleanupFalseGmailCandidates() {
              OR lower(coalesce(c.ai_summary, '')) LIKE '%security alert%'
              OR lower(coalesce(c.ai_summary, '')) LIKE '%billing%'
              OR lower(coalesce(c.ai_summary, '')) LIKE '%verification code%'
+             OR lower(coalesce(c.ai_summary, '')) LIKE '%%pdf-1.%'
+             OR lower(coalesce(c.ai_summary, '')) LIKE '%google docs renderer%'
+             OR lower(coalesce(c.ai_summary, '')) LIKE '%comparto%contigo%'
+             OR lower(coalesce(c.ai_summary, '')) LIKE '%shared%with you%'
            )
          )
          OR EXISTS (
@@ -164,6 +176,10 @@ async function cleanupFalseGmailCandidates() {
              AND (
                lower(coalesce(d.raw_text, '')) LIKE '%request for work account access%'
                OR lower(coalesce(d.raw_text, '')) LIKE '%google cloud%'
+               OR lower(coalesce(d.raw_text, '')) LIKE '%%pdf-1.%'
+               OR lower(coalesce(d.raw_text, '')) LIKE '%google docs renderer%'
+               OR lower(coalesce(d.raw_text, '')) LIKE '%comparto%contigo%'
+               OR lower(coalesce(d.raw_text, '')) LIKE '%shared%with you%'
                OR lower(coalesce(d.file_name, '')) LIKE '%request for work account access%'
              )
          )
