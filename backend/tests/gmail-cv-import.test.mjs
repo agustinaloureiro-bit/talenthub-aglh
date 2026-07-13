@@ -120,3 +120,53 @@ test("Gmail no mezcla contactos ajenos del cuerpo del correo con el CV", async (
   assert.deepEqual(candidate.email, ["mariasofiasilva100@gmail.com"]);
   assert.deepEqual(candidate.phone, ["099 111 222"]);
 });
+
+test("Gmail resume el perfil del CV con datos utiles sin inventar", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const candidate = candidateFromFreeText(
+    "gmail",
+    `Valeria Gomez
+Montevideo
+Email valeria.gomez@example.com
+Telefono 099 555 777
+Abogada egresada de Facultad de Derecho.
+Experiencia laboral: 4 anos en contratos, derecho corporativo y asesoramiento juridico.
+Ingles avanzado.`,
+    {
+      sourceId: "gmail:legal-cv",
+      fileName: "CV_Valeria_Gomez.pdf"
+    }
+  );
+
+  assert.ok(candidate);
+  assert.equal(candidate.currentRole, "abogado");
+  assert.equal(candidate.years, 4);
+  assert.match(candidate.summary, /Perfil detectado: abogado/i);
+  assert.match(candidate.summary, /Experiencia/i);
+  assert.match(candidate.summary, /Idiomas: ingles/i);
+  assert.ok(!candidate.summary?.includes("%PDF"));
+});
+
+test("Gmail usa modo incremental cuando el historico ya termino", async () => {
+  const { gmailSyncQueryForConfig } = await import("../dist/routes/integrations.js");
+  const result = gmailSyncQueryForConfig({ gmailBackfillCompleteAt: "2026-07-13T12:00:00.000Z" }, false);
+
+  assert.equal(result.mode, "incremental");
+  assert.match(result.query, /after:2026\/07\/12/);
+});
+
+test("Gmail mantiene modo historico si todavia queda cola pendiente", async () => {
+  const { gmailSyncQueryForConfig } = await import("../dist/routes/integrations.js");
+  const result = gmailSyncQueryForConfig({ gmailBackfillCompleteAt: "2026-07-13T12:00:00.000Z" }, true);
+
+  assert.equal(result.mode, "historical");
+  assert.ok(!result.query.includes("after:"));
+});
+
+test("Gmail respeta busqueda personalizada si fue configurada", async () => {
+  const { gmailSyncQueryForConfig } = await import("../dist/routes/integrations.js");
+  const result = gmailSyncQueryForConfig({ query: "from:seleccion@aglh.com.uy has:attachment" }, false);
+
+  assert.equal(result.mode, "custom");
+  assert.equal(result.query, "from:seleccion@aglh.com.uy has:attachment");
+});

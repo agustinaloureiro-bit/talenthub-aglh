@@ -23,6 +23,31 @@ const DEFAULT_INTEGRATIONS = [
 const SYNC_ENGINE_VERSION = "2026-07-13.1";
 const DEFAULT_GMAIL_QUERY = "has:attachment (filename:pdf OR filename:doc OR filename:docx OR filename:rtf OR filename:txt) newer_than:3650d";
 
+function gmailAfterDate(value: unknown) {
+  const date = new Date(cleanText(value));
+  if (Number.isNaN(date.getTime())) return "";
+  date.setUTCDate(date.getUTCDate() - 1);
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}/${month}/${day}`;
+}
+
+export function gmailSyncQueryForConfig(config: Record<string, unknown>, hasStoredQueue: boolean) {
+  const explicitQuery = cleanText(config.query);
+  if (explicitQuery) return { query: explicitQuery, mode: "custom", since: "" };
+  const completedAt = cleanText(config.gmailBackfillCompleteAt);
+  const afterDate = hasStoredQueue ? "" : gmailAfterDate(completedAt);
+  if (afterDate) {
+    return {
+      query: `${DEFAULT_GMAIL_QUERY} after:${afterDate}`,
+      mode: "incremental",
+      since: afterDate
+    };
+  }
+  return { query: DEFAULT_GMAIL_QUERY, mode: "historical", since: "" };
+}
+
 function maskConfig(config: Record<string, unknown> | null) {
   if (!config) return {};
   const masked = { ...config };
@@ -854,6 +879,16 @@ function sentenceFromDocument(content: string, pattern: RegExp) {
   return cleanText(slice.split(/(?<=[.;])\s+/)[0] ?? slice).slice(0, 220);
 }
 
+function snippetFromDocument(content: string, pattern: RegExp, limit = 260) {
+  const match = content.match(pattern);
+  if (!match) return "";
+  const index = Math.max(0, match.index ?? 0);
+  const slice = content.slice(index, index + limit);
+  return cleanText(slice.split(/(?<=[.;])\s+/)[0] ?? slice)
+    .replace(/\s+/g, " ")
+    .slice(0, limit);
+}
+
 function detectedLanguages(content: string) {
   const languages = [];
   if (/ingl[eé]s|english/i.test(content)) languages.push("ingles");
@@ -875,15 +910,38 @@ function detectedRoleTags(content: string) {
   return roles.filter(([, pattern]) => pattern.test(content)).map(([tag]) => tag);
 }
 
+function detectedExperienceYears(content: string) {
+  const direct = content.match(/(?:experiencia|trayectoria|trabaj[oaé]|laboral|profesional)[^.;]{0,80}?(\d{1,2})\s*(?:a[nñ]os|years)/i)
+    ?? content.match(/(?:m[aá]s de|mas de|over)\s*(\d{1,2})\s*(?:a[nñ]os|years)[^.;]{0,80}?(?:experiencia|trayectoria|trabaj[oaé]|laboral|profesional)/i);
+  const years = Number(direct?.[1] ?? 0);
+  return years > 0 && years < 60 ? years : null;
+}
+
+function detectedProfileLabel(content: string, fallbackRole: string) {
+  const roles = detectedRoleTags(content);
+  if (roles.length) return roles[0];
+  const normalizedRole = cleanText(fallbackRole);
+  if (normalizedRole && normalizedRole !== "Candidato importado") return normalizedRole;
+  return "";
+}
+
 function documentSummary(content: string, fallbackRole: string) {
+  const profile = detectedProfileLabel(content, fallbackRole);
+  const years = detectedExperienceYears(content);
+  const experience = snippetFromDocument(content, /(?:experiencia|experiencia laboral|trayectoria|antecedentes laborales|trabaj[eéoa]|desempe[nñ]|responsable|cargo|puesto|funciones|tareas)/i);
+  const education = snippetFromDocument(content, /(?:formaci[oó]n|educaci[oó]n|estudios|universidad|facultad|bachiller|tecnicatura|licenciatura|posgrado|curso)/i);
+  const languages = detectedLanguages(content);
+  const location = sentenceFromDocument(content, /montevideo|canelones|maldonado|san jose|colonia|florida|rocha|paysandu|salto|rivera|tacuarembo|durazno|soriano|lavalleja|artigas|cerro largo|flores|rio negro|treinta y tres/i);
   const facts = [
-    sentenceFromDocument(content, /experiencia|trabaj|desempeñ|responsable|cargo|puesto/i),
-    sentenceFromDocument(content, /formaci[oó]n|educaci[oó]n|universidad|facultad|bachiller|tecnicatura|licenciatura/i),
-    sentenceFromDocument(content, /ingl[eé]s|english|portugu[eé]s|franc[eé]s/i),
-    sentenceFromDocument(content, /montevideo|canelones|maldonado|san jose|colonia|florida|rocha|paysandu|salto|rivera|tacuarembo|durazno|soriano|lavalleja|artigas|cerro largo|flores|rio negro|treinta y tres/i)
+    profile ? `Perfil detectado: ${profile}.` : "",
+    years ? `Experiencia declarada: ${years} anos.` : "",
+    experience ? `Experiencia: ${experience}` : "",
+    education ? `Formacion: ${education}` : "",
+    languages.length ? `Idiomas: ${languages.join(", ")}.` : "",
+    location ? `Ubicacion detectada: ${location}` : ""
   ].filter(Boolean);
-  if (facts.length) return unique(facts).slice(0, 4).join("\n");
-  return fallbackRole && fallbackRole !== "Candidato importado" ? `CV importado. Rol detectado: ${fallbackRole}.` : "CV importado. Faltan datos legibles para resumir.";
+  if (facts.length) return unique(facts).slice(0, 6).join("\n");
+  return "CV importado. Faltan datos legibles para resumir.";
 }
 
 export function candidateFromFreeText(sourceType: string, text: string, options: { sourceId?: string | null; sourceUrl?: string | null; currentRole?: string | null; fileName?: string | null; fallbackName?: string | null; sender?: string | null; contactText?: string | null } = {}): CandidateImport | null {
@@ -915,6 +973,7 @@ export function candidateFromFreeText(sourceType: string, text: string, options:
   const role = compactLabel(roleFromText ?? options.currentRole, "Candidato importado");
   const languageTags = detectedLanguages(content);
   const roleTags = detectedRoleTags(content);
+  const years = detectedExperienceYears(content);
   return {
     fullName,
     email,
@@ -922,10 +981,10 @@ export function candidateFromFreeText(sourceType: string, text: string, options:
     city: content.match(/(?:Montevideo|Canelones|Maldonado|San Jose|Colonia|Florida|Rocha|Paysandu|Salto|Rivera|Tacuarembo|Durazno|Soriano|Lavalleja|Artigas|Cerro Largo|Flores|Rio Negro|Treinta y Tres)/i)?.[0] ?? null,
     country: "Uruguay",
     currentRole: role,
-    years: null,
+    years,
     tags: safeTags([role, ...roleTags, ...languageTags], sourceType),
     summary: documentSummary(content, role),
-    qualityScore: 0,
+    qualityScore: Math.min(100, 30 + (email.length ? 15 : 0) + (phone.length ? 15 : 0) + (roleTags.length ? 20 : 0) + (languageTags.length ? 10 : 0) + (content.length > 800 ? 10 : 0)),
     sourceId: options.sourceId ?? `${sourceType}:${email[0] ?? phone[0] ?? fullName}`,
     sourceUrl: options.sourceUrl ?? null,
     documents: [{
@@ -1317,15 +1376,18 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
   try {
     const startedAt = Date.now();
     const deadlineMs = startedAt + numberFromConfig(config.gmailBudgetMs, 45_000);
-    const query = cleanText(config.query) || DEFAULT_GMAIL_QUERY;
     const maxResults = Math.min(numberFromConfig(config.maxResults, 500), 500);
     const maxMessages = Math.min(numberFromConfig(config.maxMessages, 120), 120);
     const storedQuery = cleanText(config.gmailQuery);
-    const resetStoredQueue = Boolean(storedQuery && storedQuery !== query);
-    const pendingIds = !resetStoredQueue && Array.isArray(config.gmailPendingMessageIds)
+    const storedPendingIds = Array.isArray(config.gmailPendingMessageIds)
       ? (config.gmailPendingMessageIds as unknown[]).map(cleanText).filter(Boolean)
       : [];
-    let nextPageToken = resetStoredQueue ? "" : cleanText(config.gmailNextPageToken);
+    const storedNextPageToken = cleanText(config.gmailNextPageToken);
+    const syncQuery = gmailSyncQueryForConfig(config, storedPendingIds.length > 0 || Boolean(storedNextPageToken));
+    const query = syncQuery.query;
+    const resetStoredQueue = Boolean(storedQuery && storedQuery !== query);
+    const pendingIds = resetStoredQueue ? [] : storedPendingIds;
+    let nextPageToken = resetStoredQueue ? "" : storedNextPageToken;
     let fetchedPage = false;
     let totalMatchingMessages = Number(config.gmailTotalMatchingMessages ?? 0);
     let batchMessageIds = pendingIds;
@@ -1401,9 +1463,13 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
     }
     const remainingPendingIds = batchMessageIds.slice(processedMessages);
     const hasMore = remainingPendingIds.length > 0 || Boolean(nextPageToken);
+    const finishedAt = new Date().toISOString();
+    const completedHistoricalAt = !hasMore && syncQuery.mode === "historical" ? finishedAt : (cleanText(config.gmailBackfillCompleteAt) || null);
+    const lastIncrementalSyncAt = !hasMore && syncQuery.mode === "incremental" ? finishedAt : (cleanText(config.gmailLastIncrementalSyncAt) || null);
     const sampleText = unique(sampleAttachments).slice(0, 5).join(", ");
     const progressText = totalMatchingMessages ? ` de aprox. ${totalMatchingMessages}` : "";
-    const diagnostic = `Gmail: procesados ${processedMessages}${progressText} correos de la tanda, ${messagesWithAttachments} con adjuntos, ${reviewedAttachments} adjuntos PDF/Word/texto revisados, ${candidateAttachmentCount} con pinta de CV, ${rows.length} candidatos extraidos. Ignorados: ${skippedSystem} sistema, ${skippedNoSignal} sin senales, ${parsedNoCandidate} sin nombre/contacto.${hasMore ? " Quedan mas correos: volve a sincronizar para seguir importando." : " Se llego al final de la busqueda guardada."}${stoppedByTime ? " Se corto por tiempo y guardo resultado parcial." : ""}${sampleText ? ` Adjuntos ejemplo: ${sampleText}.` : ""}`;
+    const modeText = syncQuery.mode === "incremental" ? `modo nuevos desde ${syncQuery.since}` : (syncQuery.mode === "custom" ? "modo busqueda personalizada" : "modo historico");
+    const diagnostic = `Gmail (${modeText}): procesados ${processedMessages}${progressText} correos de la tanda, ${messagesWithAttachments} con adjuntos, ${reviewedAttachments} adjuntos PDF/Word/texto revisados, ${candidateAttachmentCount} con pinta de CV, ${rows.length} candidatos extraidos. Ignorados: ${skippedSystem} sistema, ${skippedNoSignal} sin senales, ${parsedNoCandidate} sin nombre/contacto.${hasMore ? " Quedan mas correos: volve a sincronizar para seguir importando." : " Se llego al final de la busqueda guardada; las proximas sincronizaciones van a revisar solo correos nuevos."}${stoppedByTime ? " Se corto por tiempo y guardo resultado parcial." : ""}${sampleText ? ` Adjuntos ejemplo: ${sampleText}.` : ""}`;
     return {
       rows,
       configUpdate: {
@@ -1416,7 +1482,11 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
         gmailPendingMessageIds: remainingPendingIds,
         gmailTotalMatchingMessages: totalMatchingMessages,
         gmailLastFetchedNewPage: fetchedPage,
-        gmailHasMore: hasMore
+        gmailHasMore: hasMore,
+        gmailSyncMode: syncQuery.mode,
+        gmailIncrementalSince: syncQuery.since || null,
+        gmailBackfillCompleteAt: completedHistoricalAt,
+        gmailLastIncrementalSyncAt: lastIncrementalSyncAt
       },
       message: diagnostic
     };
