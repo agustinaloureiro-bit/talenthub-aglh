@@ -51,3 +51,52 @@ test("prioriza candidatos con evidencia en documentos/CV", () => {
   assert.match(ranked[0].matchReason, /idioma/i);
   assert.match(ranked[0].matchReason, /CV\/documentos/i);
 });
+
+test("interpreta ventas y gastronomia aunque venga sin acento o con typo", () => {
+  const interpreted = interpretTalentQuery("Busco alguien con ventas y gastonomia");
+
+  assert.ok(interpreted.skills.includes("ventas"));
+  assert.ok(interpreted.skills.includes("gastonomia"));
+  assert.ok(interpreted.mustHave.includes("ventas"));
+});
+
+test("prioriza CV con experiencia en ventas y gastronomia", () => {
+  const interpreted = interpretTalentQuery("ventas y gastronomia");
+  const candidates = [
+    {
+      id: "administrativo",
+      fullName: "Perfil Administrativo",
+      currentRole: "Administrativa",
+      city: "Montevideo",
+      country: "Uruguay",
+      tags: ["administracion"],
+      qualityScore: 75,
+      sourceCount: 1,
+      documentCount: 1,
+      primaryDocumentName: "CV Administrativo.pdf",
+      documentSnippet: "Experiencia en recepcion, archivo y tareas administrativas.",
+      score: 20,
+      matchReason: ""
+    },
+    {
+      id: "ventas-gastronomia",
+      fullName: "Camila Perez",
+      currentRole: "Atencion al cliente",
+      city: "Montevideo",
+      country: "Uruguay",
+      tags: ["ventas", "gastronomia"],
+      qualityScore: 65,
+      sourceCount: 1,
+      documentCount: 1,
+      primaryDocumentName: "CV Camila Perez.pdf",
+      documentSnippet: "Experiencia en ventas, gastronomia, restaurante, caja y atencion al cliente.",
+      score: 20,
+      matchReason: ""
+    }
+  ];
+
+  const ranked = rerankCandidates(candidates, interpreted);
+
+  assert.equal(ranked[0].id, "ventas-gastronomia");
+  assert.match(ranked[0].matchReason, /competencias relevantes/i);
+});

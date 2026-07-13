@@ -901,6 +901,7 @@ function detectedRoleTags(content: string) {
   const roles = [
     ["abogado", /abogad[oa]|derecho|jur[ií]dic[oa]|legal/i],
     ["ventas", /ventas|vendedor|vendedora|comercial/i],
+    ["gastronomia", /gastronom[ií]a|restaurante|mozo|moza|cocina|cocinero|cocinera|barista|cafeter[ií]a/i],
     ["administracion", /administraci[oó]n|administrativ[oa]/i],
     ["logistica", /log[ií]stica|dep[oó]sito|warehouse/i],
     ["contabilidad", /contabilidad|contador|contadora|liquidaci[oó]n/i],

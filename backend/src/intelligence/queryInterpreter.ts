@@ -25,7 +25,14 @@ const ROLE_HINTS = [
   "analista",
   "administrativo",
   "vendedor",
+  "vendedora",
   "comercial",
+  "gastronomia",
+  "gastronomía",
+  "gastonomia",
+  "mozo",
+  "moza",
+  "cocina",
   "desarrollador",
   "contador",
   "recursos humanos",
@@ -52,12 +59,25 @@ const SKILL_HINTS = [
   "compras",
   "ventas",
   "atencion al cliente",
-  "atención al cliente"
+  "atención al cliente",
+  "gastronomia",
+  "gastronomía",
+  "gastonomia",
+  "restaurante",
+  "cocina",
+  "cajero",
+  "cajera",
+  "mozo",
+  "moza"
 ];
 
+function normalizeHint(value: string) {
+  return value.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "");
+}
+
 function findHints(query: string, hints: string[]) {
-  const normalized = query.toLowerCase();
-  return hints.filter((hint) => normalized.includes(hint));
+  const normalized = normalizeHint(query);
+  return hints.filter((hint) => normalized.includes(normalizeHint(hint)));
 }
 
 export function interpretTalentQuery(query: string): InterpretedTalentQuery {
@@ -66,7 +86,7 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   const skills = findHints(normalizedQuery, SKILL_HINTS);
   const languages = LANGUAGE_PATTERNS.filter(([pattern]) => pattern.test(normalizedQuery)).map(([, language]) => language);
   const seniority = SENIORITY_PATTERNS.find(([pattern]) => pattern.test(normalizedQuery))?.[1] ?? null;
-  const industries = findHints(normalizedQuery, ["industria", "retail", "logistica", "logística", "manufactura", "tecnologia", "tecnología"]);
+  const industries = findHints(normalizedQuery, ["industria", "retail", "logistica", "logística", "manufactura", "tecnologia", "tecnología", "gastronomia", "gastronomía", "restaurante"]);
 
   return {
     originalQuery: query,

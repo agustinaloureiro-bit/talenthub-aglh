@@ -18,8 +18,17 @@ const searchSchema = z.object({
   }).default({})
 });
 
+function normalizeSearchText(value: string) {
+  return value.toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function expandedSearchTerms(query: string) {
-  const words = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 3);
+  const normalizedQuery = normalizeSearchText(query);
+  const words = normalizedQuery.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 3);
   const extras: Record<string, string[]> = {
     vendedor: ["ventas", "comercial", "ejecutivo comercial"],
     vendedora: ["ventas", "comercial", "ejecutiva comercial"],
@@ -38,14 +47,26 @@ function expandedSearchTerms(query: string) {
     derecho: ["abogado", "abogada", "legal", "juridico", "jurídico"],
     ingles: ["inglés", "english", "idioma ingles", "idioma inglés"],
     inglés: ["ingles", "english", "idioma ingles", "idioma inglés"],
-    english: ["ingles", "inglés"]
+    english: ["ingles", "inglés"],
+    gastronomia: ["gastronomía", "gastonomia", "restaurante", "cocina", "mozo", "moza", "atencion al cliente", "atención al cliente"],
+    gastonomia: ["gastronomia", "gastronomía", "restaurante", "cocina", "mozo", "moza"],
+    gastronomía: ["gastronomia", "gastonomia", "restaurante", "cocina", "mozo", "moza"],
+    restaurante: ["gastronomia", "gastronomía", "cocina", "mozo", "moza"],
+    cocina: ["gastronomia", "gastronomía", "restaurante"],
+    mozo: ["moza", "gastronomia", "gastronomía", "restaurante"],
+    moza: ["mozo", "gastronomia", "gastronomía", "restaurante"]
   };
-  return [...new Set([query, ...words, ...words.flatMap((word) => extras[word] ?? [])])]
+  return [...new Set([normalizedQuery, ...words, ...words.flatMap((word) => extras[word] ?? [])].map(normalizeSearchText))]
     .map((term) => `%${term}%`);
 }
 
+function normalizedSqlText(sql: string) {
+  return `translate(lower(${sql}), 'áàäâãéèëêíìïîóòöôõúùüûñç', 'aaaaaeeeeiiiiooooouuuunc')`;
+}
+
 export async function findCandidates(query: string, filters: TalentSearchFilters = {}) {
-  const params: unknown[] = [query, `%${query}%`, expandedSearchTerms(query)];
+  const normalizedQuery = normalizeSearchText(query);
+  const params: unknown[] = [query, `%${query}%`, expandedSearchTerms(query), `%${normalizedQuery}%`];
   let where = "WHERE c.duplicate_of IS NULL";
   if (filters.activeOnly) where += " AND c.status='active'";
   if (filters.seniority) {
@@ -57,6 +78,7 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     where += ` AND EXISTS (SELECT 1 FROM candidate_sources cs WHERE cs.candidate_id=c.id AND cs.source_type = ANY($${params.length}))`;
   }
   const searchText = "coalesce(c.full_name,'') || ' ' || coalesce(c.current_role,'') || ' ' || coalesce(c.ai_summary,'') || ' ' || coalesce(array_to_string(c.ai_tags,' '),'') || ' ' || coalesce(doc.text,'')";
+  const normalizedSearchText = normalizedSqlText(searchText);
   const { rows } = await q(
     `SELECT c.*,
       coalesce(src.source_count, 0)::int AS source_count,
@@ -87,10 +109,11 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
          OR coalesce(c.ai_summary,'') ILIKE $2
          OR array_to_string(c.ai_tags,' ') ILIKE $2
          OR coalesce(doc.text,'') ILIKE $2
+         OR ${normalizedSearchText} ILIKE $4
          OR EXISTS (
            SELECT 1
            FROM unnest($3::text[]) term
-           WHERE ${searchText} ILIKE term
+           WHERE ${searchText} ILIKE term OR ${normalizedSearchText} ILIKE term
          )
        )
      ORDER BY rank DESC, c.quality_score DESC, c.updated_at DESC
