@@ -435,7 +435,7 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
   await cleanupFalseGmailCandidates();
   const search = String(req.query.search ?? "");
   const params: unknown[] = [];
-  let where = `WHERE duplicate_of IS NULL AND ${excludeFalseGmailCandidatesSql}`;
+  let where = `WHERE duplicate_of IS NULL AND ${excludeFalseGmailCandidatesSql} AND EXISTS (SELECT 1 FROM documents visible_doc WHERE visible_doc.candidate_id = candidates.id)`;
   if (search) {
     params.push(`%${search}%`);
     params.push(expandedSearchTerms(search));
@@ -474,7 +474,7 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
        LIMIT 100`,
       params
     ),
-    q<{ count: string }>(`SELECT count(*)::text FROM candidates WHERE duplicate_of IS NULL AND ${excludeFalseGmailCandidatesSql}`)
+    q<{ count: string }>(`SELECT count(*)::text FROM candidates WHERE duplicate_of IS NULL AND ${excludeFalseGmailCandidatesSql} AND EXISTS (SELECT 1 FROM documents visible_doc WHERE visible_doc.candidate_id = candidates.id)`)
   ]);
   res.json({ data: rows.map(mapCandidate), meta: { total: Number(total.rows[0]?.count ?? 0), returned: rows.length } });
 }));

@@ -46,7 +46,7 @@ export async function recordRejectedImport(sourceType: string, candidate: Candid
 
 async function saveDocuments(candidateId: string, sourceType: string, candidate: CandidateImport) {
   for (const document of candidate.documents ?? []) {
-    if (!document.fileUrl && !document.rawText) continue;
+    if (!document.fileUrl && !document.sourcePath && !document.sourceId && !document.rawText) continue;
     const fileName = document.fileName || `${candidate.fullName} - ${document.type}`;
     const existing = await q<{ id: string }>(
       `SELECT id FROM documents

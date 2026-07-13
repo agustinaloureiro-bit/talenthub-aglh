@@ -31,7 +31,14 @@ function expandedSearchTerms(query: string) {
     desarrolladora: ["developer", "programadora", "software"],
     rrhh: ["recursos humanos", "talento", "seleccion", "selección"],
     seleccion: ["selección", "reclutamiento", "recursos humanos"],
-    selección: ["seleccion", "reclutamiento", "recursos humanos"]
+    selección: ["seleccion", "reclutamiento", "recursos humanos"],
+    abogado: ["abogada", "legal", "derecho", "juridico", "jurídico", "asesor legal", "asesora legal"],
+    abogada: ["abogado", "legal", "derecho", "juridico", "jurídico", "asesor legal", "asesora legal"],
+    legal: ["abogado", "abogada", "derecho", "juridico", "jurídico"],
+    derecho: ["abogado", "abogada", "legal", "juridico", "jurídico"],
+    ingles: ["inglés", "english", "idioma ingles", "idioma inglés"],
+    inglés: ["ingles", "english", "idioma ingles", "idioma inglés"],
+    english: ["ingles", "inglés"]
   };
   return [...new Set([query, ...words, ...words.flatMap((word) => extras[word] ?? [])])]
     .map((term) => `%${term}%`);
@@ -72,6 +79,7 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
        WHERE cs.candidate_id = c.id
      ) src ON true
      ${where}
+       AND coalesce(doc.document_count, 0) > 0
        AND (
          to_tsvector('spanish', ${searchText}) @@ plainto_tsquery('spanish', $1)
          OR c.full_name ILIKE $2

@@ -846,6 +846,46 @@ function nameFromMailHeader(value: string | null | undefined) {
   return nameFromEmailAddress(extractEmails(header)[0]);
 }
 
+function sentenceFromDocument(content: string, pattern: RegExp) {
+  const match = content.match(pattern);
+  if (!match) return "";
+  const index = Math.max(0, match.index ?? 0);
+  const slice = content.slice(Math.max(0, index - 80), index + 220);
+  return cleanText(slice.split(/(?<=[.;])\s+/)[0] ?? slice).slice(0, 220);
+}
+
+function detectedLanguages(content: string) {
+  const languages = [];
+  if (/ingl[eé]s|english/i.test(content)) languages.push("ingles");
+  if (/portugu[eé]s|portuguese/i.test(content)) languages.push("portugues");
+  if (/franc[eé]s|french/i.test(content)) languages.push("frances");
+  return languages;
+}
+
+function detectedRoleTags(content: string) {
+  const roles = [
+    ["abogado", /abogad[oa]|derecho|jur[ií]dic[oa]|legal/i],
+    ["ventas", /ventas|vendedor|vendedora|comercial/i],
+    ["administracion", /administraci[oó]n|administrativ[oa]/i],
+    ["logistica", /log[ií]stica|dep[oó]sito|warehouse/i],
+    ["contabilidad", /contabilidad|contador|contadora|liquidaci[oó]n/i],
+    ["recursos humanos", /recursos humanos|selecci[oó]n|reclutamiento/i],
+    ["tecnico", /t[eé]cnic[oa]|mantenimiento/i]
+  ] as const;
+  return roles.filter(([, pattern]) => pattern.test(content)).map(([tag]) => tag);
+}
+
+function documentSummary(content: string, fallbackRole: string) {
+  const facts = [
+    sentenceFromDocument(content, /experiencia|trabaj|desempeñ|responsable|cargo|puesto/i),
+    sentenceFromDocument(content, /formaci[oó]n|educaci[oó]n|universidad|facultad|bachiller|tecnicatura|licenciatura/i),
+    sentenceFromDocument(content, /ingl[eé]s|english|portugu[eé]s|franc[eé]s/i),
+    sentenceFromDocument(content, /montevideo|canelones|maldonado|san jose|colonia|florida|rocha|paysandu|salto|rivera|tacuarembo|durazno|soriano|lavalleja|artigas|cerro largo|flores|rio negro|treinta y tres/i)
+  ].filter(Boolean);
+  if (facts.length) return unique(facts).slice(0, 4).join("\n");
+  return fallbackRole && fallbackRole !== "Candidato importado" ? `CV importado. Rol detectado: ${fallbackRole}.` : "CV importado. Faltan datos legibles para resumir.";
+}
+
 export function candidateFromFreeText(sourceType: string, text: string, options: { sourceId?: string | null; sourceUrl?: string | null; currentRole?: string | null; fileName?: string | null; fallbackName?: string | null; sender?: string | null; contactText?: string | null } = {}): CandidateImport | null {
   const rawContent = normalizeWhitespace(text);
   const sanitizedContent = cleanDocumentTextForImport(rawContent);
@@ -857,7 +897,7 @@ export function candidateFromFreeText(sourceType: string, text: string, options:
     .map((item) => item.toLowerCase())
     .filter((item) => !emailLooksInternalOrSystem(item));
   const phone = extractPhones(contactText);
-  const explicitName = content.match(/(?:nombre|name|candidato|postulante)\s*[:\-]\s*([A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{4,80})/i)?.[1];
+  const explicitName = cleanCandidateNameText(content.match(/(?:nombre|name|candidato|postulante)\s*[:\-]\s*([A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{4,80})/i)?.[1] ?? "");
   const fallbackName = nameFromFileName(options.fallbackName ?? options.fileName);
   const senderName = nameFromMailHeader(options.sender);
   const firstLikelyName = content
@@ -871,7 +911,10 @@ export function candidateFromFreeText(sourceType: string, text: string, options:
   if (sourceType === "gmail" && /google cloud team|google workspace team|google team|microsoft account team|linkedin notifications/i.test(fullName)) return null;
   if ((sourceType === "gmail" || sourceType === "drive") && !candidateNameLooksReal(realName)) return null;
 
-  const role = compactLabel(options.currentRole ?? content.match(/(?:cargo|puesto|rol|postulaci[oó]n)\s*[:\-]\s*([^.;\n\r]{3,70})/i)?.[1], "Candidato importado");
+  const roleFromText = detectedRoleTags(content)[0] ?? content.match(/(?:cargo|puesto|rol|postulaci[oó]n)\s*[:\-]\s*([^.;\n\r]{3,70})/i)?.[1];
+  const role = compactLabel(roleFromText ?? options.currentRole, "Candidato importado");
+  const languageTags = detectedLanguages(content);
+  const roleTags = detectedRoleTags(content);
   return {
     fullName,
     email,
@@ -880,8 +923,8 @@ export function candidateFromFreeText(sourceType: string, text: string, options:
     country: "Uruguay",
     currentRole: role,
     years: null,
-    tags: safeTags([role], sourceType),
-    summary: content.slice(0, 900),
+    tags: safeTags([role, ...roleTags, ...languageTags], sourceType),
+    summary: documentSummary(content, role),
     qualityScore: 0,
     sourceId: options.sourceId ?? `${sourceType}:${email[0] ?? phone[0] ?? fullName}`,
     sourceUrl: options.sourceUrl ?? null,
@@ -1815,12 +1858,14 @@ function candidateSummaryLooksLikeOffer(candidate: CandidateImport) {
 
 function isUsableCandidate(candidate: CandidateImport, sourceType = "") {
   const hasContact = candidate.email.length > 0 || candidate.phone.length > 0 || Boolean(candidate.linkedinUrl);
-  const hasDocument = (candidate.documents ?? []).some((document) => Boolean(document.fileUrl || document.rawText));
+  const hasDocument = (candidate.documents ?? []).some((document) => Boolean(document.fileUrl || document.sourcePath || document.sourceId || document.rawText));
   const hasRealName = candidateNameLooksReal(candidate.fullName);
   const documentSource = sourceType === "drive" || sourceType === "gmail";
+  const automaticSource = documentSource || sourceType === "buscojobs" || sourceType === "aglh" || sourceType === "yoiners";
+
+  if (automaticSource && !hasDocument) return false;
 
   if (documentSource) {
-    if (!hasDocument) return false;
     return Boolean(hasRealName || hasContact);
   }
 

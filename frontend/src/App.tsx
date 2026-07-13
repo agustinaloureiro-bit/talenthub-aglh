@@ -350,6 +350,7 @@ function CandidateProfile({ id, canEdit }: { id: string; canEdit: boolean }) {
   const c: Candidate = data.data;
   const documents = (data.documents ?? []) as CandidateDocument[];
   const primaryDocument = documents.find((doc) => doc.is_primary_cv) ?? documents[0];
+  const summary = readableCandidateSummary(c, primaryDocument);
   return (
     <PagePad>
       <section className="card mb-4 p-5">
@@ -359,7 +360,7 @@ function CandidateProfile({ id, canEdit }: { id: string; canEdit: boolean }) {
         </div>
       </section>
       <div className="mb-4 flex flex-wrap gap-2">{["resumen", "experiencia", "formacion", "documentos", "procesos", "ia"].map((t) => <button key={t} onClick={() => setTab(t)} className={tab === t ? "btn-primary" : "btn-ghost"}>{t}</button>)}</div>
-      {tab === "resumen" && <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]"><InfoCard title="Resumen" text={c.summary || primaryDocument?.raw_text?.slice(0, 1800) || "Sin resumen registrado."} /><div className="grid gap-4"><ContactCard candidate={c} /><DocumentMiniCard document={primaryDocument} onOpenDocuments={() => setTab("documentos")} /></div></div>}
+      {tab === "resumen" && <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]"><div className="grid gap-4"><InfoCard title="Resumen" text={summary} /><KeyDataCard candidate={c} document={primaryDocument} /></div><div className="grid gap-4"><ContactCard candidate={c} /><DocumentMiniCard candidateId={id} document={primaryDocument} onOpenDocuments={() => setTab("documentos")} /></div></div>}
       {tab === "experiencia" && <ChildList rows={data.work} empty="Sin experiencia registrada." fields={["company", "position", "start_date", "end_date", "description"]} canEdit={canEdit} kind="work" id={id} onSaved={load} />}
       {tab === "formacion" && <ChildList rows={data.education} empty="Sin formaciÃ³n registrada." fields={["institution", "degree", "field", "start_year", "end_year"]} canEdit={canEdit} kind="education" id={id} onSaved={load} />}
       {tab === "documentos" && <ChildList rows={documents} empty="Sin documentos registrados." fields={["type", "file_name", "source_type", "created_at"]} canEdit={canEdit} kind="documents" id={id} onSaved={load} />}
@@ -784,14 +785,7 @@ function bestDocumentUrl(document?: CandidateDocument | null) {
 }
 
 async function downloadDocument(candidateId: string, document: CandidateDocument) {
-  const response = await fetch(`${API_URL}/candidates/${candidateId}/documents/${document.id}/download`, {
-    headers: authHeaders()
-  });
-  if (!response.ok) throw new Error("No se pudo descargar el documento.");
-  const blob = await response.blob();
-  const disposition = response.headers.get("content-disposition") ?? "";
-  const match = disposition.match(/filename="?([^"]+)"?/i);
-  const fileName = match?.[1] || document.file_name || "documento";
+  const { blob, fileName } = await fetchDocumentBlob(candidateId, document);
   const url = URL.createObjectURL(blob);
   const link = window.document.createElement("a");
   link.href = url;
@@ -800,6 +794,56 @@ async function downloadDocument(candidateId: string, document: CandidateDocument
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+async function previewDocument(candidateId: string, document: CandidateDocument) {
+  const { blob } = await fetchDocumentBlob(candidateId, document);
+  const url = URL.createObjectURL(blob);
+  window.open(url, "_blank", "noopener,noreferrer");
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+async function fetchDocumentBlob(candidateId: string, document: CandidateDocument) {
+  const response = await fetch(`${API_URL}/candidates/${candidateId}/documents/${document.id}/download`, {
+    headers: authHeaders()
+  });
+  if (!response.ok) throw new Error("No se pudo descargar el documento.");
+  const blob = await response.blob();
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = disposition.match(/filename="?([^"]+)"?/i);
+  const fileName = match?.[1] || document.file_name || "documento";
+  return { blob, fileName };
+}
+
+function cleanDisplayText(value: unknown) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (/^%PDF-|endobj|xref|\/FlateDecode|Google Docs Renderer/i.test(text)) return "";
+  return text;
+}
+
+function readableCandidateSummary(candidate: Candidate, document?: CandidateDocument) {
+  const summary = cleanDisplayText(candidate.summary);
+  if (summary && !/CV importado\. Faltan datos legibles/i.test(summary)) return summary;
+  const raw = cleanDisplayText(document?.raw_text);
+  if (!raw) return "Sin resumen confiable registrado. El CV esta disponible para revisar.";
+  const sentences = raw
+    .split(/(?<=[.;])\s+|\n+/)
+    .map(cleanDisplayText)
+    .filter((line) => line.length > 25 && !/@/.test(line))
+    .slice(0, 4);
+  return sentences.length ? sentences.join("\n") : "CV importado. Faltan datos legibles para resumir.";
+}
+
+function KeyDataCard({ candidate, document }: { candidate: Candidate; document?: CandidateDocument }) {
+  const rows = [
+    ["Rol", candidate.currentRole || "Sin dato"],
+    ["Ubicacion", [candidate.city, candidate.country].filter(Boolean).join(", ") || "Sin dato"],
+    ["Celular/telefono", candidate.phone[0] || "Sin dato"],
+    ["Email", candidate.email[0] || "Sin dato"],
+    ["CV", document?.file_name || "Sin CV disponible"]
+  ];
+  return <div className="card p-4"><h3 className="mb-3 font-bold">Datos clave</h3><div className="grid gap-2">{rows.map(([label, value]) => <div key={label} className="grid gap-1 rounded-md border border-slate-100 px-3 py-2 text-sm md:grid-cols-[130px_1fr]"><span className="font-semibold text-slate-500">{label}</span><span className="break-words text-slate-800">{value}</span></div>)}</div></div>;
 }
 
 function ContactCard({ candidate }: { candidate: Candidate }) {
@@ -811,10 +855,11 @@ function ContactCard({ candidate }: { candidate: Candidate }) {
   return <div className="card p-4"><h3 className="mb-3 font-bold">Contacto</h3>{items.length === 0 ? <p className="text-sm text-slate-500">Sin datos de contacto.</p> : <div className="grid gap-2">{items.map(({ icon: Icon, label, href }) => <a key={`${href}-${label}`} className="flex min-w-0 items-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50" href={href} target={href.startsWith("http") ? "_blank" : undefined} rel="noreferrer"><Icon size={15} /><span className="truncate">{label}</span></a>)}</div>}</div>;
 }
 
-function DocumentMiniCard({ document, onOpenDocuments }: { document?: CandidateDocument; onOpenDocuments: () => void }) {
+function DocumentMiniCard({ candidateId, document, onOpenDocuments }: { candidateId: string; document?: CandidateDocument; onOpenDocuments: () => void }) {
+  const [error, setError] = useState("");
   if (!document) return <div className="card p-4"><h3 className="mb-2 font-bold">CV</h3><p className="text-sm text-slate-500">Sin CV/documentos importados.</p></div>;
   const url = bestDocumentUrl(document);
-  return <div className="card p-4"><h3 className="mb-2 font-bold">CV principal</h3><p className="mb-3 text-sm text-slate-600">{shortText(document.file_name, 140)}</p><div className="flex flex-wrap gap-2">{url && <a className="btn-ghost" href={url} target="_blank" rel="noreferrer"><ExternalLink size={16} /> Abrir origen</a>}<button className="btn-primary" onClick={onOpenDocuments}><FileText size={16} /> Ver texto</button></div></div>;
+  return <div className="card p-4"><h3 className="mb-2 font-bold">CV principal</h3><p className="mb-3 text-sm text-slate-600">{shortText(document.file_name, 140)}</p><div className="flex flex-wrap gap-2"><button className="btn-primary" onClick={() => previewDocument(candidateId, document).catch((e) => setError(e.message))}><ExternalLink size={16} /> Previsualizar</button><button className="btn-ghost" onClick={() => downloadDocument(candidateId, document).catch((e) => setError(e.message))}><Download size={16} /> Descargar</button>{url && <a className="btn-ghost" href={url} target="_blank" rel="noreferrer"><ExternalLink size={16} /> Origen</a>}<button className="btn-ghost" onClick={onOpenDocuments}><FileText size={16} /> Texto</button></div>{error && <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-700">{error}</div>}</div>;
 }
 
 function DocumentList({ rows, empty, candidateId }: { rows: CandidateDocument[]; empty: string; candidateId: string }) {
@@ -824,7 +869,7 @@ function DocumentList({ rows, empty, candidateId }: { rows: CandidateDocument[];
   return <div className="grid gap-3">{rows.map((doc) => {
     const url = bestDocumentUrl(doc);
     const isOpen = openId === doc.id;
-    return <div className="card p-4" key={doc.id}><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex items-center gap-2 font-bold"><FileText size={17} /> <span className="break-words">{doc.file_name || "Documento importado"}</span></div><div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500"><span>{doc.type || "documento"}</span>{doc.source_type && <span>Fuente: {doc.source_type}</span>}{doc.mime_type && <span>{doc.mime_type}</span>}</div></div><div className="flex shrink-0 flex-wrap gap-2"><button className="btn-ghost" onClick={() => downloadDocument(candidateId, doc).catch((e) => setError(e.message))}><Download size={16} /> Descargar</button>{url && <a className="btn-ghost" href={url} target="_blank" rel="noreferrer"><ExternalLink size={16} /> Origen</a>}{doc.raw_text && <button className="btn-primary" onClick={() => setOpenId(isOpen ? null : doc.id)}><FileText size={16} /> {isOpen ? "Ocultar texto" : "Leer CV"}</button>}</div></div>{error && <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-700">{error}</div>}{isOpen && <pre className="mt-4 max-h-[520px] overflow-auto whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-700">{doc.raw_text}</pre>}</div>;
+    return <div className="card p-4" key={doc.id}><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex items-center gap-2 font-bold"><FileText size={17} /> <span className="break-words">{doc.file_name || "Documento importado"}</span></div><div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500"><span>{doc.type || "documento"}</span>{doc.source_type && <span>Fuente: {doc.source_type}</span>}{doc.mime_type && <span>{doc.mime_type}</span>}</div></div><div className="flex shrink-0 flex-wrap gap-2"><button className="btn-primary" onClick={() => previewDocument(candidateId, doc).catch((e) => setError(e.message))}><ExternalLink size={16} /> Previsualizar</button><button className="btn-ghost" onClick={() => downloadDocument(candidateId, doc).catch((e) => setError(e.message))}><Download size={16} /> Descargar</button>{url && <a className="btn-ghost" href={url} target="_blank" rel="noreferrer"><ExternalLink size={16} /> Origen</a>}{doc.raw_text && <button className="btn-ghost" onClick={() => setOpenId(isOpen ? null : doc.id)}><FileText size={16} /> {isOpen ? "Ocultar texto" : "Texto extraido"}</button>}</div></div>{error && <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-700">{error}</div>}{isOpen && <pre className="mt-4 max-h-[520px] overflow-auto whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-700">{cleanDisplayText(doc.raw_text) || "No hay texto legible extraido de este CV."}</pre>}</div>;
   })}</div>;
 }
 
