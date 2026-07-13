@@ -1,4 +1,4 @@
-import { Router } from "express";
+import express, { Router } from "express";
 import { inflateRawSync } from "zlib";
 import { z } from "zod";
 import { q } from "../db/pool.js";
@@ -66,7 +66,9 @@ function maskConfig(config: Record<string, unknown> | null) {
     "gmailIncrementalSince",
     "gmailBackfillCompleteAt",
     "gmailHistoricalStartedAt",
-    "gmailTotalMatchingMessages"
+    "gmailTotalMatchingMessages",
+    "gmailTakeoutImportedAt",
+    "gmailTakeoutLastFile"
   ]);
   for (const key of Object.keys(masked)) {
     if (visibleDiagnostics.has(key)) continue;
@@ -1299,6 +1301,163 @@ function gmailShouldImport(parsed: ReturnType<typeof gmailMessageText>, attachme
   if (gmailLooksLikeSystemMessage(parsed) && !candidateAttachment) return false;
   if (candidateAttachment) return true;
   return gmailHasCandidateIntent(searchableText) && gmailHasCandidateProfileSignal(searchableText);
+}
+
+function decodeMimeWords(value: string) {
+  return value.replace(/=\?([^?]+)\?([bq])\?([^?]+)\?=/gi, (_match, _charset, encoding, text) => {
+    try {
+      if (String(encoding).toLowerCase() === "b") return Buffer.from(text, "base64").toString("utf8");
+      return String(text).replace(/_/g, " ").replace(/=([A-F0-9]{2})/gi, (_hexMatch, hex) => String.fromCharCode(parseInt(hex, 16)));
+    } catch {
+      return text;
+    }
+  });
+}
+
+function parseMimeHeaderBlock(block: string) {
+  const headers: Record<string, string> = {};
+  let current = "";
+  for (const rawLine of block.split(/\r?\n/)) {
+    if (/^\s/.test(rawLine) && current) {
+      headers[current] = `${headers[current]} ${rawLine.trim()}`;
+      continue;
+    }
+    const index = rawLine.indexOf(":");
+    if (index < 0) continue;
+    current = rawLine.slice(0, index).toLowerCase();
+    headers[current] = decodeMimeWords(rawLine.slice(index + 1).trim());
+  }
+  return headers;
+}
+
+function splitMimeMessage(raw: string) {
+  const index = raw.search(/\r?\n\r?\n/);
+  if (index < 0) return { headers: {}, body: raw };
+  const separator = raw.match(/\r?\n\r?\n/)?.[0] ?? "\n\n";
+  return {
+    headers: parseMimeHeaderBlock(raw.slice(0, index)),
+    body: raw.slice(index + separator.length)
+  };
+}
+
+function mimeParam(header: string | undefined, name: string) {
+  const text = header ?? "";
+  const encoded = text.match(new RegExp(`${name}\\*\\s*=\\s*([^;]+)`, "i"))?.[1];
+  if (encoded) {
+    const cleaned = encoded.trim().replace(/^"|"$/g, "");
+    const encodedPart = cleaned.includes("''") ? cleaned.split("''").slice(1).join("''") : cleaned;
+    try {
+      return decodeURIComponent(encodedPart);
+    } catch {
+      return encodedPart;
+    }
+  }
+  return decodeMimeWords(text.match(new RegExp(`${name}\\s*=\\s*"?([^";]+)"?`, "i"))?.[1] ?? "");
+}
+
+function decodeQuotedPrintable(value: string) {
+  return value
+    .replace(/=\r?\n/g, "")
+    .replace(/=([A-F0-9]{2})/gi, (_match, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+function decodeMimeBody(body: string, transferEncoding: string) {
+  const encoding = transferEncoding.toLowerCase();
+  if (encoding.includes("base64")) return Buffer.from(body.replace(/\s+/g, ""), "base64");
+  if (encoding.includes("quoted-printable")) return Buffer.from(decodeQuotedPrintable(body), "utf8");
+  return Buffer.from(body, "utf8");
+}
+
+function collectMimeAttachments(raw: string): Array<{ fileName: string; mimeType: string; rawText: string; bodyText: string }> {
+  const attachments: Array<{ fileName: string; mimeType: string; rawText: string; bodyText: string }> = [];
+  function visit(partRaw: string) {
+    const { headers, body } = splitMimeMessage(partRaw);
+    const contentType = headers["content-type"] ?? "text/plain";
+    const disposition = headers["content-disposition"] ?? "";
+    const boundary = mimeParam(contentType, "boundary");
+    if (boundary) {
+      const boundaryText = `--${boundary}`;
+      for (const part of body.split(boundaryText).slice(1)) {
+        if (part.startsWith("--")) break;
+        visit(part.replace(/^\r?\n/, "").replace(/\r?\n$/, ""));
+      }
+      return;
+    }
+    const fileName = cleanText(mimeParam(disposition, "filename") || mimeParam(contentType, "name"));
+    const mimeType = cleanText(contentType.split(";")[0]) || "application/octet-stream";
+    const decoded = decodeMimeBody(body, headers["content-transfer-encoding"] ?? "");
+    const bodyText = mimeType.startsWith("text/") ? cleanDocumentTextForImport(decoded.toString("utf8").slice(0, 30000)) : "";
+    if (!fileName || !looksLikeCvAttachment(fileName, mimeType)) {
+      if (bodyText) attachments.push({ fileName: "", mimeType, rawText: "", bodyText });
+      return;
+    }
+    attachments.push({
+      fileName,
+      mimeType,
+      rawText: attachmentText(fileName, mimeType, decoded) || fileName,
+      bodyText
+    });
+  }
+  visit(raw);
+  return attachments;
+}
+
+function splitMboxMessages(buffer: Buffer) {
+  const text = buffer.toString("latin1");
+  return text.split(/\n(?=From [^\n]+\n)/g).map((message) => message.replace(/^From [^\n]+\n/, "")).filter((message) => message.trim().length > 0);
+}
+
+export function candidatesFromGmailMbox(buffer: Buffer, fileName = "gmail-takeout.mbox") {
+  const rows: CandidateImport[] = [];
+  let messages = 0;
+  let reviewedAttachments = 0;
+  let candidateAttachments = 0;
+  let skipped = 0;
+  for (const rawMessage of splitMboxMessages(buffer)) {
+    messages += 1;
+    const { headers, body } = splitMimeMessage(rawMessage);
+    const sender = headers.from ?? "";
+    const subject = headers.subject ?? "";
+    const date = headers.date ?? "";
+    const parts = collectMimeAttachments(`${Object.entries(headers).map(([key, value]) => `${key}: ${value}`).join("\n")}\n\n${body}`);
+    const bodyText = parts.map((part) => part.bodyText).filter(Boolean).join("\n").slice(0, 5000);
+    const attachments = parts.filter((part) => part.fileName);
+    reviewedAttachments += attachments.length;
+    const attachmentsToImport = attachments.filter(gmailAttachmentLooksCandidate);
+    candidateAttachments += attachmentsToImport.length;
+    for (const [index, attachment] of attachmentsToImport.entries()) {
+      const documentText = `${attachment.fileName}\n${attachment.rawText}`.trim();
+      const contactText = `${documentText}\n${sender}\n${bodyText}`.slice(0, 5000);
+      const candidate = candidateFromFreeText("gmail", documentText, {
+        sourceId: `gmail-takeout:${fileName}:${messages}:${index}:${attachment.fileName}`,
+        sourceUrl: null,
+        currentRole: subject,
+        fileName: attachment.fileName,
+        fallbackName: attachment.fileName,
+        sender,
+        contactText
+      });
+      if (!candidate) {
+        skipped += 1;
+        continue;
+      }
+      candidate.documents = [{
+        type: "cv",
+        fileName: attachment.fileName,
+        rawText: cleanDocumentTextForImport(attachment.rawText),
+        mimeType: attachment.mimeType,
+        sourceId: candidate.sourceId,
+        sourcePath: `Google Takeout: ${fileName}${date ? ` - ${date}` : ""}`,
+        isPrimaryCv: true
+      }];
+      candidate.raw = { source: "gmail-takeout", fileName, subject, from: sender, date };
+      rows.push(candidate);
+    }
+  }
+  return {
+    rows,
+    stats: { messages, reviewedAttachments, candidateAttachments, skipped }
+  };
 }
 
 async function gmailAttachments(messageId: string, parts: any[], token: string, deadlineMs = Date.now() + 45_000) {
@@ -3062,6 +3221,48 @@ integrationsRouter.post("/gmail/backfill-start", requireRole("recruiter"), async
   const result = await syncIntegration("gmail");
   if (!result) return res.status(404).json({ error: "Integracion Gmail no encontrada" });
   res.status(201).json({ data: result });
+}));
+
+integrationsRouter.post("/gmail/takeout-import", requireRole("recruiter"), express.raw({ type: ["application/octet-stream", "application/mbox", "text/plain"], limit: "300mb" }), asyncHandler(async (req, res) => {
+  const started = Date.now();
+  const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from([]);
+  if (buffer.length < 20) return res.status(400).json({ error: "Subi un archivo .mbox exportado desde Google Takeout." });
+  const fileName = cleanText(req.query.fileName) || "gmail-takeout.mbox";
+  const parsed = candidatesFromGmailMbox(buffer, fileName);
+  let newRecords = 0;
+  let updatedRecords = 0;
+  let skipped = parsed.stats.skipped;
+  for (const candidate of parsed.rows) {
+    const result = await importCandidate("gmail", candidate, isUsableCandidate);
+    if (result === "new") newRecords += 1;
+    if (result === "updated") updatedRecords += 1;
+    if (result === "skipped") skipped += 1;
+  }
+  const message = `Gmail Takeout: ${parsed.stats.messages} mails revisados, ${parsed.stats.reviewedAttachments} adjuntos revisados, ${parsed.stats.candidateAttachments} CVs detectados. Importados: ${newRecords} nuevos, ${updatedRecords} actualizados, ${skipped} omitidos.`;
+  await q(
+    "INSERT INTO sync_logs (integration_id, source, finished_at, duration_ms, status, new_records, updated_records, errors, message) VALUES ('gmail','Gmail Takeout',now(),$1,$2,$3,$4,$5,$6) RETURNING *",
+    [Date.now() - started, skipped > 0 ? "warning" : "success", newRecords, updatedRecords, skipped, message]
+  );
+  await q(
+    "UPDATE integrations SET last_sync_at=now(), total_imported=total_imported+$1, status='connected', config=config || $2::jsonb, updated_at=now() WHERE id='gmail'",
+    [newRecords + updatedRecords, JSON.stringify({
+      sessionStatus: "connected",
+      sessionLastError: null,
+      lastAgentMessage: message,
+      gmailTakeoutImportedAt: new Date().toISOString(),
+      gmailTakeoutLastFile: fileName,
+      syncEngineVersion: SYNC_ENGINE_VERSION
+    })]
+  );
+  res.status(201).json({
+    data: {
+      newRecords,
+      updatedRecords,
+      skipped,
+      message,
+      stats: parsed.stats
+    }
+  });
 }));
 
 integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(async (req, res) => {

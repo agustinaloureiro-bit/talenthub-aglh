@@ -421,6 +421,7 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
   const [syncMessage, setSyncMessage] = useState("");
   const [syncingAll, setSyncingAll] = useState(false);
   const [syncingSource, setSyncingSource] = useState<string | null>(null);
+  const [takeoutUploading, setTakeoutUploading] = useState(false);
   const load = () => api<any>("/integrations").then(setData);
   useEffect(() => { load(); }, []);
   async function save(id: string, status: string) { await api(`/integrations/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }); load(); }
@@ -472,6 +473,27 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
       load();
     } finally {
       setSyncingSource(null);
+    }
+  }
+  async function importGmailTakeout(file?: File) {
+    if (!file) return;
+    setTakeoutUploading(true);
+    setSyncMessage(`Importando historico Gmail desde ${file.name}...`);
+    try {
+      const response = await fetch(`${API_URL}/integrations/gmail/takeout-import?fileName=${encodeURIComponent(file.name)}`, {
+        method: "POST",
+        headers: { ...authHeaders(), "Content-Type": "application/octet-stream" },
+        body: await file.arrayBuffer()
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "No se pudo importar el archivo Gmail.");
+      setSyncMessage(payload.data?.message || "Historico Gmail importado.");
+      load();
+    } catch (err: any) {
+      setSyncMessage(err.message || "No se pudo importar el historico Gmail.");
+      load();
+    } finally {
+      setTakeoutUploading(false);
     }
   }
   async function sync(id: string) {
@@ -585,6 +607,7 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
                 {canEdit && <button className="btn-ghost" onClick={() => setEditing(editing === i.id ? null : i.id)}><Settings size={16} /> {next.action}</button>}
                 <button className="btn-primary" onClick={() => sync(i.id)} disabled={isSyncing || syncingAll}>{isSyncing ? "Sincronizando..." : "Sincronizar"}</button>
                 {i.id === "gmail" && <button className="btn-ghost" onClick={runGmailHistoricalBackfill} disabled={isSyncing || syncingAll || Boolean(syncingSource)}>Migrar historico Gmail</button>}
+                {i.id === "gmail" && <label className={`btn-ghost ${takeoutUploading ? "pointer-events-none opacity-60" : ""}`}>{takeoutUploading ? "Importando..." : "Subir Takeout .mbox"}<input className="hidden" type="file" accept=".mbox,.txt" onChange={(e) => importGmailTakeout(e.target.files?.[0])} /></label>}
               </div>
               {editing === i.id && <IntegrationConfigPanelV2 integration={i} onSaved={() => { setEditing(null); load(); }} />}
             </div>
@@ -636,6 +659,8 @@ function IntegrationDiagnostic({ integration }: { integration: any }) {
         {config.gmailTotalMatchingMessages && <div>Coincidencias aproximadas: {String(config.gmailTotalMatchingMessages)}</div>}
         {config.gmailHasMore && <div>Quedan mas correos para seguir procesando.</div>}
         {config.gmailBackfillCompleteAt && <div>Historico terminado: {new Date(config.gmailBackfillCompleteAt).toLocaleString()}</div>}
+        {config.gmailTakeoutImportedAt && <div>Takeout importado: {new Date(config.gmailTakeoutImportedAt).toLocaleString()}</div>}
+        {config.gmailTakeoutLastFile && <div>Archivo Takeout: {String(config.gmailTakeoutLastFile)}</div>}
       </div>
     )}
     {config.sessionRefreshedAt && <div className="mt-1 text-slate-500">Renovada: {new Date(config.sessionRefreshedAt).toLocaleString()}</div>}

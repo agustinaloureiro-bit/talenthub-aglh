@@ -170,3 +170,40 @@ test("Gmail respeta busqueda personalizada si fue configurada", async () => {
   assert.equal(result.mode, "custom");
   assert.equal(result.query, "from:seleccion@aglh.com.uy has:attachment");
 });
+
+test("Gmail Takeout MBOX importa CV adjunto con ventas y gastronomia", async () => {
+  const { candidatesFromGmailMbox } = await import("../dist/routes/integrations.js");
+  const cvText = `Camila Perez
+Email camila.perez@example.com
+Telefono 099 333 222
+Experiencia en ventas, gastronomia, restaurante y atencion al cliente.`;
+  const encoded = Buffer.from(cvText, "utf8").toString("base64").replace(/(.{76})/g, "$1\n");
+  const mbox = `From test@example.com Mon Jul 13 10:00:00 2026
+From: Camila Perez <camila.perez@example.com>
+Subject: CV Camila Perez
+Date: Mon, 13 Jul 2026 10:00:00 -0300
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="BOUNDARY"
+
+--BOUNDARY
+Content-Type: text/plain; charset="utf-8"
+
+Adjunto CV.
+--BOUNDARY
+Content-Type: text/plain; name="CV_Camila_Perez.txt"
+Content-Disposition: attachment; filename="CV_Camila_Perez.txt"
+Content-Transfer-Encoding: base64
+
+${encoded}
+--BOUNDARY--
+`;
+
+  const result = candidatesFromGmailMbox(Buffer.from(mbox, "utf8"), "mail.mbox");
+
+  assert.equal(result.stats.messages, 1);
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].fullName, "Camila Perez");
+  assert.ok(result.rows[0].tags.includes("ventas"));
+  assert.ok(result.rows[0].tags.includes("gastronomia"));
+  assert.match(result.rows[0].summary ?? "", /gastronomia/i);
+});
