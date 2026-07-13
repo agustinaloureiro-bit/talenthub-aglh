@@ -51,7 +51,23 @@ export function gmailSyncQueryForConfig(config: Record<string, unknown>, hasStor
 function maskConfig(config: Record<string, unknown> | null) {
   if (!config) return {};
   const masked = { ...config };
-  const visibleDiagnostics = new Set(["sessionStatus", "sessionRefreshedAt", "sessionFailedAt", "sessionLastError", "lastAgentMessage", "oauthStatus", "syncEngineVersion", "connectedGoogleEmail", "expectedGoogleEmail"]);
+  const visibleDiagnostics = new Set([
+    "sessionStatus",
+    "sessionRefreshedAt",
+    "sessionFailedAt",
+    "sessionLastError",
+    "lastAgentMessage",
+    "oauthStatus",
+    "syncEngineVersion",
+    "connectedGoogleEmail",
+    "expectedGoogleEmail",
+    "gmailHasMore",
+    "gmailSyncMode",
+    "gmailIncrementalSince",
+    "gmailBackfillCompleteAt",
+    "gmailHistoricalStartedAt",
+    "gmailTotalMatchingMessages"
+  ]);
   for (const key of Object.keys(masked)) {
     if (visibleDiagnostics.has(key)) continue;
     if (/password|token|secret|cookie|session|key|browserStorageState|clientSecret|refreshToken/i.test(key) && masked[key]) {
@@ -3015,6 +3031,37 @@ integrationsRouter.post("/sync-all", requireRole("recruiter"), asyncHandler(asyn
       message: `Fuentes actualizadas: ${results.length}. Registros importados/actualizados: ${imported}. Errores u omitidos: ${errors}.`
     }
   });
+}));
+
+integrationsRouter.post("/gmail/backfill-start", requireRole("recruiter"), asyncHandler(async (_req, res) => {
+  await ensureDefaultIntegrations();
+  await q(
+    `UPDATE integrations
+     SET config =
+       (
+         coalesce(config, '{}'::jsonb)
+         - 'gmailBackfillCompleteAt'
+         - 'gmailLastIncrementalSyncAt'
+         - 'gmailIncrementalSince'
+         - 'gmailQuery'
+         - 'gmailNextPageToken'
+         - 'gmailPendingMessageIds'
+         - 'gmailHasMore'
+         - 'gmailSyncMode'
+       ) || $1::jsonb,
+       status='connected',
+       updated_at=now()
+     WHERE id='gmail'`,
+    [JSON.stringify({
+      gmailHistoricalStartedAt: new Date().toISOString(),
+      sessionStatus: "syncing",
+      sessionLastError: null,
+      lastAgentMessage: "Gmail: iniciando migracion historica completa."
+    })]
+  );
+  const result = await syncIntegration("gmail");
+  if (!result) return res.status(404).json({ error: "Integracion Gmail no encontrada" });
+  res.status(201).json({ data: result });
 }));
 
 integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(async (req, res) => {

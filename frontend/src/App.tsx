@@ -446,6 +446,34 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
     }
     return { totalNew, totalUpdated, totalErrors, batches, lastMessage };
   }
+  async function runGmailHistoricalBackfill() {
+    setSyncingSource("gmail");
+    setSyncMessage("Gmail historico: reiniciando barrido completo...");
+    try {
+      const first = await api<{ data: any }>("/integrations/gmail/backfill-start", { method: "POST" });
+      const firstLog = first.data;
+      let totalNew = Number(firstLog.new_records ?? 0);
+      let totalUpdated = Number(firstLog.updated_records ?? 0);
+      let totalErrors = Number(firstLog.errors ?? 0);
+      let lastMessage = String(firstLog.message ?? "");
+      let batches = 1;
+      if (sourceCanContinue("gmail", lastMessage)) {
+        const rest = await syncSourceBatches("gmail", 499, "Gmail historico");
+        totalNew += rest.totalNew;
+        totalUpdated += rest.totalUpdated;
+        totalErrors += rest.totalErrors;
+        lastMessage = rest.lastMessage || lastMessage;
+        batches += rest.batches;
+      }
+      setSyncMessage(`Gmail historico completo/pausado: ${totalNew} nuevos, ${totalUpdated} actualizados, ${totalErrors} errores/omitidos en ${batches} tandas. ${lastMessage}`);
+      load();
+    } catch (err: any) {
+      setSyncMessage(err.message || "No se pudo ejecutar el historico de Gmail.");
+      load();
+    } finally {
+      setSyncingSource(null);
+    }
+  }
   async function sync(id: string) {
     setSyncingSource(id);
     setSyncMessage(`Sincronizando ${id}...`);
@@ -556,6 +584,7 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
                 {canEdit && <select className="field max-w-44" value={i.status} onChange={(e) => save(i.id, e.target.value)}><option value="not_configured">No configurado</option><option value="connected">Conectado</option><option value="warning">Advertencia</option><option value="error">Error</option><option value="soon">Proximamente</option></select>}
                 {canEdit && <button className="btn-ghost" onClick={() => setEditing(editing === i.id ? null : i.id)}><Settings size={16} /> {next.action}</button>}
                 <button className="btn-primary" onClick={() => sync(i.id)} disabled={isSyncing || syncingAll}>{isSyncing ? "Sincronizando..." : "Sincronizar"}</button>
+                {i.id === "gmail" && <button className="btn-ghost" onClick={runGmailHistoricalBackfill} disabled={isSyncing || syncingAll || Boolean(syncingSource)}>Migrar historico Gmail</button>}
               </div>
               {editing === i.id && <IntegrationConfigPanelV2 integration={i} onSaved={() => { setEditing(null); load(); }} />}
             </div>
@@ -601,6 +630,14 @@ function IntegrationDiagnostic({ integration }: { integration: any }) {
   return <div className={`mt-3 rounded-md border p-3 text-xs ${isError ? "border-red-200 bg-red-50 text-red-700" : "border-slate-200 bg-slate-50 text-slate-600"}`}>
     {status && <div className="font-semibold">Sesion: {String(status).replace(/_/g, " ")}</div>}
     {message && <div className="mt-1">{shortText(String(message), 220)}</div>}
+    {integration.id === "gmail" && (config.gmailSyncMode || config.gmailTotalMatchingMessages || config.gmailHasMore || config.gmailBackfillCompleteAt) && (
+      <div className="mt-2 grid gap-1 text-slate-600">
+        {config.gmailSyncMode && <div>Modo Gmail: {String(config.gmailSyncMode)}</div>}
+        {config.gmailTotalMatchingMessages && <div>Coincidencias aproximadas: {String(config.gmailTotalMatchingMessages)}</div>}
+        {config.gmailHasMore && <div>Quedan mas correos para seguir procesando.</div>}
+        {config.gmailBackfillCompleteAt && <div>Historico terminado: {new Date(config.gmailBackfillCompleteAt).toLocaleString()}</div>}
+      </div>
+    )}
     {config.sessionRefreshedAt && <div className="mt-1 text-slate-500">Renovada: {new Date(config.sessionRefreshedAt).toLocaleString()}</div>}
   </div>;
 }
