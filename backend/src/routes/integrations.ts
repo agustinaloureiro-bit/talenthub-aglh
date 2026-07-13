@@ -1460,6 +1460,56 @@ export function candidatesFromGmailMbox(buffer: Buffer, fileName = "gmail-takeou
   };
 }
 
+function zipEntries(buffer: Buffer): Array<{ name: string; content: Buffer }> {
+  const entries: Array<{ name: string; content: Buffer }> = [];
+  let offset = 0;
+  while (offset < buffer.length - 46) {
+    if (buffer.readUInt32LE(offset) !== 0x02014b50) {
+      offset += 1;
+      continue;
+    }
+    const method = buffer.readUInt16LE(offset + 10);
+    const compressedSize = buffer.readUInt32LE(offset + 20);
+    const fileNameLength = buffer.readUInt16LE(offset + 28);
+    const extraLength = buffer.readUInt16LE(offset + 30);
+    const commentLength = buffer.readUInt16LE(offset + 32);
+    const localOffset = buffer.readUInt32LE(offset + 42);
+    const fileName = buffer.slice(offset + 46, offset + 46 + fileNameLength).toString("utf8");
+    offset += 46 + fileNameLength + extraLength + commentLength;
+    if (!/\.mbox$/i.test(fileName)) continue;
+    if (localOffset < 0 || localOffset > buffer.length - 30) continue;
+    if (buffer.readUInt32LE(localOffset) !== 0x04034b50) continue;
+    const localNameLength = buffer.readUInt16LE(localOffset + 26);
+    const localExtraLength = buffer.readUInt16LE(localOffset + 28);
+    const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+    if (dataStart < 0 || dataStart + compressedSize > buffer.length) continue;
+    const compressed = buffer.slice(dataStart, dataStart + compressedSize);
+    if (method === 0) entries.push({ name: fileName, content: compressed });
+    if (method === 8) entries.push({ name: fileName, content: inflateRawSync(compressed) });
+  }
+  return entries;
+}
+
+export function candidatesFromGmailTakeoutArchive(buffer: Buffer, fileName = "gmail-takeout.mbox") {
+  const lowerName = fileName.toLowerCase();
+  const isZip = lowerName.endsWith(".zip") || buffer.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+  if (!isZip) return candidatesFromGmailMbox(buffer, fileName);
+
+  const archives = zipEntries(buffer);
+  const rows: CandidateImport[] = [];
+  const stats = { messages: 0, reviewedAttachments: 0, candidateAttachments: 0, skipped: 0, mboxFiles: archives.length };
+  for (const entry of archives) {
+    const parsed = candidatesFromGmailMbox(entry.content, `${fileName}/${entry.name}`);
+    rows.push(...parsed.rows);
+    stats.messages += parsed.stats.messages;
+    stats.reviewedAttachments += parsed.stats.reviewedAttachments;
+    stats.candidateAttachments += parsed.stats.candidateAttachments;
+    stats.skipped += parsed.stats.skipped;
+  }
+  if (archives.length === 0) stats.skipped += 1;
+  return { rows, stats };
+}
+
 async function gmailAttachments(messageId: string, parts: any[], token: string, deadlineMs = Date.now() + 45_000) {
   const attachments = [];
   for (const part of parts) {
@@ -3223,12 +3273,12 @@ integrationsRouter.post("/gmail/backfill-start", requireRole("recruiter"), async
   res.status(201).json({ data: result });
 }));
 
-integrationsRouter.post("/gmail/takeout-import", requireRole("recruiter"), express.raw({ type: ["application/octet-stream", "application/mbox", "text/plain"], limit: "300mb" }), asyncHandler(async (req, res) => {
+integrationsRouter.post("/gmail/takeout-import", requireRole("recruiter"), express.raw({ type: ["application/octet-stream", "application/mbox", "application/zip", "text/plain"], limit: "300mb" }), asyncHandler(async (req, res) => {
   const started = Date.now();
   const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from([]);
-  if (buffer.length < 20) return res.status(400).json({ error: "Subi un archivo .mbox exportado desde Google Takeout." });
+  if (buffer.length < 20) return res.status(400).json({ error: "Subi un archivo .zip o .mbox exportado desde Google Takeout." });
   const fileName = cleanText(req.query.fileName) || "gmail-takeout.mbox";
-  const parsed = candidatesFromGmailMbox(buffer, fileName);
+  const parsed = candidatesFromGmailTakeoutArchive(buffer, fileName);
   let newRecords = 0;
   let updatedRecords = 0;
   let skipped = parsed.stats.skipped;
@@ -3238,7 +3288,8 @@ integrationsRouter.post("/gmail/takeout-import", requireRole("recruiter"), expre
     if (result === "updated") updatedRecords += 1;
     if (result === "skipped") skipped += 1;
   }
-  const message = `Gmail Takeout: ${parsed.stats.messages} mails revisados, ${parsed.stats.reviewedAttachments} adjuntos revisados, ${parsed.stats.candidateAttachments} CVs detectados. Importados: ${newRecords} nuevos, ${updatedRecords} actualizados, ${skipped} omitidos.`;
+  const zipDetail = "mboxFiles" in parsed.stats ? `, ${parsed.stats.mboxFiles} archivos mbox` : "";
+  const message = `Gmail Takeout: ${parsed.stats.messages} mails revisados${zipDetail}, ${parsed.stats.reviewedAttachments} adjuntos revisados, ${parsed.stats.candidateAttachments} CVs detectados. Importados: ${newRecords} nuevos, ${updatedRecords} actualizados, ${skipped} omitidos.`;
   await q(
     "INSERT INTO sync_logs (integration_id, source, finished_at, duration_ms, status, new_records, updated_records, errors, message) VALUES ('gmail','Gmail Takeout',now(),$1,$2,$3,$4,$5,$6) RETURNING *",
     [Date.now() - started, skipped > 0 ? "warning" : "success", newRecords, updatedRecords, skipped, message]

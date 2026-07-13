@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Buffer } from "node:buffer";
 
 process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/test";
 process.env.JWT_SECRET ??= "test-secret";
@@ -206,4 +207,74 @@ ${encoded}
   assert.ok(result.rows[0].tags.includes("ventas"));
   assert.ok(result.rows[0].tags.includes("gastronomia"));
   assert.match(result.rows[0].summary ?? "", /gastronomia/i);
+});
+
+function zipWithStoredFile(fileName, content) {
+  const name = Buffer.from(fileName, "utf8");
+  const data = Buffer.from(content, "utf8");
+  const local = Buffer.alloc(30);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(0, 8);
+  local.writeUInt32LE(0, 14);
+  local.writeUInt32LE(data.length, 18);
+  local.writeUInt32LE(data.length, 22);
+  local.writeUInt16LE(name.length, 26);
+  const central = Buffer.alloc(46);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(20, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(0, 10);
+  central.writeUInt32LE(0, 16);
+  central.writeUInt32LE(data.length, 20);
+  central.writeUInt32LE(data.length, 24);
+  central.writeUInt16LE(name.length, 28);
+  central.writeUInt32LE(0, 42);
+  const centralStart = local.length + name.length + data.length;
+  const centralSize = central.length + name.length;
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(centralStart, 16);
+  return Buffer.concat([local, name, data, central, name, end]);
+}
+
+test("Gmail Takeout ZIP importa el MBOX interno", async () => {
+  const { candidatesFromGmailTakeoutArchive } = await import("../dist/routes/integrations.js");
+  const cvText = `Sofia Lopez
+Email sofia.lopez@example.com
+Telefono 099 111 222
+Perfil abogada con ingles avanzado y experiencia corporativa.`;
+  const encoded = Buffer.from(cvText, "utf8").toString("base64").replace(/(.{76})/g, "$1\n");
+  const mbox = `From test@example.com Mon Jul 13 10:00:00 2026
+From: Sofia Lopez <sofia.lopez@example.com>
+Subject: CV Sofia Lopez abogada ingles
+Date: Mon, 13 Jul 2026 10:00:00 -0300
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="BOUNDARY"
+
+--BOUNDARY
+Content-Type: text/plain; charset="utf-8"
+
+Adjunto CV.
+--BOUNDARY
+Content-Type: text/plain; name="CV_Sofia_Lopez.txt"
+Content-Disposition: attachment; filename="CV_Sofia_Lopez.txt"
+Content-Transfer-Encoding: base64
+
+${encoded}
+--BOUNDARY--
+`;
+  const zip = zipWithStoredFile("Takeout/Mail/CV.mbox", mbox);
+  const result = candidatesFromGmailTakeoutArchive(zip, "takeout.zip");
+
+  assert.equal(result.stats.mboxFiles, 1);
+  assert.equal(result.stats.messages, 1);
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].fullName, "Sofia Lopez");
+  assert.ok(result.rows[0].tags.includes("abogado"));
+  assert.ok(result.rows[0].tags.includes("ingles"));
+  assert.match(result.rows[0].summary ?? "", /ingles/i);
 });

@@ -477,6 +477,11 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
   }
   async function importGmailTakeout(file?: File) {
     if (!file) return;
+    const maxBytes = 300 * 1024 * 1024;
+    if (file.size > maxBytes) {
+      setSyncMessage("Ese archivo pesa mas de 300 MB. En Google Takeout elegi dividir el export en partes mas chicas y subi una parte por vez.");
+      return;
+    }
     setTakeoutUploading(true);
     setSyncMessage(`Importando historico Gmail desde ${file.name}...`);
     try {
@@ -607,7 +612,7 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
                 {canEdit && <button className="btn-ghost" onClick={() => setEditing(editing === i.id ? null : i.id)}><Settings size={16} /> {next.action}</button>}
                 <button className="btn-primary" onClick={() => sync(i.id)} disabled={isSyncing || syncingAll}>{isSyncing ? "Sincronizando..." : "Sincronizar"}</button>
                 {i.id === "gmail" && <button className="btn-ghost" onClick={runGmailHistoricalBackfill} disabled={isSyncing || syncingAll || Boolean(syncingSource)}>Migrar historico Gmail</button>}
-                {i.id === "gmail" && <label className={`btn-ghost ${takeoutUploading ? "pointer-events-none opacity-60" : ""}`}>{takeoutUploading ? "Importando..." : "Subir Takeout .mbox"}<input className="hidden" type="file" accept=".mbox,.txt" onChange={(e) => importGmailTakeout(e.target.files?.[0])} /></label>}
+                {i.id === "gmail" && <label className={`btn-ghost ${takeoutUploading ? "pointer-events-none opacity-60" : ""}`}>{takeoutUploading ? "Importando..." : "Subir Takeout .zip/.mbox"}<input className="hidden" type="file" accept=".zip,.mbox,.txt" onChange={(e) => importGmailTakeout(e.target.files?.[0])} /></label>}
               </div>
               {editing === i.id && <IntegrationConfigPanelV2 integration={i} onSaved={() => { setEditing(null); load(); }} />}
             </div>
@@ -633,7 +638,7 @@ function integrationNextStep(integration: any) {
     return { kind: "ok", title: "Lista para buscar", body: "Esta fuente esta conectada. Si hay candidatos disponibles, Sincronizar los importa a Candidatos y Talent Finder.", action: "Configurar" };
   }
   if (id === "gmail" || id === "drive") {
-    return { kind: "warn", title: "Falta conectar Google", body: "Abri Configurar y usa el bloque OAuth. Con eso TalentHub guarda un refresh token y no tenes que repetir el login cada vez.", action: "Conectar Google" };
+    return { kind: "warn", title: "Falta conectar Google", body: id === "gmail" ? "Para el historico grande, no exportes todo el mail: en Gmail etiqueta o filtra correos con CV, exporta esa etiqueta en Google Takeout como .zip y subila aca. Luego el sincronizador trae solo lo nuevo." : "Abri Configurar y usa el bloque OAuth. Con eso TalentHub guarda un refresh token y no tenes que repetir el login cada vez.", action: "Conectar Google" };
   }
   if (id === "buscojobs") {
     return { kind: "warn", title: "Falta detectar el endpoint real de postulantes", body: "Abri Configurar y deja guardado usuario/contrasena o un export historico. Si la API de postulantes cambia, el log va a mostrar exactamente donde fallo.", action: "Configurar Buscojobs" };
