@@ -613,6 +613,7 @@ function IntegrationConfigPanelV2({ integration, onSaved }: { integration: any; 
     refreshToken: "",
     clientId: integration.config?.clientId === "********" ? "" : integration.config?.clientId ?? "",
     clientSecret: "",
+    expectedGoogleEmail: integration.config?.expectedGoogleEmail ?? "",
     username: integration.config?.username === "********" ? "" : integration.config?.username ?? "",
     password: "",
     sessionCookies: "",
@@ -660,7 +661,7 @@ function IntegrationConfigPanelV2({ integration, onSaved }: { integration: any; 
     try {
       const response = await api<{ data: { url: string; redirectUri: string } }>(`/integrations/${integration.id}/google-oauth-url`, {
         method: "POST",
-        body: JSON.stringify({ clientId: form.clientId, clientSecret: form.clientSecret })
+        body: JSON.stringify({ clientId: form.clientId, clientSecret: form.clientSecret, expectedGoogleEmail: form.expectedGoogleEmail })
       });
       setOauthUrl(response.data.url);
       setOauthRedirectUri(response.data.redirectUri);
@@ -675,7 +676,7 @@ function IntegrationConfigPanelV2({ integration, onSaved }: { integration: any; 
     try {
       const response = await api<{ data: { message: string } }>(`/integrations/${integration.id}/google-oauth-code`, {
         method: "POST",
-        body: JSON.stringify({ code: oauthCode, clientId: form.clientId, clientSecret: form.clientSecret })
+        body: JSON.stringify({ code: oauthCode, clientId: form.clientId, clientSecret: form.clientSecret, expectedGoogleEmail: form.expectedGoogleEmail })
       });
       setOauthMessage(response.data.message);
       onSaved();
@@ -692,6 +693,7 @@ function IntegrationConfigPanelV2({ integration, onSaved }: { integration: any; 
         {isWebAgent && <Input label="URL login" value={form.loginUrl} onChange={(v) => setForm({ ...form, loginUrl: v })} />}
         {isGoogle && <Input label="Client ID" value={form.clientId} onChange={(v) => setForm({ ...form, clientId: v })} />}
         {isGoogle && <Input label="Client secret" type="password" value={form.clientSecret} onChange={(v) => setForm({ ...form, clientSecret: v })} />}
+        {isGoogle && <Input label={integration.id === "gmail" ? "Cuenta Gmail esperada" : "Cuenta Google esperada"} value={form.expectedGoogleEmail} onChange={(v) => setForm({ ...form, expectedGoogleEmail: v })} />}
         {isGoogle && <Input label="Refresh token" type="password" value={form.refreshToken} onChange={(v) => setForm({ ...form, refreshToken: v })} />}
         {isGoogle && <Input label="Access token temporal" type="password" value={form.accessToken} onChange={(v) => setForm({ ...form, accessToken: v })} />}
         {!isGoogle && <Input label="Usuario/email" value={form.username} onChange={(v) => setForm({ ...form, username: v })} />}
@@ -701,6 +703,16 @@ function IntegrationConfigPanelV2({ integration, onSaved }: { integration: any; 
       {integration.id === "buscojobs" && <p className="text-xs text-slate-500">Para Buscojobs, completa usuario/email y contrasena. TalentHub intenta iniciar sesion y guardar la sesion renovada al sincronizar.</p>}
       {isGoogle && (
         <div className="grid gap-3 rounded-md border border-slate-200 bg-white p-3">
+          {integration.config?.connectedGoogleEmail && (
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+              <span className="font-semibold">Cuenta conectada:</span> {integration.config.connectedGoogleEmail}
+            </div>
+          )}
+          {integration.id === "gmail" && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+              Para importar CVs del buzón de selección, escribí arriba el email exacto de esa cuenta y después tocá Generar link Google. En Google elegí esa cuenta, no la personal.
+            </div>
+          )}
           <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
             <div className="font-semibold">Redirect URI para Google Cloud</div>
             <div className="mt-1 break-all font-mono">{oauthRedirectUri || defaultGoogleRedirectUri}</div>

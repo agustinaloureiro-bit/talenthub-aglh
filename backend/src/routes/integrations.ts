@@ -20,13 +20,13 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-10.2";
+const SYNC_ENGINE_VERSION = "2026-07-13.1";
 const DEFAULT_GMAIL_QUERY = "has:attachment (filename:pdf OR filename:doc OR filename:docx OR filename:rtf OR filename:txt) newer_than:3650d";
 
 function maskConfig(config: Record<string, unknown> | null) {
   if (!config) return {};
   const masked = { ...config };
-  const visibleDiagnostics = new Set(["sessionStatus", "sessionRefreshedAt", "sessionFailedAt", "sessionLastError", "lastAgentMessage", "oauthStatus", "syncEngineVersion"]);
+  const visibleDiagnostics = new Set(["sessionStatus", "sessionRefreshedAt", "sessionFailedAt", "sessionLastError", "lastAgentMessage", "oauthStatus", "syncEngineVersion", "connectedGoogleEmail", "expectedGoogleEmail"]);
   for (const key of Object.keys(masked)) {
     if (visibleDiagnostics.has(key)) continue;
     if (/password|token|secret|cookie|session|key|browserStorageState|clientSecret|refreshToken/i.test(key) && masked[key]) {
@@ -38,6 +38,15 @@ function maskConfig(config: Record<string, unknown> | null) {
 
 function cleanText(value: unknown) {
   return String(value ?? "").trim();
+}
+
+function escapeHtml(value: unknown) {
+  return cleanText(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function textOrNull(value: unknown) {
@@ -936,6 +945,7 @@ function googleRedirectUri(config: Record<string, unknown>) {
 function googleOAuthUrl(sourceType: "gmail" | "drive", config: Record<string, unknown>) {
   const clientId = cleanText(config.clientId);
   if (!clientId) throw new Error("Falta Client ID de Google.");
+  const expectedEmail = expectedGoogleEmail(config);
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: googleRedirectUri(config),
@@ -945,7 +955,32 @@ function googleOAuthUrl(sourceType: "gmail" | "drive", config: Record<string, un
     state: sourceType,
     scope: googleOAuthScopes(sourceType).join(" ")
   });
+  if (expectedEmail) params.set("login_hint", expectedEmail);
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+}
+
+function expectedGoogleEmail(config: Record<string, unknown>) {
+  return cleanText(config.expectedGoogleEmail ?? config.googleEmail ?? config.expectedEmail).toLowerCase();
+}
+
+async function googleConnectedEmail(sourceType: "gmail" | "drive", token: string) {
+  if (sourceType === "gmail") {
+    const profile = await googleJson("https://gmail.googleapis.com/gmail/v1/users/me/profile", token);
+    return cleanText(profile.emailAddress).toLowerCase();
+  }
+  const about = await googleJson("https://www.googleapis.com/drive/v3/about?fields=user(emailAddress,displayName)", token);
+  return cleanText(about?.user?.emailAddress).toLowerCase();
+}
+
+async function googleAccountConfigUpdate(sourceType: "gmail" | "drive", token: string, config: Record<string, unknown>) {
+  const connectedGoogleEmail = await googleConnectedEmail(sourceType, token);
+  const expected = expectedGoogleEmail(config);
+  const update: Record<string, unknown> = { connectedGoogleEmail };
+  if (expected) update.expectedGoogleEmail = expected;
+  if (expected && connectedGoogleEmail && connectedGoogleEmail !== expected) {
+    throw new Error(`${sourceType === "gmail" ? "Gmail" : "Google Drive"} quedo conectado con ${connectedGoogleEmail}, pero TalentHub espera ${expected}. Volve a Conectar Google eligiendo la cuenta correcta.`);
+  }
+  return update;
 }
 
 async function exchangeGoogleOAuthCode(sourceType: "gmail" | "drive", config: Record<string, unknown>, code: string) {
@@ -970,6 +1005,7 @@ async function exchangeGoogleOAuthCode(sourceType: "gmail" | "drive", config: Re
   if (!payload.refresh_token && !cleanText(config.refreshToken)) {
     throw new Error("Google conecto, pero no devolvio refresh token. Usa el link nuevo con permiso completo/consentimiento.");
   }
+  const accountUpdate = await googleAccountConfigUpdate(sourceType, String(payload.access_token), config);
   return {
     clientId,
     clientSecret,
@@ -979,7 +1015,8 @@ async function exchangeGoogleOAuthCode(sourceType: "gmail" | "drive", config: Re
     sessionStatus: "connected",
     sessionRefreshedAt: new Date().toISOString(),
     sessionLastError: null,
-    lastAgentMessage: `${sourceType === "gmail" ? "Gmail" : "Google Drive"} conectado con OAuth.`
+    ...accountUpdate,
+    lastAgentMessage: `${sourceType === "gmail" ? "Gmail" : "Google Drive"} conectado con OAuth${accountUpdate.connectedGoogleEmail ? ` como ${accountUpdate.connectedGoogleEmail}` : ""}.`
   };
 }
 
@@ -1220,6 +1257,21 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
     };
   }
   try {
+    auth.configUpdate = { ...auth.configUpdate, ...(await googleAccountConfigUpdate("gmail", auth.token, config)) };
+  } catch (error: any) {
+    const message = cleanText(error?.message).slice(0, 240);
+    return {
+      rows: [],
+      configUpdate: {
+        ...auth.configUpdate,
+        sessionStatus: "requires_oauth",
+        sessionLastError: message,
+        oauthStatus: "wrong_account"
+      },
+      message
+    };
+  }
+  try {
     const startedAt = Date.now();
     const deadlineMs = startedAt + numberFromConfig(config.gmailBudgetMs, 45_000);
     const query = cleanText(config.query) || DEFAULT_GMAIL_QUERY;
@@ -1360,6 +1412,21 @@ async function scrapeDrive(config: Record<string, unknown>): Promise<AgentSyncRe
         sessionLastError: "Google Drive necesita OAuth completo de Google: Client ID, Client secret y refresh token."
       },
       message: "Google Drive no tiene OAuth completo. Conecta Google antes de sincronizar archivos."
+    };
+  }
+  try {
+    auth.configUpdate = { ...auth.configUpdate, ...(await googleAccountConfigUpdate("drive", auth.token, config)) };
+  } catch (error: any) {
+    const message = cleanText(error?.message).slice(0, 240);
+    return {
+      rows: [],
+      configUpdate: {
+        ...auth.configUpdate,
+        sessionStatus: "requires_oauth",
+        sessionLastError: message,
+        oauthStatus: "wrong_account"
+      },
+      message
     };
   }
   try {
@@ -2594,7 +2661,22 @@ integrationsPublicRouter.get("/google/callback", asyncHandler(async (req, res) =
   }
   const current = await q("SELECT config FROM integrations WHERE id=$1", [id]);
   const config = current.rows[0]?.config ?? {};
-  const update = await exchangeGoogleOAuthCode(id, config, code);
+  let update: Record<string, unknown>;
+  try {
+    update = await exchangeGoogleOAuthCode(id, config, code);
+  } catch (error: any) {
+    const message = cleanText(error?.message) || "No se pudo conectar Google.";
+    await q(
+      `INSERT INTO integrations (id, name, status, config)
+       VALUES ($1,$2,'error',$3::jsonb)
+       ON CONFLICT (id) DO UPDATE SET config=integrations.config || $3::jsonb, status='error', updated_at=now()`,
+      [id, DEFAULT_INTEGRATIONS.find(([key]) => key === id)?.[1] ?? id, JSON.stringify({ oauthStatus: "error", sessionStatus: "requires_oauth", sessionLastError: message })]
+    );
+    return res
+      .status(400)
+      .type("html")
+      .send(`<!doctype html><html><head><meta charset="utf-8"><title>TalentHub Google</title></head><body style="font-family:system-ui;padding:32px"><h1>No se pudo conectar Google</h1><p>${escapeHtml(message)}</p><p>Volvé a TalentHub, tocá Conectar Google y elegí la cuenta correcta.</p></body></html>`);
+  }
   await q(
     `INSERT INTO integrations (id, name, status, config)
      VALUES ($1,$2,'connected',$3::jsonb)
@@ -2613,7 +2695,8 @@ integrationsRouter.post("/:id/google-oauth-url", requireRole("admin"), asyncHand
   const body = z.object({
     clientId: z.string().min(1),
     clientSecret: z.string().optional(),
-    redirectUri: z.string().optional()
+    redirectUri: z.string().optional(),
+    expectedGoogleEmail: z.string().optional()
   }).parse(req.body);
   const current = await q("SELECT config FROM integrations WHERE id=$1", [id]);
   const config = { ...(current.rows[0]?.config ?? {}), ...body };
@@ -2623,7 +2706,7 @@ integrationsRouter.post("/:id/google-oauth-url", requireRole("admin"), asyncHand
     `INSERT INTO integrations (id, name, status, config)
      VALUES ($1,$2,'warning',$3::jsonb)
      ON CONFLICT (id) DO UPDATE SET config=integrations.config || $3::jsonb, status='warning', updated_at=now()`,
-    [id, DEFAULT_INTEGRATIONS.find(([key]) => key === id)?.[1] ?? id, JSON.stringify({ clientId: body.clientId, clientSecret: body.clientSecret, redirectUri: body.redirectUri, oauthStatus: "waiting_code" })]
+    [id, DEFAULT_INTEGRATIONS.find(([key]) => key === id)?.[1] ?? id, JSON.stringify({ clientId: body.clientId, clientSecret: body.clientSecret, redirectUri: body.redirectUri, expectedGoogleEmail: body.expectedGoogleEmail, oauthStatus: "waiting_code" })]
   );
   res.json({ data: { url, redirectUri } });
 }));
@@ -2635,7 +2718,8 @@ integrationsRouter.post("/:id/google-oauth-code", requireRole("admin"), asyncHan
     code: z.string().min(4),
     clientId: z.string().optional(),
     clientSecret: z.string().optional(),
-    redirectUri: z.string().optional()
+    redirectUri: z.string().optional(),
+    expectedGoogleEmail: z.string().optional()
   }).parse(req.body);
   const current = await q("SELECT config FROM integrations WHERE id=$1", [id]);
   const config = { ...(current.rows[0]?.config ?? {}), ...body };
