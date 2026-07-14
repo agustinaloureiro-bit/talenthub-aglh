@@ -149,8 +149,9 @@ async function main() {
   const dryRun = hasFlag("--dry-run");
   const state = await readState(statePath);
   const lower = filePath.toLowerCase();
-  const entries = lower.endsWith(".zip") ? await listZipEntries(filePath) : [""];
-  if (entries.length === 0) throw new Error("No encontre archivos .mbox dentro del .zip.");
+  const zipEntries = lower.endsWith(".zip") ? await listZipEntries(filePath) : [];
+  if (lower.endsWith(".zip") && zipEntries.length === 0) throw new Error("No encontre archivos .mbox dentro del .zip.");
+  const entries = lower.endsWith(".zip") ? ["*.mbox"] : [""];
 
   let totals: Counters = {
     processedMessages: 0,
