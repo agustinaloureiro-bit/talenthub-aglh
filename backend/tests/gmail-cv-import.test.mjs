@@ -85,6 +85,23 @@ test("Gmail no crea candidato usando la casilla de seleccion como persona", asyn
   assert.equal(candidate, null);
 });
 
+test("Gmail no usa asuntos genericos como nombre de candidato", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const candidate = candidateFromFreeText(
+    "gmail",
+    "Re: Postulame para futuras vacantes\nventas\nUruguay",
+    {
+      sourceId: "gmail:false-subject",
+      fileName: "Re: Postulame para futuras vacantes",
+      fallbackName: "Re: Postulame para futuras vacantes",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>",
+      contactText: "Re: Postulame para futuras vacantes\nSeleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+
+  assert.equal(candidate, null);
+});
+
 test("Gmail limpia PDF ilegible y no lo guarda como resumen del candidato", async () => {
   const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
   const candidate = candidateFromFreeText(

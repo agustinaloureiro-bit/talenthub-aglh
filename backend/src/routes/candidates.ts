@@ -94,6 +94,8 @@ const excludeFalseGmailCandidatesSql = `NOT (
       'linkedin notifications'
     ])
     OR lower(coalesce(candidates.current_role, '')) LIKE '%work account access%'
+    OR lower(trim(coalesce(candidates.full_name, ''))) ~ '^(re|fw|fwd):'
+    OR lower(trim(coalesce(candidates.full_name, ''))) ~ '\\m(postulame|postularme|postulacion|postulación|futuras vacantes|solicitud de empleo|solicitud de trabajo)\\M'
     OR (
       cardinality(coalesce(candidates.email, '{}'::text[])) = 0
       AND cardinality(coalesce(candidates.phone, '{}'::text[])) = 0
@@ -151,6 +153,8 @@ async function cleanupFalseGmailCandidates() {
            'linkedin notifications'
          ])
          OR lower(coalesce(c.current_role, '')) LIKE '%work account access%'
+         OR lower(trim(coalesce(c.full_name, ''))) ~ '^(re|fw|fwd):'
+         OR lower(trim(coalesce(c.full_name, ''))) ~ '\\m(postulame|postularme|postulacion|postulación|futuras vacantes|solicitud de empleo|solicitud de trabajo)\\M'
          OR (
            cardinality(coalesce(c.email, '{}'::text[])) = 0
            AND cardinality(coalesce(c.phone, '{}'::text[])) = 0

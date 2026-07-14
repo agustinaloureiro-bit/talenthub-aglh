@@ -833,6 +833,7 @@ function decodeBase64Url(value: string) {
 
 function cleanCandidateNameText(value: string) {
   return cleanText(value)
+    .replace(/^(re|fw|fwd)\s*:\s*/i, "")
     .replace(/\.[a-z0-9]{2,6}$/i, "")
     .replace(/[_\-().]+/g, " ")
     .replace(/(^|\s)(cv|curriculum|resume|candidato|postulante)(?=\s|$)/gi, " ")
@@ -1296,11 +1297,9 @@ function gmailAttachmentLooksCandidate(attachment: { fileName: string; rawText?:
 }
 
 function gmailShouldImport(parsed: ReturnType<typeof gmailMessageText>, attachments: { fileName: string; rawText?: string }[]) {
-  const searchableText = `${parsed.subject}\n${parsed.attachmentNames}\n${parsed.bodyText}`;
   const candidateAttachment = attachments.some(gmailAttachmentLooksCandidate);
   if (gmailLooksLikeSystemMessage(parsed) && !candidateAttachment) return false;
-  if (candidateAttachment) return true;
-  return gmailHasCandidateIntent(searchableText) && gmailHasCandidateProfileSignal(searchableText);
+  return candidateAttachment;
 }
 
 function decodeMimeWords(value: string) {
@@ -1657,8 +1656,12 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
         else skippedNoSignal += 1;
         continue;
       }
-      const attachmentsToImport = candidateAttachments.length ? candidateAttachments : attachments;
-      for (const attachment of attachmentsToImport.length ? attachmentsToImport : [{ fileName: parsed.subject || "Correo Gmail", rawText: cleanDocumentTextForImport(parsed.bodyText), mimeType: "message/rfc822", sourceId: `gmail:${id}`, sourcePath: `https://mail.google.com/mail/u/0/#all/${id}`, isPrimaryCv: true }]) {
+      const attachmentsToImport = candidateAttachments;
+      if (attachmentsToImport.length === 0) {
+        parsedNoCandidate += 1;
+        continue;
+      }
+      for (const attachment of attachmentsToImport) {
         const documentText = `${attachment.fileName}\n${attachment.rawText ?? ""}`.trim();
         const contactText = `${documentText}\n${parsed.from}`.slice(0, 5000);
         const candidate = candidateFromFreeText("gmail", documentText, {
@@ -2130,6 +2133,7 @@ function candidateNameLooksReal(name: string) {
   const words = cleaned.split(/\s+/).filter(Boolean);
   if (!cleaned || cleaned.length < 5 || cleaned.length > 90) return false;
   if (words.length < 2 || words.length > 6) return false;
+  if (/\b(re|fw|fwd|postulame|postularme|postulaci[oó]n|postulaciones|vacante|vacantes|futuras|solicitud|empleo|trabajo|curriculum|curr[ií]culo|adjunto|consulta|buenas|hola|estimados|comparto|env[ií]o|envio)\b/i.test(cleaned)) return false;
   if (/\b(fecha|nacimiento|domicilio|direcci[oó]n|cedula|c[eé]dula|documento|telefono|tel[eé]fono|celular|email|correo|uruguay)\b/i.test(cleaned)) return false;
   if (/\d/.test(cleaned)) return false;
   if (/[/{}<>]|\[object Object\]/i.test(cleaned)) return false;
