@@ -1414,48 +1414,65 @@ export function candidatesFromGmailMbox(buffer: Buffer, fileName = "gmail-takeou
   let skipped = 0;
   for (const rawMessage of splitMboxMessages(buffer)) {
     messages += 1;
-    const { headers, body } = splitMimeMessage(rawMessage);
-    const sender = headers.from ?? "";
-    const subject = headers.subject ?? "";
-    const date = headers.date ?? "";
-    const parts = collectMimeAttachments(`${Object.entries(headers).map(([key, value]) => `${key}: ${value}`).join("\n")}\n\n${body}`);
-    const bodyText = parts.map((part) => part.bodyText).filter(Boolean).join("\n").slice(0, 5000);
-    const attachments = parts.filter((part) => part.fileName);
-    reviewedAttachments += attachments.length;
-    const attachmentsToImport = attachments.filter(gmailAttachmentLooksCandidate);
-    candidateAttachments += attachmentsToImport.length;
-    for (const [index, attachment] of attachmentsToImport.entries()) {
-      const documentText = `${attachment.fileName}\n${attachment.rawText}`.trim();
-      const contactText = `${documentText}\n${sender}\n${bodyText}`.slice(0, 5000);
-      const candidate = candidateFromFreeText("gmail", documentText, {
-        sourceId: `gmail-takeout:${fileName}:${messages}:${index}:${attachment.fileName}`,
-        sourceUrl: null,
-        currentRole: subject,
-        fileName: attachment.fileName,
-        fallbackName: attachment.fileName,
-        sender,
-        contactText
-      });
-      if (!candidate) {
-        skipped += 1;
-        continue;
-      }
-      candidate.documents = [{
-        type: "cv",
-        fileName: attachment.fileName,
-        rawText: cleanDocumentTextForImport(attachment.rawText),
-        mimeType: attachment.mimeType,
-        sourceId: candidate.sourceId,
-        sourcePath: `Google Takeout: ${fileName}${date ? ` - ${date}` : ""}`,
-        isPrimaryCv: true
-      }];
-      candidate.raw = { source: "gmail-takeout", fileName, subject, from: sender, date };
-      rows.push(candidate);
-    }
+    const parsed = candidatesFromGmailRawMessage(rawMessage, fileName, messages);
+    rows.push(...parsed.rows);
+    reviewedAttachments += parsed.stats.reviewedAttachments;
+    candidateAttachments += parsed.stats.candidateAttachments;
+    skipped += parsed.stats.skipped;
   }
   return {
     rows,
     stats: { messages, reviewedAttachments, candidateAttachments, skipped }
+  };
+}
+
+export function candidatesFromGmailRawMessage(rawMessage: string | Buffer, fileName = "gmail-takeout.mbox", messageNumber = 1) {
+  const raw = Buffer.isBuffer(rawMessage) ? rawMessage.toString("latin1") : rawMessage;
+  const rows: CandidateImport[] = [];
+  let reviewedAttachments = 0;
+  let candidateAttachments = 0;
+  let skipped = 0;
+  const { headers, body } = splitMimeMessage(raw.replace(/^From [^\n]+\n/, ""));
+  const sender = headers.from ?? "";
+  const subject = headers.subject ?? "";
+  const date = headers.date ?? "";
+  const parts = collectMimeAttachments(`${Object.entries(headers).map(([key, value]) => `${key}: ${value}`).join("\n")}\n\n${body}`);
+  const bodyText = parts.map((part) => part.bodyText).filter(Boolean).join("\n").slice(0, 5000);
+  const attachments = parts.filter((part) => part.fileName);
+  reviewedAttachments += attachments.length;
+  const attachmentsToImport = attachments.filter(gmailAttachmentLooksCandidate);
+  candidateAttachments += attachmentsToImport.length;
+  for (const [index, attachment] of attachmentsToImport.entries()) {
+    const documentText = `${attachment.fileName}\n${attachment.rawText}`.trim();
+    const contactText = `${documentText}\n${sender}\n${bodyText}`.slice(0, 5000);
+    const candidate = candidateFromFreeText("gmail", documentText, {
+      sourceId: `gmail-takeout:${fileName}:${messageNumber}:${index}:${attachment.fileName}`,
+      sourceUrl: null,
+      currentRole: subject,
+      fileName: attachment.fileName,
+      fallbackName: attachment.fileName,
+      sender,
+      contactText
+    });
+    if (!candidate) {
+      skipped += 1;
+      continue;
+    }
+    candidate.documents = [{
+      type: "cv",
+      fileName: attachment.fileName,
+      rawText: cleanDocumentTextForImport(attachment.rawText),
+      mimeType: attachment.mimeType,
+      sourceId: candidate.sourceId,
+      sourcePath: `Google Takeout: ${fileName}${date ? ` - ${date}` : ""}`,
+      isPrimaryCv: true
+    }];
+    candidate.raw = { source: "gmail-takeout", fileName, subject, from: sender, date };
+    rows.push(candidate);
+  }
+  return {
+    rows,
+    stats: { messages: 1, reviewedAttachments, candidateAttachments, skipped }
   };
 }
 
@@ -2156,7 +2173,7 @@ function candidateSummaryLooksLikeOffer(candidate: CandidateImport) {
   return looksLikeOfferText(`${candidate.fullName} ${candidate.currentRole ?? ""} ${candidate.summary ?? ""}`);
 }
 
-function isUsableCandidate(candidate: CandidateImport, sourceType = "") {
+export function isUsableCandidate(candidate: CandidateImport, sourceType = "") {
   const hasContact = candidate.email.length > 0 || candidate.phone.length > 0 || Boolean(candidate.linkedinUrl);
   const hasDocument = (candidate.documents ?? []).some((document) => Boolean(document.fileUrl || document.sourcePath || document.sourceId || document.rawText));
   const hasRealName = candidateNameLooksReal(candidate.fullName);
