@@ -68,7 +68,7 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
   const normalizedQuery = normalizeSearchText(query);
   const params: unknown[] = [query, `%${query}%`, expandedSearchTerms(query), `%${normalizedQuery}%`];
   let where = "WHERE c.duplicate_of IS NULL";
-  if (filters.activeOnly) where += " AND c.status='active'";
+  if (filters.activeOnly !== false) where += " AND c.status='active'";
   if (filters.seniority) {
     params.push(filters.seniority);
     where += ` AND c.ai_seniority = $${params.length}`;

@@ -102,6 +102,139 @@ test("Gmail no usa asuntos genericos como nombre de candidato", async () => {
   assert.equal(candidate, null);
 });
 
+test("Gmail no usa asuntos tecnicos como rol y limpia extensiones del nombre", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const candidate = candidateFromFreeText(
+    "gmail",
+    `Yamilla Agustoni PDF
+Email yamilla@example.com
+Telefono 099 111 333
+Experiencia laboral en atencion al cliente.`,
+    {
+      sourceId: "gmail:postgres-subject",
+      fileName: "Yamilla_Agustoni_PDF.pdf",
+      currentRole: "postgres",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+
+  assert.ok(candidate);
+  assert.equal(candidate.fullName, "Yamilla Agustoni");
+  assert.equal(candidate.currentRole, "atencion al cliente");
+  assert.ok(!candidate.tags.includes("postgres"));
+});
+
+test("Gmail rechaza nombres que son texto extraido o plantillas", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const extracted = candidateFromFreeText(
+    "gmail",
+    `Extracted
+Experiencia en deposito y limpieza.`,
+    {
+      sourceId: "gmail:extracted",
+      fileName: "extracted.pdf",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+  const template = candidateFromFreeText(
+    "gmail",
+    `profesional creativo morado
+Experiencia en ventas.`,
+    {
+      sourceId: "gmail:template",
+      fileName: "profesional_creativo_morado.pdf",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+
+  assert.equal(extracted, null);
+  assert.equal(template, null);
+});
+
+test("Gmail limpia titulos, sufijos y puntuacion del nombre del CV", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const cases = [
+    ["Lic Laura Romano.pdf", "Lic Laura Romano\nEmail laura.romano@example.com\nExperiencia juridica.", "Laura Romano"],
+    ["Nicolas_Calistro_foto.docx", "Nicolas Calistro foto\nTelefono 099 111 222\nExperiencia en gastronomia.", "Nicolas Calistro"],
+    ["Cindy_Bentancourt_!!!!!!_CV.pdf", "Cindy Bentancourt !!!!!!!\nEmail cindy@example.com\nExperiencia en ventas.", "Cindy Bentancourt"],
+    ["Audiovisual_Guillermo_de_la_Bandera.pdf", "Audiovisual Guillermo de la Bandera\nEmail guillermo@example.com\nExperiencia audiovisual.", "Guillermo de la Bandera"]
+  ];
+
+  for (const [fileName, text, expectedName] of cases) {
+    const candidate = candidateFromFreeText("gmail", text, {
+      sourceId: `gmail:${fileName}`,
+      fileName,
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    });
+
+    assert.ok(candidate, fileName);
+    assert.equal(candidate.fullName, expectedName);
+  }
+});
+
+test("Gmail repara codificacion mojibake y no usa asuntos como rol", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const candidate = candidateFromFreeText(
+    "gmail",
+    `CurrÃ­culum Vitae Katherina Ramos
+Email katherina@example.com
+Experiencia en administraciÃ³n y telemarketing.`,
+    {
+      sourceId: "gmail:mojibake",
+      fileName: "CurrÃ­culum Vitae Katherina Ramos.pdf",
+      currentRole: "POSTULACIÓN LABORAL",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+
+  assert.ok(candidate);
+  assert.equal(candidate.fullName, "Katherina Ramos");
+  assert.equal(candidate.currentRole, "administracion");
+  assert.ok(!candidate.tags.includes("POSTULACIÓN LABORAL"));
+  assert.ok(!candidate.summary?.includes("POSTULACIÓN LABORAL"));
+});
+
+test("Gmail rechaza nombres de archivo con typo de curriculum y una sola palabra", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const candidate = candidateFromFreeText(
+    "gmail",
+    "curiculum juanca\nExperiencia como chofer.",
+    {
+      sourceId: "gmail:curiculum-juanca",
+      fileName: "curiculum juanca.pdf",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+
+  assert.equal(candidate, null);
+});
+
+test("Gmail no corta apellidos con particulas ni acepta plantillas visuales", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const fullName = candidateFromFreeText(
+    "gmail",
+    "Antonella de Virgiliis\nEmail antonella@example.com\nExperiencia en administracion.",
+    {
+      sourceId: "gmail:antonella",
+      fileName: "Antonella de Virgiliis CV 2025.pdf",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+  const template = candidateFromFreeText(
+    "gmail",
+    "Curriculum Vitae CV Ingeniero Sencillo Clasico Blanco\nExperiencia en herreria.",
+    {
+      sourceId: "gmail:visual-template",
+      fileName: "Curriculum Vitae CV Ingeniero Sencillo Clasico Blanco.pdf",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+
+  assert.ok(fullName);
+  assert.equal(fullName.fullName, "Antonella de Virgiliis");
+  assert.equal(template, null);
+});
+
 test("Gmail limpia PDF ilegible y no lo guarda como resumen del candidato", async () => {
   const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
   const candidate = candidateFromFreeText(

@@ -831,13 +831,27 @@ function decodeBase64Url(value: string) {
   return Buffer.from(normalized, "base64").toString("utf8");
 }
 
+function fixMojibake(value: string) {
+  if (!/[ÃÂ]/.test(value)) return value;
+  const repaired = Buffer.from(value, "latin1").toString("utf8");
+  const originalBadness = (value.match(/[ÃÂ]/g) ?? []).length;
+  const repairedBadness = (repaired.match(/[ÃÂ]/g) ?? []).length;
+  return repairedBadness < originalBadness ? repaired : value;
+}
+
 function cleanCandidateNameText(value: string) {
-  return cleanText(value)
+  return fixMojibake(cleanText(value))
+    .normalize("NFC")
     .replace(/^(re|fw|fwd)\s*:\s*/i, "")
+    .replace(/^copia\s+de\s+/i, " ")
     .replace(/\.[a-z0-9]{2,6}$/i, "")
-    .replace(/[_\-().]+/g, " ")
-    .replace(/(^|\s)(cv|curriculum|resume|candidato|postulante)(?=\s|$)/gi, " ")
-    .replace(/(^|\s)(actualizado|actualizada|final|nuevo|nueva|version|versi[oó]n|v\d+)(?=\s|$)/gi, " ")
+    .replace(/[_\-().!¡?¿]+/g, " ")
+    .replace(/(^|\s)(cv|curriculum|curriculo|currículum|curiculum|curriculun|curriculm|vitae|resume|candidato|postulante|pdf|doc|docx|rtf|txt|extracted|extracto|imprimir)(?=\s|$)/gi, " ")
+    .replace(/^(aux|auxiliar|enfermer[ií]a|reponedor|vendedor|vendedora|pickers?|administrativ[oa]|operario|operaria|audiovisual|lic|licenciada?|licenciado|sr|sra|dr|dra)\s+/i, " ")
+    .replace(/\s+(chofer|cadete|imprimir|foto|photo|imagen|image|y)$/i, " ")
+    .replace(/(^|\s)(actual|actualizado|actualizada|final|nuevo|nueva|version|versi[oó]n|v\d+)(?=\s|$)/gi, " ")
+    .replace(/(^|\s)(19|20)\d{2}(?=\s|$)/g, " ")
+    .replace(/^de\s+([A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{4,80})$/i, "$1")
     .replace(/\b(fecha de nacimiento|nacimiento|domicilio|direcci[oó]n|address|cedula|c[eé]dula|documento|telefono|tel[eé]fono|celular|email|correo|uruguay)\b.*$/i, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -922,9 +936,11 @@ function detectedRoleTags(content: string) {
     ["ventas", /ventas|vendedor|vendedora|comercial/i],
     ["gastronomia", /gastronom[ií]a|restaurante|mozo|moza|cocina|cocinero|cocinera|barista|cafeter[ií]a/i],
     ["administracion", /administraci[oó]n|administrativ[oa]/i],
+    ["atencion al cliente", /atenci[oó]n al cliente|customer service/i],
     ["logistica", /log[ií]stica|dep[oó]sito|warehouse/i],
     ["contabilidad", /contabilidad|contador|contadora|liquidaci[oó]n/i],
     ["recursos humanos", /recursos humanos|selecci[oó]n|reclutamiento/i],
+    ["chofer", /chofer|cadete|reparto|conductor|conductora|delivery/i],
     ["tecnico", /t[eé]cnic[oa]|mantenimiento/i]
   ] as const;
   return roles.filter(([, pattern]) => pattern.test(content)).map(([tag]) => tag);
@@ -965,7 +981,7 @@ function documentSummary(content: string, fallbackRole: string) {
 }
 
 export function candidateFromFreeText(sourceType: string, text: string, options: { sourceId?: string | null; sourceUrl?: string | null; currentRole?: string | null; fileName?: string | null; fallbackName?: string | null; sender?: string | null; contactText?: string | null } = {}): CandidateImport | null {
-  const rawContent = normalizeWhitespace(text);
+  const rawContent = fixMojibake(normalizeWhitespace(text));
   const sanitizedContent = cleanDocumentTextForImport(rawContent);
   const content = sanitizedContent || normalizeWhitespace(options.fileName ?? "");
   if (!content || content.length < 8) return null;
@@ -990,7 +1006,8 @@ export function candidateFromFreeText(sourceType: string, text: string, options:
   if ((sourceType === "gmail" || sourceType === "drive") && !candidateNameLooksReal(realName)) return null;
 
   const roleFromText = detectedRoleTags(content)[0] ?? content.match(/(?:cargo|puesto|rol|postulaci[oó]n)\s*[:\-]\s*([^.;\n\r]{3,70})/i)?.[1];
-  const role = compactLabel(roleFromText ?? options.currentRole, "Candidato importado");
+  const fallbackRole = sourceType === "gmail" || sourceType === "drive" ? null : options.currentRole;
+  const role = compactLabel(roleFromText ?? fallbackRole, "Candidato importado");
   const languageTags = detectedLanguages(content);
   const roleTags = detectedRoleTags(content);
   const years = detectedExperienceYears(content);
@@ -2150,17 +2167,20 @@ function candidateNameLooksReal(name: string) {
   const words = cleaned.split(/\s+/).filter(Boolean);
   if (!cleaned || cleaned.length < 5 || cleaned.length > 90) return false;
   if (words.length < 2 || words.length > 6) return false;
-  if (/\b(re|fw|fwd|postulame|postularme|postulaci[oó]n|postulaciones|vacante|vacantes|futuras|solicitud|empleo|trabajo|curriculum|curr[ií]culo|adjunto|consulta|buenas|hola|estimados|comparto|env[ií]o|envio)\b/i.test(cleaned)) return false;
+  if (/\b(re|fw|fwd|postulame|postularme|postulaci[oó]n|postulaciones|vacante|vacantes|futuras|solicitud|empleo|trabajo|curriculum|curr[ií]culo|curriculo|curiculum|curriculun|curriculm|vitae|adjunto|consulta|buenas|hola|estimados|comparto|env[ií]o|envio|extracted|extracto|experiencia|laboral|deposito|dep[oó]sito|limpieza|atenci[oó]n|cliente|profesional|creativo|juvenil|femenino|morado|rosado|plantilla|modelo|auxiliar|enfermer[ií]a|reponedor|pickers?|copia|imprimir|chofer|cadete|audiovisual|foto|photo|imagen|image|sencillo|cl[aá]sico|clasico|blanco|beige|simple)\b/i.test(cleaned)) return false;
   if (/\b(fecha|nacimiento|domicilio|direcci[oó]n|cedula|c[eé]dula|documento|telefono|tel[eé]fono|celular|email|correo|uruguay)\b/i.test(cleaned)) return false;
+  if (/\b(de|del|de la|la|las|los|y)$/i.test(cleaned)) return false;
   if (/\d/.test(cleaned)) return false;
   if (/[/{}<>]|\[object Object\]/i.test(cleaned)) return false;
   if (looksLikeOfferText(cleaned)) return false;
-  if (/^(autodromo|barra de carrasco|ciudad de la costa|comercial|comercial mercadeo|el pinar|fray bentos|jose pedro varela|libertad|lomas de solymar|malvin|melo|montevideo|neptunia|playa pascual|rivera|salinas|salto|solymar|suarez|toledo|treinta y tres|administracion de empresas|asistencia social|diseno grafico)$/i.test(cleaned)) return false;
+  if (/^(autodromo|barra de carrasco|ciudad de la costa|comercial|comercial mercadeo|el pinar|fray bentos|jose pedro varela|libertad|lomas de solymar|malvin|melo|montevideo|neptunia|playa pascual|rivera|salinas|salto|solymar|suarez|toledo|treinta y tres|administracion de empresas|asistencia social|diseno grafico|profesional creativo morado|profesional juvenil femenino rosado|plantilla curriculum|modelo curriculum)$/i.test(cleaned)) return false;
   return true;
 }
 
 function compactLabel(value: unknown, fallback = "") {
-  const text = cleanText(value).replace(/\s+/g, " ");
+  const text = fixMojibake(cleanText(value)).replace(/\s+/g, " ");
+  if (/^(postgres|postgresql|database|supabase|render|gmail|google|cv|curriculum|currículo|currículum|curriculo|vitae|pdf|doc|docx|rtf|txt)$/i.test(text)) return fallback;
+  if (/\b(postulaci[oó]n laboral|postulaci[oó]n|entrega de cv|adjunto cv|adjunto curriculum|futuras oportunidades|futuras vacantes|solicitud de empleo|solicitud laboral|ref:|referencia:)\b/i.test(text)) return fallback;
   if (!text || looksLikeOfferText(text) || text.length > 70) return fallback;
   return text;
 }
