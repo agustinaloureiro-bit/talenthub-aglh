@@ -157,7 +157,8 @@ test("Gmail limpia titulos, sufijos y puntuacion del nombre del CV", async () =>
     ["Lic Laura Romano.pdf", "Lic Laura Romano\nEmail laura.romano@example.com\nExperiencia juridica.", "Laura Romano"],
     ["Nicolas_Calistro_foto.docx", "Nicolas Calistro foto\nTelefono 099 111 222\nExperiencia en gastronomia.", "Nicolas Calistro"],
     ["Cindy_Bentancourt_!!!!!!_CV.pdf", "Cindy Bentancourt !!!!!!!\nEmail cindy@example.com\nExperiencia en ventas.", "Cindy Bentancourt"],
-    ["Audiovisual_Guillermo_de_la_Bandera.pdf", "Audiovisual Guillermo de la Bandera\nEmail guillermo@example.com\nExperiencia audiovisual.", "Guillermo de la Bandera"]
+    ["Audiovisual_Guillermo_de_la_Bandera.pdf", "Audiovisual Guillermo de la Bandera\nEmail guillermo@example.com\nExperiencia audiovisual.", "Guillermo de la Bandera"],
+    ["Documento.docx", "Camila Antonella Nieves Sosa C\nFecha de nacimiento 2001\nEmail camila@example.com\nExperiencia laboral en ventas.", "Camila Antonella Nieves Sosa"]
   ];
 
   for (const [fileName, text, expectedName] of cases) {

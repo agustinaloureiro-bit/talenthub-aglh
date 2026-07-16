@@ -847,8 +847,16 @@ function fixMojibake(value: string) {
   return repairedBadness < originalBadness ? repaired : normalizedMarks;
 }
 
+function dropDanglingNameInitial(value: string) {
+  const words = cleanText(value).split(/\s+/).filter(Boolean);
+  if (words.length >= 4 && /^[A-ZÁÉÍÓÚÜÑ]$/u.test(words.at(-1) ?? "")) {
+    return words.slice(0, -1).join(" ");
+  }
+  return cleanText(value);
+}
+
 function cleanCandidateNameText(value: string) {
-  return fixMojibake(cleanText(value))
+  const cleaned = fixMojibake(cleanText(value))
     .normalize("NFC")
     .replace(/^(re|fw|fwd)\s*:\s*/i, "")
     .replace(/^copia\s+de\s+/i, " ")
@@ -869,6 +877,7 @@ function cleanCandidateNameText(value: string) {
     .replace(/\b(fecha de nacimiento|nacimiento|domicilio|direcci[oó]n|address|cedula|c[eé]dula|documento|telefono|tel[eé]fono|celular|email|correo|uruguay)\b.*$/i, " ")
     .replace(/\s+/g, " ")
     .trim();
+  return dropDanglingNameInitial(cleaned);
 }
 
 function cleanDocumentFileName(value: string | null | undefined) {
