@@ -833,11 +833,18 @@ function decodeBase64Url(value: string) {
 }
 
 function fixMojibake(value: string) {
-  if (!/[ÃÂ]/.test(value)) return value;
-  const repaired = Buffer.from(value, "latin1").toString("utf8");
+  const normalizedMarks = value
+    .replace(/Ì\u0081/g, "\u0301")
+    .replace(/Ì\u0080/g, "\u0300")
+    .replace(/Ì\u0083/g, "\u0303")
+    .replace(/Ì\u0088/g, "\u0308")
+    .replace(/Rodr\uFFFD\s*g/gi, "Rodrig")
+    .replace(/\uFFFD\s*/g, "");
+  if (!/[ÃÂ]/.test(normalizedMarks)) return normalizedMarks;
+  const repaired = Buffer.from(normalizedMarks, "latin1").toString("utf8");
   const originalBadness = (value.match(/[ÃÂ]/g) ?? []).length;
   const repairedBadness = (repaired.match(/[ÃÂ]/g) ?? []).length;
-  return repairedBadness < originalBadness ? repaired : value;
+  return repairedBadness < originalBadness ? repaired : normalizedMarks;
 }
 
 function cleanCandidateNameText(value: string) {
@@ -845,9 +852,12 @@ function cleanCandidateNameText(value: string) {
     .normalize("NFC")
     .replace(/^(re|fw|fwd)\s*:\s*/i, "")
     .replace(/^copia\s+de\s+/i, " ")
+    .replace(/\bp\s*d\s*f\b/gi, " ")
+    .replace(/\bd\s*o\s*c\s*x?\b/gi, " ")
+    .replace(/\b([a-z])\s+(pdf|docx?|rtf|txt)\b/gi, " ")
     .replace(/\.[a-z0-9]{2,6}$/i, "")
     .replace(/[_\-().!¡?¿]+/g, " ")
-    .replace(/(^|\s)(cv|curriculum|curriculo|currículum|curiculum|curriculun|curriculm|vitae|resume|candidato|postulante|pdf|doc|docx|rtf|txt|extracted|extracto|imprimir)(?=\s|$)/gi, " ")
+    .replace(/(^|\s)(cv|curriculum|curriculo|currículum|curiculum|curriculun|curriculm|corriculun|corriculum|vitae|resume|candidato|postulante|pdf|doc|docx|rtf|txt|extracted|extracto|imprimir|compressed|comprimido)(?=\s|$)/gi, " ")
     .replace(/^(aux|auxiliar|enfermer[ií]a|reponedor|vendedor|vendedora|pickers?|administrativ[oa]|operario|operaria|audiovisual|lic|licenciada?|licenciado|sr|sra|dr|dra)\s+/i, " ")
     .replace(/\s+(chofer|cadete|imprimir|foto|photo|imagen|image|y)$/i, " ")
     .replace(/(^|\s)(actual|actualizado|actualizada|final|nuevo|nueva|version|versi[oó]n|v\d+)(?=\s|$)/gi, " ")
@@ -856,6 +866,21 @@ function cleanCandidateNameText(value: string) {
     .replace(/\b(fecha de nacimiento|nacimiento|domicilio|direcci[oó]n|address|cedula|c[eé]dula|documento|telefono|tel[eé]fono|celular|email|correo|uruguay)\b.*$/i, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function cleanDocumentFileName(value: string | null | undefined) {
+  const cleaned = fixMojibake(cleanText(value))
+    .normalize("NFC")
+    .replace(/\bp\s*d\s*f\b/gi, "pdf")
+    .replace(/\bd\s*o\s*c\s*x\b/gi, "docx")
+    .replace(/\bd\s*o\s*c\b/gi, "doc")
+    .replace(/[_ -]*compressed\b/gi, "")
+    .replace(/[_ -]+(\.(?:pdf|docx?|rtf|txt))$/i, "$1")
+    .replace(/(\.(pdf|docx?|rtf|txt))(?:\.\2)+$/i, "$1")
+    .replace(/\s+/g, " ")
+    .replace(/\s+\./g, ".")
+    .trim();
+  return cleaned || null;
 }
 
 function nameFromFileName(fileName: string | null | undefined) {
@@ -1027,7 +1052,7 @@ export function candidateFromFreeText(sourceType: string, text: string, options:
     sourceUrl: options.sourceUrl ?? null,
     documents: [{
       type: "cv",
-      fileName: options.fileName || `${fullName} - ${sourceType}`,
+      fileName: cleanDocumentFileName(options.fileName) || `${fullName} - ${sourceType}`,
       fileUrl: options.sourceUrl ?? null,
       rawText: content,
       sourceId: options.sourceId ?? null,
@@ -2126,6 +2151,7 @@ function extractPhones(value: unknown) {
       if (/^0+$/.test(digits)) return false;
       if (/^(\d)\1{6,}$/.test(digits)) return false;
       if (/^(?:0 ?){4,}/.test(phone)) return false;
+      if (/^(?:19|20)\d{6}(?:\d{4,6})?$/.test(digits)) return false;
       return true;
     });
 }
@@ -2184,7 +2210,8 @@ function candidateNameLooksReal(name: string) {
   const words = cleaned.split(/\s+/).filter(Boolean);
   if (!cleaned || cleaned.length < 5 || cleaned.length > 90) return false;
   if (words.length < 2 || words.length > 6) return false;
-  if (/\b(re|fw|fwd|postulame|postularme|postulaci[oó]n|postulaciones|vacante|vacantes|futuras|solicitud|empleo|trabajo|curriculum|curr[ií]culo|curriculo|curiculum|curriculun|curriculm|vitae|adjunto|consulta|buenas|hola|estimados|comparto|env[ií]o|envio|extracted|extracto|experiencia|laboral|deposito|dep[oó]sito|limpieza|atenci[oó]n|cliente|profesional|creativo|juvenil|femenino|morado|rosado|plantilla|modelo|auxiliar|enfermer[ií]a|reponedor|pickers?|copia|imprimir|chofer|cadete|audiovisual|foto|photo|imagen|image|sencillo|cl[aá]sico|clasico|blanco|beige|simple)\b/i.test(cleaned)) return false;
+  if (/\b(re|fw|fwd|postulame|postularme|postulaci[oó]n|postulaciones|vacante|vacantes|futuras|solicitud|empleo|trabajo|curriculum|curr[ií]culo|curriculo|curiculum|curriculun|curriculm|corriculun|corriculum|vitae|adjunto|consulta|buenas|hola|estimados|comparto|env[ií]o|envio|extracted|extracto|experiencia|laboral|deposito|dep[oó]sito|limpieza|atenci[oó]n|cliente|profesional|creativo|juvenil|femenino|morado|rosado|rosa|plantilla|modelo|minimalista|minimalist|mujer|hombre|persona|proactiv[oa]|organizada?|responsable|auxiliar|enfermer[ií]a|reponedor|pickers?|copia|imprimir|chofer|cadete|audiovisual|foto|photo|imagen|image|sencillo|cl[aá]sico|clasico|blanco|beige|simple|compressed|comprimido|ultimo|último|call)\b/i.test(cleaned)) return false;
+  if (/^(soy una|soy un|para\s+)/i.test(cleaned)) return false;
   if (/\b(fecha|nacimiento|domicilio|direcci[oó]n|cedula|c[eé]dula|documento|telefono|tel[eé]fono|celular|email|correo|uruguay)\b/i.test(cleaned)) return false;
   if (/\b(de|del|de la|la|las|los|y)$/i.test(cleaned)) return false;
   if (/\d/.test(cleaned)) return false;
@@ -2197,7 +2224,8 @@ function candidateNameLooksReal(name: string) {
 function compactLabel(value: unknown, fallback = "") {
   const text = fixMojibake(cleanText(value)).replace(/\s+/g, " ");
   if (/^(postgres|postgresql|database|supabase|render|gmail|google|cv|curriculum|currículo|currículum|curriculo|vitae|pdf|doc|docx|rtf|txt)$/i.test(text)) return fallback;
-  if (/\b(postulaci[oó]n laboral|postulaci[oó]n|entrega de cv|adjunto cv|adjunto curriculum|futuras oportunidades|futuras vacantes|solicitud de empleo|solicitud laboral|ref:|referencia:)\b/i.test(text)) return fallback;
+  if (/\b(postulaci[oó]n laboral|postulaci[oó]n|entrega de cv|adjunto cv|adjunto curriculum|futuras oportunidades|futuras vacantes|solicitud de empleo|solicitud laboral|trabajo\/empleo|datos personales|nombre completo|tareas realizadas|ref:|referencia:)\b/i.test(text)) return fallback;
+  if (/^(para\s+|cargo\s*:|puesto\s*:)/i.test(text)) return fallback;
   if (!text || looksLikeOfferText(text) || text.length > 70) return fallback;
   return text;
 }

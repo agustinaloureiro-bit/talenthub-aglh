@@ -298,6 +298,113 @@ Ingles avanzado.`,
   assert.ok(!candidate.summary?.includes("%PDF"));
 });
 
+test("Gmail repara acentos rotos y extensiones partidas en nombres de archivo", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const candidate = candidateFromFreeText(
+    "gmail",
+    "Eliani Brown HernaÌndez p df\nEmail eliani@example.com\nExperiencia en ventas y atencion al cliente.",
+    {
+      sourceId: "gmail:eliani",
+      fileName: "Eliani Brown HernaÌndez p df.pdf",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+
+  assert.ok(candidate);
+  assert.equal(candidate.fullName, "Eliani Brown Hernández");
+});
+
+test("Gmail elimina sufijos tecnicos del export sin cortar el nombre", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const candidate = candidateFromFreeText(
+    "gmail",
+    "Yenifer Quintana compressed\nEmail yenifer@example.com\nAbogada con ingles intermedio.",
+    {
+      sourceId: "gmail:yenifer",
+      fileName: "Curriculum Vitae - Yenifer Quintana_compressed.pdf",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+
+  assert.ok(candidate);
+  assert.equal(candidate.fullName, "Yenifer Quintana");
+  assert.equal(candidate.documents[0].fileName, "Curriculum Vitae - Yenifer Quintana.pdf");
+});
+
+test("Gmail no convierte plantillas visuales de CV en candidatos", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const candidate = candidateFromFreeText(
+    "gmail",
+    "CurriÌculum Vitae CV de Mujer Minimalista Rosa\nAbogada con ingles.",
+    {
+      sourceId: "gmail:template-woman",
+      fileName: "CurriÌculum Vitae CV de Mujer Minimalista Rosa.pdf",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+
+  assert.equal(candidate, null);
+});
+
+test("Gmail limpia caracteres rotos de PDF en nombres humanos", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const candidate = candidateFromFreeText(
+    "gmail",
+    "Mirian Carolina Piedad Rodr� guez\nEmail piedad@example.com\nExperiencia en administracion.",
+    {
+      sourceId: "gmail:mirian",
+      fileName: "Mirian Carolina Piedad Rodr� guez CV.pdf",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+
+  assert.ok(candidate);
+  assert.equal(candidate.fullName, "Mirian Carolina Piedad Rodriguez");
+});
+
+test("Gmail no guarda fechas de archivos como telefonos", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const candidate = candidateFromFreeText(
+    "gmail",
+    "Camila Lopez Trazante\nEmail camila@example.com\nTelefono 091406710\nArchivo 20250422_134842_0000\nExperiencia en ventas.",
+    {
+      sourceId: "gmail:camila",
+      fileName: "camila 2025.pdf_20250422_134842_0000.pdf",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+
+  assert.ok(candidate);
+  assert.deepEqual(candidate.phone, ["091406710"]);
+});
+
+test("Gmail no acepta frases descriptivas o typos de curriculum como nombre", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const descriptive = candidateFromFreeText(
+    "gmail",
+    "Soy una persona proactiva, organizada y responsable\nEmail persona@example.com\nExperiencia en gastronomia.",
+    {
+      sourceId: "gmail:soy-una",
+      fileName: "Soy una persona proactiva, organizada y responsable.pdf",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+  const typo = candidateFromFreeText(
+    "gmail",
+    "CORRICULUN Elias Mussa\nEmail elias@example.com\nExperiencia en logistica.",
+    {
+      sourceId: "gmail:corriculun",
+      fileName: "CORRICULUN Elias Mussa.doc",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+
+  assert.equal(descriptive, null);
+  assert.ok(typo);
+  assert.equal(typo.fullName, "Elias Mussa");
+  assert.notEqual(typo.currentRole, "Trabajo/empleo");
+});
+
 test("Gmail usa modo incremental cuando el historico ya termino", async () => {
   const { gmailSyncQueryForConfig } = await import("../dist/routes/integrations.js");
   const result = gmailSyncQueryForConfig({ gmailBackfillCompleteAt: "2026-07-13T12:00:00.000Z" }, false);

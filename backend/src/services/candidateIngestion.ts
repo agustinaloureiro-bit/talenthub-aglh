@@ -5,6 +5,38 @@ export type CandidateImportResult = "new" | "updated" | "skipped";
 
 export type CandidateValidator = (candidate: CandidateImport, sourceType: string) => boolean;
 
+function unique(values: string[]) {
+  return [...new Set(values)];
+}
+
+function sanitizeEmails(values: string[] | undefined) {
+  return unique((values ?? [])
+    .map((value) => String(value).trim().toLowerCase())
+    .filter((value) => value.length <= 254)
+    .filter((value) => /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(value)));
+}
+
+function sanitizePhones(values: string[] | undefined) {
+  return unique((values ?? [])
+    .map((value) => String(value).replace(/[^\d+]+/g, " ").replace(/\s+/g, " ").trim())
+    .filter((value) => {
+      const digits = value.replace(/\D/g, "");
+      if (digits.length < 7 || digits.length > 15) return false;
+      if (/^0+$/.test(digits)) return false;
+      if (/^(\d)\1{6,}$/.test(digits)) return false;
+      if (/^(?:19|20)\d{6}(?:\d{4,6})?$/.test(digits)) return false;
+      return true;
+    }));
+}
+
+function sanitizeCandidate(candidate: CandidateImport): CandidateImport {
+  return {
+    ...candidate,
+    email: sanitizeEmails(candidate.email),
+    phone: sanitizePhones(candidate.phone)
+  };
+}
+
 async function saveSource(candidateId: string, sourceType: string, candidate: CandidateImport) {
   const existing = await q<{ id: string }>(
     "SELECT id FROM candidate_sources WHERE candidate_id=$1 AND source_type=$2 AND coalesce(source_id,'')=coalesce($3,'') LIMIT 1",
@@ -81,6 +113,7 @@ async function saveDocuments(candidateId: string, sourceType: string, candidate:
 }
 
 export async function importCandidate(sourceType: string, candidate: CandidateImport, isUsableCandidate: CandidateValidator): Promise<CandidateImportResult> {
+  candidate = sanitizeCandidate(candidate);
   if (!isUsableCandidate(candidate, sourceType)) {
     await recordRejectedImport(sourceType, candidate, "No parece una persona real o parece una oferta, barrio o categoria.");
     return "skipped";
