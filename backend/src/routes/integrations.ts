@@ -1,6 +1,7 @@
 import express, { Router } from "express";
 import { inflateRawSync } from "zlib";
 import { z } from "zod";
+import { PDFParse } from "pdf-parse";
 import { q } from "../db/pool.js";
 import { asyncHandler } from "../middleware/errors.js";
 import { requireRole } from "../middleware/auth.js";
@@ -1275,6 +1276,19 @@ function extractPdfText(buffer: Buffer) {
   return decodeHtml([...literals, readable].join(" ").replace(/\\([()\\])/g, "$1").replace(/\s+/g, " ")).slice(0, 30000);
 }
 
+async function extractPdfTextAccurate(buffer: Buffer) {
+  let parser: PDFParse | null = null;
+  try {
+    parser = new PDFParse({ data: buffer });
+    const result = await parser.getText();
+    return cleanDocumentTextForImport(result.text ?? "").slice(0, 30000);
+  } catch {
+    return "";
+  } finally {
+    await parser?.destroy().catch(() => undefined);
+  }
+}
+
 function cleanDocumentTextForImport(value: string) {
   const text = normalizeWhitespace(value);
   if (!text) return "";
@@ -1288,12 +1302,15 @@ function cleanDocumentTextForImport(value: string) {
   return text;
 }
 
-function attachmentText(fileName: string, mimeType: string, buffer: Buffer) {
+async function attachmentText(fileName: string, mimeType: string, buffer: Buffer) {
   const lowerName = fileName.toLowerCase();
   const lowerMime = mimeType.toLowerCase();
   if (lowerMime.startsWith("text/")) return cleanDocumentTextForImport(buffer.toString("utf8").slice(0, 30000));
   if (lowerName.endsWith(".docx") || lowerMime.includes("wordprocessingml")) return cleanDocumentTextForImport(extractDocxText(buffer));
-  if (lowerName.endsWith(".pdf") || lowerMime.includes("pdf")) return cleanDocumentTextForImport(extractPdfText(buffer));
+  if (lowerName.endsWith(".pdf") || lowerMime.includes("pdf")) {
+    const accurate = await extractPdfTextAccurate(buffer);
+    return accurate || cleanDocumentTextForImport(extractPdfText(buffer));
+  }
   return "";
 }
 
@@ -1384,9 +1401,9 @@ function decodeMimeBody(body: string, transferEncoding: string) {
   return Buffer.from(body, "utf8");
 }
 
-function collectMimeAttachments(raw: string): Array<{ fileName: string; mimeType: string; rawText: string; bodyText: string }> {
+async function collectMimeAttachments(raw: string): Promise<Array<{ fileName: string; mimeType: string; rawText: string; bodyText: string }>> {
   const attachments: Array<{ fileName: string; mimeType: string; rawText: string; bodyText: string }> = [];
-  function visit(partRaw: string) {
+  async function visit(partRaw: string): Promise<void> {
     const { headers, body } = splitMimeMessage(partRaw);
     const contentType = headers["content-type"] ?? "text/plain";
     const disposition = headers["content-disposition"] ?? "";
@@ -1395,7 +1412,7 @@ function collectMimeAttachments(raw: string): Array<{ fileName: string; mimeType
       const boundaryText = `--${boundary}`;
       for (const part of body.split(boundaryText).slice(1)) {
         if (part.startsWith("--")) break;
-        visit(part.replace(/^\r?\n/, "").replace(/\r?\n$/, ""));
+        await visit(part.replace(/^\r?\n/, "").replace(/\r?\n$/, ""));
       }
       return;
     }
@@ -1410,11 +1427,11 @@ function collectMimeAttachments(raw: string): Array<{ fileName: string; mimeType
     attachments.push({
       fileName,
       mimeType,
-      rawText: attachmentText(fileName, mimeType, decoded) || fileName,
+      rawText: await attachmentText(fileName, mimeType, decoded) || fileName,
       bodyText
     });
   }
-  visit(raw);
+  await visit(raw);
   return attachments;
 }
 
@@ -1423,7 +1440,7 @@ function splitMboxMessages(buffer: Buffer) {
   return text.split(/\n(?=From [^\n]+\n)/g).map((message) => message.replace(/^From [^\n]+\n/, "")).filter((message) => message.trim().length > 0);
 }
 
-export function candidatesFromGmailMbox(buffer: Buffer, fileName = "gmail-takeout.mbox") {
+export async function candidatesFromGmailMbox(buffer: Buffer, fileName = "gmail-takeout.mbox") {
   const rows: CandidateImport[] = [];
   let messages = 0;
   let reviewedAttachments = 0;
@@ -1431,7 +1448,7 @@ export function candidatesFromGmailMbox(buffer: Buffer, fileName = "gmail-takeou
   let skipped = 0;
   for (const rawMessage of splitMboxMessages(buffer)) {
     messages += 1;
-    const parsed = candidatesFromGmailRawMessage(rawMessage, fileName, messages);
+    const parsed = await candidatesFromGmailRawMessage(rawMessage, fileName, messages);
     rows.push(...parsed.rows);
     reviewedAttachments += parsed.stats.reviewedAttachments;
     candidateAttachments += parsed.stats.candidateAttachments;
@@ -1443,7 +1460,7 @@ export function candidatesFromGmailMbox(buffer: Buffer, fileName = "gmail-takeou
   };
 }
 
-export function candidatesFromGmailRawMessage(rawMessage: string | Buffer, fileName = "gmail-takeout.mbox", messageNumber = 1) {
+export async function candidatesFromGmailRawMessage(rawMessage: string | Buffer, fileName = "gmail-takeout.mbox", messageNumber = 1) {
   const raw = Buffer.isBuffer(rawMessage) ? rawMessage.toString("latin1") : rawMessage;
   const rows: CandidateImport[] = [];
   let reviewedAttachments = 0;
@@ -1453,7 +1470,7 @@ export function candidatesFromGmailRawMessage(rawMessage: string | Buffer, fileN
   const sender = headers.from ?? "";
   const subject = headers.subject ?? "";
   const date = headers.date ?? "";
-  const parts = collectMimeAttachments(`${Object.entries(headers).map(([key, value]) => `${key}: ${value}`).join("\n")}\n\n${body}`);
+  const parts = await collectMimeAttachments(`${Object.entries(headers).map(([key, value]) => `${key}: ${value}`).join("\n")}\n\n${body}`);
   const bodyText = parts.map((part) => part.bodyText).filter(Boolean).join("\n").slice(0, 5000);
   const attachments = parts.filter((part) => part.fileName);
   reviewedAttachments += attachments.length;
@@ -1523,7 +1540,7 @@ function zipEntries(buffer: Buffer): Array<{ name: string; content: Buffer }> {
   return entries;
 }
 
-export function candidatesFromGmailTakeoutArchive(buffer: Buffer, fileName = "gmail-takeout.mbox") {
+export async function candidatesFromGmailTakeoutArchive(buffer: Buffer, fileName = "gmail-takeout.mbox") {
   const lowerName = fileName.toLowerCase();
   const isZip = lowerName.endsWith(".zip") || buffer.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
   if (!isZip) return candidatesFromGmailMbox(buffer, fileName);
@@ -1532,7 +1549,7 @@ export function candidatesFromGmailTakeoutArchive(buffer: Buffer, fileName = "gm
   const rows: CandidateImport[] = [];
   const stats = { messages: 0, reviewedAttachments: 0, candidateAttachments: 0, skipped: 0, mboxFiles: archives.length };
   for (const entry of archives) {
-    const parsed = candidatesFromGmailMbox(entry.content, `${fileName}/${entry.name}`);
+    const parsed = await candidatesFromGmailMbox(entry.content, `${fileName}/${entry.name}`);
     rows.push(...parsed.rows);
     stats.messages += parsed.stats.messages;
     stats.reviewedAttachments += parsed.stats.reviewedAttachments;
@@ -1570,7 +1587,7 @@ async function gmailAttachments(messageId: string, parts: any[], token: string, 
         : part.body?.data ? { data: part.body.data } : null;
       if (!body?.data) continue;
       const buffer = decodeGmailAttachmentData(String(body.data));
-      const rawText = attachmentText(fileName, mimeType, buffer);
+      const rawText = await attachmentText(fileName, mimeType, buffer);
       attachments.push({
         fileName,
         mimeType,
@@ -3319,7 +3336,7 @@ integrationsRouter.post("/gmail/takeout-import", requireRole("recruiter"), expre
   const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from([]);
   if (buffer.length < 20) return res.status(400).json({ error: "Subi un archivo .zip o .mbox exportado desde Google Takeout." });
   const fileName = cleanText(req.query.fileName) || "gmail-takeout.mbox";
-  const parsed = candidatesFromGmailTakeoutArchive(buffer, fileName);
+  const parsed = await candidatesFromGmailTakeoutArchive(buffer, fileName);
   let newRecords = 0;
   let updatedRecords = 0;
   let skipped = parsed.stats.skipped;

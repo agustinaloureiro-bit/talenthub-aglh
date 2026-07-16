@@ -349,7 +349,7 @@ ${encoded}
 --BOUNDARY--
 `;
 
-  const result = candidatesFromGmailMbox(Buffer.from(mbox, "utf8"), "mail.mbox");
+  const result = await candidatesFromGmailMbox(Buffer.from(mbox, "utf8"), "mail.mbox");
 
   assert.equal(result.stats.messages, 1);
   assert.equal(result.rows.length, 1);
@@ -391,6 +391,61 @@ function zipWithStoredFile(fileName, content) {
   return Buffer.concat([local, name, data, central, name, end]);
 }
 
+function simplePdfWithText(text) {
+  const stream = `BT /F1 18 Tf 72 720 Td (${text.replace(/[()\\]/g, " ")}) Tj ET`;
+  const objects = [
+    "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
+    "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj",
+    "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj",
+    "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj",
+    `5 0 obj << /Length ${stream.length} >> stream\n${stream}\nendstream endobj`
+  ];
+  let body = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const object of objects) {
+    offsets.push(Buffer.byteLength(body, "latin1"));
+    body += `${object}\n`;
+  }
+  const xrefStart = Buffer.byteLength(body, "latin1");
+  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets.slice(1)) body += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  body += `trailer << /Root 1 0 R /Size ${objects.length + 1} >>\nstartxref\n${xrefStart}\n%%EOF\n`;
+  return Buffer.from(body, "latin1");
+}
+
+test("Gmail Takeout extrae texto real de PDF adjunto", async () => {
+  const { candidatesFromGmailRawMessage } = await import("../dist/routes/integrations.js");
+  const pdf = simplePdfWithText("Valeria Gomez ventas gastronomia ingles telefono 099123456");
+  const encoded = pdf.toString("base64").replace(/(.{76})/g, "$1\n");
+  const message = `From test@example.com Mon Jul 13 10:00:00 2026
+From: Valeria Gomez <valeria.gomez@example.com>
+Subject: CV Valeria Gomez
+Date: Mon, 13 Jul 2026 10:00:00 -0300
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="BOUNDARY"
+
+--BOUNDARY
+Content-Type: text/plain; charset="utf-8"
+
+Adjunto CV.
+--BOUNDARY
+Content-Type: application/pdf; name="CV_Valeria_Gomez.pdf"
+Content-Disposition: attachment; filename="CV_Valeria_Gomez.pdf"
+Content-Transfer-Encoding: base64
+
+${encoded}
+--BOUNDARY--
+`;
+
+  const result = await candidatesFromGmailRawMessage(message, "mail.mbox", 1);
+
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].fullName, "Valeria Gomez");
+  assert.ok(result.rows[0].documents?.[0]?.rawText?.includes("ventas gastronomia ingles"));
+  assert.ok(result.rows[0].tags.includes("ventas"));
+  assert.ok(result.rows[0].tags.includes("gastronomia"));
+});
+
 test("Gmail Takeout ZIP importa el MBOX interno", async () => {
   const { candidatesFromGmailTakeoutArchive } = await import("../dist/routes/integrations.js");
   const cvText = `Sofia Lopez
@@ -418,7 +473,7 @@ ${encoded}
 --BOUNDARY--
 `;
   const zip = zipWithStoredFile("Takeout/Mail/CV.mbox", mbox);
-  const result = candidatesFromGmailTakeoutArchive(zip, "takeout.zip");
+  const result = await candidatesFromGmailTakeoutArchive(zip, "takeout.zip");
 
   assert.equal(result.stats.mboxFiles, 1);
   assert.equal(result.stats.messages, 1);

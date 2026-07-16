@@ -119,7 +119,7 @@ async function processMboxStream(input: NodeJS.ReadableStream, sourceName: strin
     current = "";
 
     if (messageNumber <= initial.processedMessages) return false;
-    const parsed = candidatesFromGmailRawMessage(raw, sourceName, messageNumber);
+    const parsed = await candidatesFromGmailRawMessage(raw, sourceName, messageNumber);
     counters.reviewedAttachments += parsed.stats.reviewedAttachments;
     counters.candidateAttachments += parsed.stats.candidateAttachments;
     counters.skipped += parsed.stats.skipped;
