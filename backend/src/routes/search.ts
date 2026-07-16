@@ -64,6 +64,21 @@ function normalizedSqlText(sql: string) {
   return `translate(lower(${sql}), 'áàäâãéèëêíìïîóòöôõúùüûñç', 'aaaaaeeeeiiiiooooouuuunc')`;
 }
 
+function cleanResultContacts(values: unknown, maxItems: number) {
+  const list = Array.isArray(values) ? values : [];
+  return [...new Set(list.map((item) => String(item ?? "").replace(/\s+/g, " ").trim()).filter(Boolean))].slice(0, maxItems);
+}
+
+function cleanResultSummary(value: unknown) {
+  const text = String(value ?? "")
+    .replace(/Ã¡/g, "á").replace(/Ã©/g, "é").replace(/Ã­/g, "í").replace(/Ã³/g, "ó").replace(/Ãº/g, "ú")
+    .replace(/Ã±/g, "ñ").replace(/Â/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text || /^%PDF-|endobj|xref|\/FlateDecode|Google Docs Renderer/i.test(text)) return null;
+  return text.length > 420 ? `${text.slice(0, 420).trim()}...` : text;
+}
+
 export async function findCandidates(query: string, filters: TalentSearchFilters = {}) {
   const normalizedQuery = normalizeSearchText(query);
   const params: unknown[] = [query, `%${query}%`, expandedSearchTerms(query), `%${normalizedQuery}%`];
@@ -129,6 +144,9 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     seniority: row.ai_seniority,
     years: row.ai_seniority_years,
     tags: row.ai_tags ?? [],
+    email: cleanResultContacts(row.email, 2),
+    phone: cleanResultContacts(row.phone, 2),
+    summary: cleanResultSummary(row.ai_summary),
     qualityScore: row.quality_score,
     sourceCount: Number(row.source_count ?? 0),
     documentCount: Number(row.document_count ?? 0),

@@ -305,7 +305,7 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
   const [query, setQuery] = useState("");
   const [seniority, setSeniority] = useState("");
   const [activeOnly, setActiveOnly] = useState(true);
-  const [refreshSources, setRefreshSources] = useState(true);
+  const [refreshSources, setRefreshSources] = useState(false);
   const [results, setResults] = useState<any[]>([]);
   const [searchStatus, setSearchStatus] = useState("");
   const [loading, setLoading] = useState(false);
@@ -329,12 +329,12 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
       <div className="my-3 flex flex-wrap items-center gap-3">
         <select className="field max-w-48" value={seniority} onChange={(e) => setSeniority(e.target.value)}><option value="">Todo seniority</option><option>Junior</option><option>Semi-Senior</option><option>Senior</option><option>Lead</option><option>Manager</option></select>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)} /> Solo activos</label>
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={refreshSources} onChange={(e) => setRefreshSources(e.target.checked)} /> Actualizar fuentes</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={refreshSources} onChange={(e) => setRefreshSources(e.target.checked)} /> Sincronizar antes de buscar</label>
         <button className="btn-primary" onClick={run} disabled={!query.trim() || loading}><Search size={16} /> {loading ? "Buscando..." : "Buscar candidatos"}</button>
       </div>
       {searchStatus && <div className="mb-3 rounded-md border border-slate-200 bg-white p-3 text-sm text-slate-600">{searchStatus}</div>}
       <div className="mb-3 text-sm text-slate-500">{results.length} candidatos encontrados Â· ordenados por compatibilidad</div>
-      <div className="grid gap-3">{results.length === 0 && <Empty text="La bÃºsqueda todavÃ­a no devolviÃ³ candidatos reales." />}{results.map((c) => <CandidateRow key={c.id} candidate={{ ...c, qualityScore: c.score, sourceCount: c.sourceCount ?? 0, documentCount: c.documentCount ?? 0, primaryDocumentName: c.primaryDocumentName ?? null, email: [], phone: [], languages: [], strengths: [], weaknesses: [], status: "active" }} onView={onView} reason={c.matchReason} />)}</div>
+      <div className="grid gap-3">{results.length === 0 && <Empty text="La bÃºsqueda todavÃ­a no devolviÃ³ candidatos reales." />}{results.map((c) => <CandidateRow key={c.id} candidate={{ ...c, qualityScore: c.score, sourceCount: c.sourceCount ?? 0, documentCount: c.documentCount ?? 0, primaryDocumentName: c.primaryDocumentName ?? null, email: c.email ?? [], phone: c.phone ?? [], languages: [], strengths: [], weaknesses: [], status: "active" }} onView={onView} reason={c.matchReason} />)}</div>
     </PagePad>
   );
 }
@@ -920,8 +920,8 @@ function KeyDataCard({ candidate, document }: { candidate: Candidate; document?:
 
 function ContactCard({ candidate }: { candidate: Candidate }) {
   const items = [
-    ...candidate.email.map((value) => ({ icon: Mail, label: value, href: `mailto:${value}` })),
-    ...candidate.phone.map((value) => ({ icon: Phone, label: value, href: `tel:${value.replace(/\s+/g, "")}` })),
+    ...candidate.email.slice(0, 3).map((value) => ({ icon: Mail, label: value, href: `mailto:${value}` })),
+    ...candidate.phone.slice(0, 3).map((value) => ({ icon: Phone, label: value, href: `tel:${value.replace(/\s+/g, "")}` })),
     ...(candidate.linkedinUrl ? [{ icon: ExternalLink, label: "LinkedIn", href: candidate.linkedinUrl }] : [])
   ];
   return <div className="card p-4"><h3 className="mb-3 font-bold">Contacto</h3>{items.length === 0 ? <p className="text-sm text-slate-500">Sin datos de contacto.</p> : <div className="grid gap-2">{items.map(({ icon: Icon, label, href }) => <a key={`${href}-${label}`} className="flex min-w-0 items-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50" href={href} target={href.startsWith("http") ? "_blank" : undefined} rel="noreferrer"><Icon size={15} /><span className="truncate">{label}</span></a>)}</div>}</div>;
@@ -949,7 +949,9 @@ function CandidateRow({ candidate, onView, reason }: { candidate: Candidate; onV
   const role = shortText(candidate.currentRole || "Sin rol", 90);
   const location = shortText(candidate.city || candidate.country || "Sin ciudad", 45);
   const documents = Number(candidate.documentCount ?? 0);
-  return <div className="card flex flex-wrap items-center justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div><div className="truncate text-sm text-slate-500">{role} Â· {location}{candidate.years ? ` Â· ${candidate.years} aÃ±os` : ""}</div><div className="mt-2 flex flex-wrap items-center gap-2">{documents > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600"><FileText size={13} /> {documents} CV/doc</span>}{candidate.primaryDocumentName && <span className="max-w-sm truncate text-xs text-slate-500">{shortText(candidate.primaryDocumentName, 70)}</span>}</div><TagList tags={candidate.tags ?? []} />{reason && <p className="mt-1 truncate text-xs italic text-slate-500">{shortText(reason, 120)}</p>}</div></div><div className="flex shrink-0 items-center gap-3"><Score score={candidate.qualityScore} /><button className={documents > 0 ? "btn-primary" : "btn-ghost"} onClick={() => onView(candidate.id)}>{documents > 0 ? "Ver ficha / CV" : "Ver ficha"}</button></div></div>;
+  const contact = [candidate.phone?.[0], candidate.email?.[0]].filter(Boolean).join(" · ");
+  const summary = cleanDisplayText(candidate.summary);
+  return <div className="card flex flex-wrap items-start justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div><div className="truncate text-sm text-slate-500">{role} · {location}{candidate.years ? ` · ${candidate.years} años` : ""}</div>{summary && <p className="mt-2 max-w-3xl text-sm leading-5 text-slate-700">{shortText(summary, 260)}</p>}<div className="mt-2 flex flex-wrap items-center gap-2">{documents > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600"><FileText size={13} /> {documents} CV/doc</span>}{candidate.primaryDocumentName && <span className="max-w-sm truncate text-xs text-slate-500">{shortText(candidate.primaryDocumentName, 70)}</span>}{contact && <span className="max-w-md truncate text-xs text-slate-500">{shortText(contact, 90)}</span>}</div><TagList tags={candidate.tags ?? []} />{reason && <p className="mt-1 text-xs italic text-slate-500">{shortText(reason, 160)}</p>}</div></div><div className="flex shrink-0 items-center gap-3"><Score score={candidate.qualityScore} /><button className={documents > 0 ? "btn-primary" : "btn-ghost"} onClick={() => onView(candidate.id)}>{documents > 0 ? "Ver ficha / CV" : "Ver ficha"}</button></div></div>;
 }
 
 type InputProps = {

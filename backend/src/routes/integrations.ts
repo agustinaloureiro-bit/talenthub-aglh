@@ -852,6 +852,7 @@ function cleanCandidateNameText(value: string) {
     .normalize("NFC")
     .replace(/^(re|fw|fwd)\s*:\s*/i, "")
     .replace(/^copia\s+de\s+/i, " ")
+    .replace(/^gallito\s+/i, " ")
     .replace(/\bp\s*d\s*f\b/gi, " ")
     .replace(/\bd\s*o\s*c\s*x?\b/gi, " ")
     .replace(/\b([a-z])\s+(pdf|docx?|rtf|txt)\b/gi, " ")
@@ -862,6 +863,7 @@ function cleanCandidateNameText(value: string) {
     .replace(/\s+(chofer|cadete|imprimir|foto|photo|imagen|image|y)$/i, " ")
     .replace(/(^|\s)(actual|actualizado|actualizada|final|nuevo|nueva|version|versi[oó]n|v\d+)(?=\s|$)/gi, " ")
     .replace(/(^|\s)(19|20)\d{2}(?=\s|$)/g, " ")
+    .replace(/\s+\d{3,}$/g, " ")
     .replace(/^de\s+([A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{4,80})$/i, "$1")
     .replace(/\b(fecha de nacimiento|nacimiento|domicilio|direcci[oó]n|address|cedula|c[eé]dula|documento|telefono|tel[eé]fono|celular|email|correo|uruguay)\b.*$/i, " ")
     .replace(/\s+/g, " ")
@@ -944,6 +946,8 @@ function snippetFromDocument(content: string, pattern: RegExp, limit = 260) {
   const index = Math.max(0, match.index ?? 0);
   const slice = content.slice(index, index + limit);
   return cleanText(slice.split(/(?<=[.;])\s+/)[0] ?? slice)
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, " ")
+    .replace(/(?:\+?\d{1,3}[\s.-]?)?(?:0?9\d|2\d|4\d|[1-9]\d{1,3})[\s.-]?\d{3}[\s.-]?\d{3,4}/g, " ")
     .replace(/\s+/g, " ")
     .slice(0, limit);
 }
@@ -988,12 +992,13 @@ function detectedProfileLabel(content: string, fallbackRole: string) {
 }
 
 function documentSummary(content: string, fallbackRole: string) {
-  const profile = detectedProfileLabel(content, fallbackRole);
-  const years = detectedExperienceYears(content);
-  const experience = snippetFromDocument(content, /(?:experiencia|experiencia laboral|trayectoria|antecedentes laborales|trabaj[eéoa]|desempe[nñ]|responsable|cargo|puesto|funciones|tareas)/i);
-  const education = snippetFromDocument(content, /(?:formaci[oó]n|educaci[oó]n|estudios|universidad|facultad|bachiller|tecnicatura|licenciatura|posgrado|curso)/i);
-  const languages = detectedLanguages(content);
-  const location = sentenceFromDocument(content, /montevideo|canelones|maldonado|san jose|colonia|florida|rocha|paysandu|salto|rivera|tacuarembo|durazno|soriano|lavalleja|artigas|cerro largo|flores|rio negro|treinta y tres/i);
+  const mainContent = textWithoutReferenceSections(content);
+  const profile = detectedProfileLabel(mainContent, fallbackRole);
+  const years = detectedExperienceYears(mainContent);
+  const experience = snippetFromDocument(mainContent, /(?:experiencia|experiencia laboral|trayectoria|antecedentes laborales|trabaj[eéoa]|desempe[nñ]|responsable|cargo|puesto|funciones|tareas)/i);
+  const education = snippetFromDocument(mainContent, /(?:formaci[oó]n|educaci[oó]n|estudios|universidad|facultad|bachiller|tecnicatura|licenciatura|posgrado|curso)/i);
+  const languages = detectedLanguages(mainContent);
+  const location = sentenceFromDocument(mainContent, /montevideo|canelones|maldonado|san jose|colonia|florida|rocha|paysandu|salto|rivera|tacuarembo|durazno|soriano|lavalleja|artigas|cerro largo|flores|rio negro|treinta y tres/i);
   const facts = [
     profile ? `Perfil detectado: ${profile}.` : "",
     years ? `Experiencia declarada: ${years} anos.` : "",
@@ -2140,9 +2145,15 @@ function extractEmails(value: unknown) {
     .map((item) => item.toLowerCase());
 }
 
+function textWithoutReferenceSections(value: unknown) {
+  return cleanText(value)
+    .split(/\b(?:referencias?|references?|ref\.?)\b/i)[0]
+    .slice(0, 12000);
+}
+
 function extractPhones(value: unknown) {
   const values = Array.isArray(value) ? value : [value];
-  const matches = values.flatMap((item) => cleanText(item).match(/(?:\+?\d{1,3}[\s.-]?)?(?:0?9\d|2\d|4\d|[1-9]\d{1,3})[\s.-]?\d{3}[\s.-]?\d{3,4}/g) ?? []);
+  const matches = values.flatMap((item) => textWithoutReferenceSections(item).match(/(?:\+?\d{1,3}[\s.-]?)?(?:0?9\d|2\d|4\d|[1-9]\d{1,3})[\s.-]?\d{3}[\s.-]?\d{3,4}/g) ?? []);
   return unique(matches)
     .map((phone) => phone.replace(/[^\d+]+/g, " ").replace(/\s+/g, " ").trim())
     .filter((phone) => {
@@ -2152,8 +2163,10 @@ function extractPhones(value: unknown) {
       if (/^(\d)\1{6,}$/.test(digits)) return false;
       if (/^(?:0 ?){4,}/.test(phone)) return false;
       if (/^(?:19|20)\d{6}(?:\d{4,6})?$/.test(digits)) return false;
+      if (/^(?:\d{1,2}) ?(?:\d{1,2}) ?0{5,}$/.test(phone)) return false;
       return true;
-    });
+    })
+    .slice(0, 3);
 }
 
 function offerIdFromRow(row: Record<string, unknown>) {
@@ -2210,14 +2223,14 @@ function candidateNameLooksReal(name: string) {
   const words = cleaned.split(/\s+/).filter(Boolean);
   if (!cleaned || cleaned.length < 5 || cleaned.length > 90) return false;
   if (words.length < 2 || words.length > 6) return false;
-  if (/\b(re|fw|fwd|postulame|postularme|postulaci[oó]n|postulaciones|vacante|vacantes|futuras|solicitud|empleo|trabajo|curriculum|curr[ií]culo|curriculo|curiculum|curriculun|curriculm|corriculun|corriculum|vitae|adjunto|consulta|buenas|hola|estimados|comparto|env[ií]o|envio|extracted|extracto|experiencia|laboral|deposito|dep[oó]sito|limpieza|atenci[oó]n|cliente|profesional|creativo|juvenil|femenino|morado|rosado|rosa|plantilla|modelo|minimalista|minimalist|mujer|hombre|persona|proactiv[oa]|organizada?|responsable|auxiliar|enfermer[ií]a|reponedor|pickers?|copia|imprimir|chofer|cadete|audiovisual|foto|photo|imagen|image|sencillo|cl[aá]sico|clasico|blanco|beige|simple|compressed|comprimido|ultimo|último|call)\b/i.test(cleaned)) return false;
+  if (/\b(re|fw|fwd|gallito|postulame|postularme|postulaci[oó]n|postulaciones|vacante|vacantes|futuras|solicitud|empleo|trabajo|curriculum|curr[ií]culo|curriculo|curiculum|curriculun|curriculm|corriculun|corriculum|vitae|adjunto|consulta|buenas|hola|estimados|comparto|env[ií]o|envio|extracted|extracto|experiencia|laboral|deposito|dep[oó]sito|limpieza|atenci[oó]n|cliente|profesional|creativo|juvenil|femenino|morado|rosado|rosa|plantilla|modelo|minimalista|minimalist|mujer|hombre|persona|proactiv[oa]|organizada?|responsable|auxiliar|enfermer[ií]a|reponedor|pickers?|copia|imprimir|chofer|cadete|audiovisual|foto|photo|imagen|image|sencillo|cl[aá]sico|clasico|blanco|beige|simple|compressed|comprimido|ultimo|último|call|automation|financiero|financiera|especialista)\b/i.test(cleaned)) return false;
   if (/^(soy una|soy un|para\s+)/i.test(cleaned)) return false;
   if (/\b(fecha|nacimiento|domicilio|direcci[oó]n|cedula|c[eé]dula|documento|telefono|tel[eé]fono|celular|email|correo|uruguay)\b/i.test(cleaned)) return false;
   if (/\b(de|del|de la|la|las|los|y)$/i.test(cleaned)) return false;
   if (/\d/.test(cleaned)) return false;
   if (/[/{}<>]|\[object Object\]/i.test(cleaned)) return false;
   if (looksLikeOfferText(cleaned)) return false;
-  if (/^(autodromo|barra de carrasco|ciudad de la costa|comercial|comercial mercadeo|el pinar|fray bentos|jose pedro varela|libertad|lomas de solymar|malvin|melo|montevideo|neptunia|playa pascual|rivera|salinas|salto|solymar|suarez|toledo|treinta y tres|administracion de empresas|asistencia social|diseno grafico|profesional creativo morado|profesional juvenil femenino rosado|plantilla curriculum|modelo curriculum)$/i.test(cleaned)) return false;
+  if (/^(autodromo|barra de carrasco|ciudad de la costa|comercial|comercial mercadeo|el pinar|fray bentos|jose pedro varela|las piedras|libertad|lomas de solymar|malvin|melo|montevideo|neptunia|playa pascual|rivera|salinas|salto|solymar|suarez|toledo|treinta y tres|administracion de empresas|asistencia social|asesor financiero|asesora financiera|diseno grafico|profesional creativo morado|profesional juvenil femenino rosado|plantilla curriculum|modelo curriculum|qa automation)$/i.test(cleaned)) return false;
   return true;
 }
 

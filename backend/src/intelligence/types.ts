@@ -24,6 +24,9 @@ export type TalentCandidateResult = {
   seniority?: string | null;
   years?: number | null;
   tags: string[];
+  email?: string[];
+  phone?: string[];
+  summary?: string | null;
   qualityScore: number;
   sourceCount?: number;
   documentCount?: number;
