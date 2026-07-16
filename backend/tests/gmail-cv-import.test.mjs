@@ -378,6 +378,22 @@ test("Gmail no guarda fechas de archivos como telefonos", async () => {
   assert.deepEqual(candidate.phone, ["091406710"]);
 });
 
+test("Gmail no guarda horas ni numeros pegados como telefonos", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const candidate = candidateFromFreeText(
+    "gmail",
+    "Sofia Prestes\nEmail sofia@example.com\nArchivo CV_2025-04-30-090327.pdf\nTelefono 096395745\nExperiencia laboral.",
+    {
+      sourceId: "gmail:date-time-phone",
+      fileName: "CV_2025-04-30-090327.pdf",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+
+  assert.ok(candidate);
+  assert.deepEqual(candidate.phone, ["096395745"]);
+});
+
 test("Gmail no mezcla telefonos de referencias laborales como contacto principal", async () => {
   const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
   const candidate = candidateFromFreeText(
@@ -466,18 +482,38 @@ test("Gmail no acepta titulos de rol o ubicacion como nombre del candidato", asy
 
 test("Gmail limpia prefijos externos y numeros de nombres de archivo", async () => {
   const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
-  const candidate = candidateFromFreeText(
-    "gmail",
-    "Laura Miranda Zanotta Bastos\nEmail laura@example.com\nExperiencia laboral en gastronomia.",
+  const cases = [
     {
-      sourceId: "gmail:gallito-file",
       fileName: "gallito_Laura_Miranda_Zanotta_Bastos_8546.pdf.docx",
-      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+      text: "Laura Miranda Zanotta Bastos\nEmail laura@example.com\nExperiencia laboral en gastronomia.",
+      expected: "Laura Miranda Zanotta Bastos"
+    },
+    {
+      fileName: "gallito_Luciano_Rebollo_9840 (2).docx",
+      text: "Luciano Rebollo\nEmail luciano@example.com\nExperiencia laboral en ventas.",
+      expected: "Luciano Rebollo"
+    },
+    {
+      fileName: "c.v florencia barrios.docx",
+      text: "Florencia Barrios\nEmail florencia@example.com\nExperiencia laboral en administracion.",
+      expected: "Florencia Barrios"
     }
-  );
+  ];
 
-  assert.ok(candidate);
-  assert.equal(candidate.fullName, "Laura Miranda Zanotta Bastos");
+  for (const item of cases) {
+    const candidate = candidateFromFreeText(
+      "gmail",
+      item.text,
+      {
+        sourceId: `gmail:${item.fileName}`,
+        fileName: item.fileName,
+        sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+      }
+    );
+
+    assert.ok(candidate);
+    assert.equal(candidate.fullName, item.expected);
+  }
 });
 
 test("Gmail usa modo incremental cuando el historico ya termino", async () => {

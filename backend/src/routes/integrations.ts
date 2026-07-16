@@ -853,6 +853,7 @@ function cleanCandidateNameText(value: string) {
     .replace(/^(re|fw|fwd)\s*:\s*/i, "")
     .replace(/^copia\s+de\s+/i, " ")
     .replace(/^gallito\s+/i, " ")
+    .replace(/^c\s*\.?\s*v\s+/i, " ")
     .replace(/\bp\s*d\s*f\b/gi, " ")
     .replace(/\bd\s*o\s*c\s*x?\b/gi, " ")
     .replace(/\b([a-z])\s+(pdf|docx?|rtf|txt)\b/gi, " ")
@@ -863,7 +864,7 @@ function cleanCandidateNameText(value: string) {
     .replace(/\s+(chofer|cadete|imprimir|foto|photo|imagen|image|y)$/i, " ")
     .replace(/(^|\s)(actual|actualizado|actualizada|final|nuevo|nueva|version|versi[oó]n|v\d+)(?=\s|$)/gi, " ")
     .replace(/(^|\s)(19|20)\d{2}(?=\s|$)/g, " ")
-    .replace(/\s+\d{3,}$/g, " ")
+    .replace(/\s+\d{1,5}$/g, " ")
     .replace(/^de\s+([A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{4,80})$/i, "$1")
     .replace(/\b(fecha de nacimiento|nacimiento|domicilio|direcci[oó]n|address|cedula|c[eé]dula|documento|telefono|tel[eé]fono|celular|email|correo|uruguay)\b.*$/i, " ")
     .replace(/\s+/g, " ")
@@ -885,8 +886,19 @@ function cleanDocumentFileName(value: string | null | undefined) {
   return cleaned || null;
 }
 
+function normalizeNameCasing(value: string) {
+  const cleaned = cleanText(value);
+  if (!cleaned || /[A-ZÁÉÍÓÚÜÑ]/u.test(cleaned)) return cleaned;
+  const lowerParticles = new Set(["de", "del", "la", "las", "los", "y", "da", "do", "dos"]);
+  return cleaned.split(/\s+/).map((word, index) => {
+    const lower = word.toLowerCase();
+    if (index > 0 && lowerParticles.has(lower)) return lower;
+    return lower.charAt(0).toUpperCase() + lower.slice(1);
+  }).join(" ");
+}
+
 function nameFromFileName(fileName: string | null | undefined) {
-  const cleaned = cleanCandidateNameText(cleanText(fileName));
+  const cleaned = normalizeNameCasing(cleanCandidateNameText(cleanText(fileName)));
   if (candidateNameLooksReal(cleaned)) return cleaned;
   const words = cleaned.split(/\s+/).filter(Boolean);
   if (words.length === 1 && /^[A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ']{2,}$/u.test(words[0])) return words[0];
@@ -2159,10 +2171,12 @@ function extractPhones(value: unknown) {
     .filter((phone) => {
       const digits = phone.replace(/\D/g, "");
       if (digits.length < 7 || digits.length > 15) return false;
+      if (digits.length > 9 && !digits.startsWith("598")) return false;
       if (/^0+$/.test(digits)) return false;
       if (/^(\d)\1{6,}$/.test(digits)) return false;
       if (/^(?:0 ?){4,}/.test(phone)) return false;
       if (/^(?:19|20)\d{6}(?:\d{4,6})?$/.test(digits)) return false;
+      if (/^(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{6}$/.test(digits)) return false;
       if (/^(?:\d{1,2}) ?(?:\d{1,2}) ?0{5,}$/.test(phone)) return false;
       return true;
     })
