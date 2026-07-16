@@ -216,6 +216,15 @@ function cleanText(value: unknown) {
   return String(value ?? "").replace(/\s+/g, " ").trim();
 }
 
+function isHttpUrl(value: unknown) {
+  return /^https?:\/\//i.test(cleanText(value));
+}
+
+function safeDownloadName(value: unknown, fallback = "documento.txt") {
+  const cleaned = cleanText(value).replace(/[\\/:*?"<>|]+/g, " ").trim();
+  return cleaned || fallback;
+}
+
 function unique(values: unknown[]) {
   return [...new Set(values.map(cleanText).filter(Boolean))];
 }
@@ -537,7 +546,7 @@ candidatesRouter.get("/:id", asyncHandler(async (req, res) => {
 
 candidatesRouter.get("/:id/documents/:documentId/download", asyncHandler(async (req, res) => {
   const { rows } = await q(
-    `SELECT id, candidate_id, file_name, file_url, mime_type, source_type, source_id, source_path
+    `SELECT id, candidate_id, file_name, file_url, mime_type, source_type, source_id, source_path, raw_text
      FROM documents
      WHERE id=$1 AND candidate_id=$2
      LIMIT 1`,
@@ -565,8 +574,17 @@ candidatesRouter.get("/:id/documents/:documentId/download", asyncHandler(async (
     return res.send(buffer);
   }
 
-  if (document.file_url || document.source_path) {
-    return res.redirect(document.file_url || document.source_path);
+  if (isHttpUrl(document.file_url) || isHttpUrl(document.source_path)) {
+    return res.redirect(isHttpUrl(document.file_url) ? document.file_url : document.source_path);
+  }
+
+  const rawText = cleanText(document.raw_text);
+  if (rawText) {
+    const baseName = safeDownloadName(document.file_name, "cv");
+    const textName = /\.(txt|pdf|docx?|rtf)$/i.test(baseName) ? `${baseName}.txt` : `${baseName}.txt`;
+    res.setHeader("content-type", "text/plain; charset=utf-8");
+    res.setHeader("content-disposition", `attachment; filename="${textName.replace(/"/g, "")}"`);
+    return res.send(rawText);
   }
   return res.status(404).json({ error: "Este documento no tiene archivo descargable." });
 }));

@@ -848,7 +848,8 @@ function shortText(value: string | undefined | null, max = 110) {
 }
 
 function bestDocumentUrl(document?: CandidateDocument | null) {
-  return document?.file_url || document?.source_path || "";
+  const url = document?.file_url || document?.source_path || "";
+  return /^https?:\/\//i.test(url) ? url : "";
 }
 
 async function downloadDocument(candidateId: string, document: CandidateDocument) {
@@ -883,7 +884,11 @@ async function fetchDocumentBlob(candidateId: string, document: CandidateDocumen
 }
 
 function cleanDisplayText(value: unknown) {
-  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  const text = String(value ?? "")
+    .replace(/Ã¡/g, "á").replace(/Ã©/g, "é").replace(/Ã­/g, "í").replace(/Ã³/g, "ó").replace(/Ãº/g, "ú")
+    .replace(/Ã±/g, "ñ").replace(/Ã/g, "Á").replace(/Ã‰/g, "É").replace(/Ã/g, "Í").replace(/Ã“/g, "Ó")
+    .replace(/Ãš/g, "Ú").replace(/Ã‘/g, "Ñ").replace(/Â·/g, "·").replace(/Â/g, "")
+    .replace(/\s+/g, " ").trim();
   if (!text) return "";
   if (/^%PDF-|endobj|xref|\/FlateDecode|Google Docs Renderer/i.test(text)) return "";
   return text;
