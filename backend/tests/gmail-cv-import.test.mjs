@@ -517,6 +517,43 @@ test("Gmail limpia prefijos externos y numeros de nombres de archivo", async () 
   }
 });
 
+test("Gmail no conserva sufijos de rol ni nombres de plantillas como persona", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const cleanRoleSuffix = candidateFromFreeText(
+    "gmail",
+    "Camila Morales Ventas\nEmail camila@example.com\nExperiencia laboral en ventas y gastronomia.",
+    {
+      sourceId: "gmail:role-suffix",
+      fileName: "camila morales ventas cv (1).pdf",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+  const cleanUyPrefix = candidateFromFreeText(
+    "gmail",
+    "JESUS A FREITES\nEmail jesus@example.com\nExperiencia laboral.",
+    {
+      sourceId: "gmail:cvuy-prefix",
+      fileName: "CV.uy - JESUS A. FREITES P..pdf",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+  const badTemplate = candidateFromFreeText(
+    "gmail",
+    "Marketing Gratis\nEmail plantilla@example.com\nCV importado.",
+    {
+      sourceId: "gmail:template-name",
+      fileName: "curriculum marketing gratis femenino rosa.pdf",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+
+  assert.ok(cleanRoleSuffix);
+  assert.equal(cleanRoleSuffix.fullName, "Camila Morales");
+  assert.ok(cleanUyPrefix);
+  assert.equal(cleanUyPrefix.fullName, "JESUS A FREITES");
+  assert.equal(badTemplate, null);
+});
+
 test("Gmail usa modo incremental cuando el historico ya termino", async () => {
   const { gmailSyncQueryForConfig } = await import("../dist/routes/integrations.js");
   const result = gmailSyncQueryForConfig({ gmailBackfillCompleteAt: "2026-07-13T12:00:00.000Z" }, false);

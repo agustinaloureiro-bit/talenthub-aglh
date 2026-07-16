@@ -860,6 +860,8 @@ function cleanCandidateNameText(value: string) {
     .normalize("NFC")
     .replace(/^(re|fw|fwd)\s*:\s*/i, "")
     .replace(/^copia\s+de\s+/i, " ")
+    .replace(/^cv\s*\.?\s*uy\s+/i, " ")
+    .replace(/^uy\s+/i, " ")
     .replace(/^gallito\s+/i, " ")
     .replace(/^c\s*\.?\s*v\s+/i, " ")
     .replace(/\bp\s*d\s*f\b/gi, " ")
@@ -871,6 +873,7 @@ function cleanCandidateNameText(value: string) {
     .replace(/^(aux|auxiliar|enfermer[ií]a|reponedor|vendedor|vendedora|pickers?|administrativ[oa]|operario|operaria|audiovisual|lic|licenciada?|licenciado|sr|sra|dr|dra)\s+/i, " ")
     .replace(/\s+(chofer|cadete|imprimir|foto|photo|imagen|image|y)$/i, " ")
     .replace(/(^|\s)(actual|actualizado|actualizada|final|nuevo|nueva|version|versi[oó]n|v\d+)(?=\s|$)/gi, " ")
+    .replace(/\s+(ventas?|marketing|logistica|logística|gastronomia|gastronomía|administraci[oó]n|atenci[oó]n al cliente)$/i, " ")
     .replace(/(^|\s)(19|20)\d{2}(?=\s|$)/g, " ")
     .replace(/\s+\d{1,5}$/g, " ")
     .replace(/^de\s+([A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{4,80})$/i, "$1")
@@ -2246,7 +2249,7 @@ function candidateNameLooksReal(name: string) {
   const words = cleaned.split(/\s+/).filter(Boolean);
   if (!cleaned || cleaned.length < 5 || cleaned.length > 90) return false;
   if (words.length < 2 || words.length > 6) return false;
-  if (/\b(re|fw|fwd|gallito|postulame|postularme|postulaci[oó]n|postulaciones|vacante|vacantes|futuras|solicitud|empleo|trabajo|curriculum|curr[ií]culo|curriculo|curiculum|curriculun|curriculm|corriculun|corriculum|vitae|adjunto|consulta|buenas|hola|estimados|comparto|env[ií]o|envio|extracted|extracto|experiencia|laboral|deposito|dep[oó]sito|limpieza|atenci[oó]n|cliente|profesional|creativo|juvenil|femenino|morado|rosado|rosa|plantilla|modelo|minimalista|minimalist|mujer|hombre|persona|proactiv[oa]|organizada?|responsable|auxiliar|enfermer[ií]a|reponedor|pickers?|copia|imprimir|chofer|cadete|audiovisual|foto|photo|imagen|image|sencillo|cl[aá]sico|clasico|blanco|beige|simple|compressed|comprimido|ultimo|último|call|automation|financiero|financiera|especialista)\b/i.test(cleaned)) return false;
+  if (/\b(re|fw|fwd|gallito|postulame|postularme|postulaci[oó]n|postulaciones|vacante|vacantes|futuras|solicitud|empleo|trabajo|curriculum|curr[ií]culo|curriculo|curiculum|curriculun|curriculm|corriculun|corriculum|vitae|adjunto|consulta|buenas|hola|estimados|comparto|env[ií]o|envio|extracted|extracto|experiencia|laboral|deposito|dep[oó]sito|limpieza|atenci[oó]n|cliente|profesional|creativo|juvenil|femenino|morado|rosado|rosa|plantilla|modelo|minimalista|minimalist|mujer|hombre|persona|proactiv[oa]|organizada?|responsable|auxiliar|enfermer[ií]a|reponedor|pickers?|copia|imprimir|chofer|cadete|audiovisual|foto|photo|imagen|image|sencillo|cl[aá]sico|clasico|blanco|beige|simple|compressed|comprimido|ultimo|último|call|automation|financiero|financiera|especialista|gratis|solymarpdf|actividades?)\b/i.test(cleaned)) return false;
   if (/^(soy una|soy un|para\s+)/i.test(cleaned)) return false;
   if (/\b(fecha|nacimiento|domicilio|direcci[oó]n|cedula|c[eé]dula|documento|telefono|tel[eé]fono|celular|email|correo|uruguay)\b/i.test(cleaned)) return false;
   if (/\b(de|del|de la|la|las|los|y)$/i.test(cleaned)) return false;
