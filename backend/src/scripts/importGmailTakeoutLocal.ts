@@ -30,6 +30,29 @@ function hasFlag(name: string) {
   return process.argv.includes(name);
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientDbError(error: unknown) {
+  const message = String((error as Error)?.message ?? error);
+  return /Connection terminated unexpectedly|ECONNRESET|ETIMEDOUT|timeout|terminating connection|Connection ended unexpectedly|Client has encountered a connection error/i.test(message);
+}
+
+async function importCandidateWithRetry(sourceType: string, candidate: Parameters<typeof importCandidate>[1]) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      return await importCandidate(sourceType, candidate, isUsableCandidate);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientDbError(error) || attempt === 3) throw error;
+      await sleep(750 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
 function usage() {
   console.log(`Uso:
   pnpm local:import-gmail -- --file "/ruta/takeout.zip"
@@ -106,7 +129,7 @@ async function processMboxStream(input: NodeJS.ReadableStream, sourceName: strin
         counters.newRecords += 1;
         continue;
       }
-      const result = await importCandidate("gmail", candidate, isUsableCandidate);
+      const result = await importCandidateWithRetry("gmail", candidate);
       if (result === "new") counters.newRecords += 1;
       if (result === "updated") counters.updatedRecords += 1;
       if (result === "skipped") counters.skipped += 1;
