@@ -3,6 +3,7 @@ import test from "node:test";
 
 const { interpretTalentQuery } = await import("../dist/intelligence/queryInterpreter.js");
 const { rerankCandidates } = await import("../dist/intelligence/candidateRanker.js");
+const { downloadContentDisposition } = await import("../dist/routes/candidates.js");
 
 test("interpreta abogado con ingles como rol e idioma", () => {
   const interpreted = interpretTalentQuery("Necesito un abogado con inglés.");
@@ -11,6 +12,14 @@ test("interpreta abogado con ingles como rol e idioma", () => {
   assert.ok(interpreted.languages.includes("ingles"));
   assert.ok(interpreted.mustHave.includes("abogado"));
   assert.ok(interpreted.mustHave.includes("ingles"));
+});
+
+test("genera un nombre de descarga valido para archivos con acentos combinados", () => {
+  const header = downloadContentDisposition("Oscar Domínguez.pdf");
+
+  assert.match(header, /^attachment; filename="Oscar Dominguez\.pdf";/);
+  assert.match(header, /filename\*=UTF-8''Oscar%20Dom%C3%ADnguez\.pdf$/);
+  assert.doesNotMatch(header.split(";")[1], /[^\x20-\x7E]/);
 });
 
 test("prioriza candidatos con evidencia en documentos/CV", () => {

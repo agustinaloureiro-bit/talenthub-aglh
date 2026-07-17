@@ -366,7 +366,10 @@ function CandidateProfile({ id, canEdit }: { id: string; canEdit: boolean }) {
   if (!data) return <PagePad><Skeleton /></PagePad>;
   const c: Candidate = data.data;
   const documents = (data.documents ?? []) as CandidateDocument[];
-  const primaryDocument = documents.find((doc) => doc.is_primary_cv) ?? documents[0];
+  const primaryDocument = documents.find((doc) => doc.is_primary_cv && doc.has_stored_file)
+    ?? documents.find((doc) => doc.has_stored_file)
+    ?? documents.find((doc) => doc.is_primary_cv)
+    ?? documents[0];
   const cvAnalysis = data.cvAnalysis as CvAnalysis | undefined;
   const summary = cleanDisplayText(cvAnalysis?.summary) || readableCandidateSummary(c, primaryDocument);
   return (

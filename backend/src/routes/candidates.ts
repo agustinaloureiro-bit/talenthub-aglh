@@ -226,6 +226,16 @@ function safeDownloadName(value: unknown, fallback = "documento.txt") {
   return cleaned || fallback;
 }
 
+export function downloadContentDisposition(value: unknown, fallback = "documento.txt") {
+  const original = safeDownloadName(value, fallback).normalize("NFC");
+  const ascii = original.normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/[^\x20-\x7E]+/g, "_")
+    .replace(/["\\]+/g, "")
+    .trim() || fallback;
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(original)}`;
+}
+
 function unique(values: unknown[]) {
   return [...new Set(values.map(cleanText).filter(Boolean))];
 }
@@ -567,7 +577,7 @@ candidatesRouter.get("/:id/documents/:documentId/download", asyncHandler(async (
   if (document.file_data) {
     const buffer = Buffer.isBuffer(document.file_data) ? document.file_data : Buffer.from(document.file_data);
     res.setHeader("content-type", document.mime_type || "application/octet-stream");
-    res.setHeader("content-disposition", `attachment; filename="${safeDownloadName(document.file_name, "cv").replace(/"/g, "")}"`);
+    res.setHeader("content-disposition", downloadContentDisposition(document.file_name, "cv"));
     return res.send(buffer);
   }
 
@@ -586,7 +596,7 @@ candidatesRouter.get("/:id/documents/:documentId/download", asyncHandler(async (
     if (!response.ok || !payload.data) return res.status(502).json({ error: "Gmail no devolvio el archivo adjunto." });
     const buffer = decodeBase64UrlBuffer(String(payload.data));
     res.setHeader("content-type", document.mime_type || "application/octet-stream");
-    res.setHeader("content-disposition", `attachment; filename="${cleanText(document.file_name) || "cv"}"`);
+    res.setHeader("content-disposition", downloadContentDisposition(document.file_name, "cv"));
     return res.send(buffer);
   }
 
@@ -599,7 +609,7 @@ candidatesRouter.get("/:id/documents/:documentId/download", asyncHandler(async (
     const baseName = safeDownloadName(document.file_name, "cv");
     const textName = /\.(txt|pdf|docx?|rtf)$/i.test(baseName) ? `${baseName}.txt` : `${baseName}.txt`;
     res.setHeader("content-type", "text/plain; charset=utf-8");
-    res.setHeader("content-disposition", `attachment; filename="${textName.replace(/"/g, "")}"`);
+    res.setHeader("content-disposition", downloadContentDisposition(textName, "cv.txt"));
     return res.send(rawText);
   }
   return res.status(404).json({ error: "Este documento no tiene archivo descargable." });
