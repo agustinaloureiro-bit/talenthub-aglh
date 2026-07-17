@@ -57,11 +57,13 @@ function expandedSearchTerms(query: string) {
     moza: ["mozo", "gastronomia", "gastronomía", "restaurante"]
   };
   return [...new Set([normalizedQuery, ...words, ...words.flatMap((word) => extras[word] ?? [])].map(normalizeSearchText))]
-    .map((term) => `%${term}%`);
+    .filter(Boolean);
 }
 
-function normalizedSqlText(sql: string) {
-  return `translate(lower(${sql}), 'áàäâãéèëêíìïîóòöôõúùüûñç', 'aaaaaeeeeiiiiooooouuuunc')`;
+function expandedWebsearchQuery(query: string) {
+  return expandedSearchTerms(query)
+    .map((term) => `"${term.replace(/"/g, " ")}"`)
+    .join(" OR ");
 }
 
 function cleanResultContacts(values: unknown, maxItems: number) {
@@ -80,33 +82,90 @@ function cleanResultSummary(value: unknown) {
 }
 
 export async function findCandidates(query: string, filters: TalentSearchFilters = {}) {
-  const normalizedQuery = normalizeSearchText(query);
-  const params: unknown[] = [query, `%${query}%`, expandedSearchTerms(query), `%${normalizedQuery}%`];
-  let where = "WHERE c.duplicate_of IS NULL";
-  if (filters.activeOnly !== false) where += " AND c.status='active'";
+  const params: unknown[] = [query, expandedWebsearchQuery(query)];
+  let candidateFilter = "c.duplicate_of IS NULL";
+  if (filters.activeOnly !== false) candidateFilter += " AND c.status='active'";
   if (filters.seniority) {
     params.push(filters.seniority);
-    where += ` AND c.ai_seniority = $${params.length}`;
+    candidateFilter += ` AND c.ai_seniority = $${params.length}`;
   }
   if (filters.source?.length) {
     params.push(filters.source);
-    where += ` AND EXISTS (SELECT 1 FROM candidate_sources cs WHERE cs.candidate_id=c.id AND cs.source_type = ANY($${params.length}))`;
+    candidateFilter += ` AND EXISTS (SELECT 1 FROM candidate_sources cs WHERE cs.candidate_id=c.id AND cs.source_type = ANY($${params.length}))`;
   }
-  const searchText = "coalesce(c.full_name,'') || ' ' || coalesce(c.current_role,'') || ' ' || coalesce(c.ai_summary,'') || ' ' || coalesce(array_to_string(c.ai_tags,' '),'') || ' ' || coalesce(doc.text,'')";
-  const normalizedSearchText = normalizedSqlText(searchText);
+  const candidateText = "coalesce(c.full_name,'') || ' ' || coalesce(c.current_role,'') || ' ' || coalesce(c.ai_summary,'')";
+  const candidateExpandedText = `${candidateText} || ' ' || coalesce(array_to_string(c.ai_tags,' '),'')`;
+  const documentText = "coalesce(d.raw_text,'') || ' ' || coalesce(d.file_name,'')";
   const { rows } = await q(
-    `SELECT c.*,
+    `WITH candidate_hits AS (
+       SELECT c.id,
+         greatest(
+           CASE
+             WHEN to_tsvector('spanish', ${candidateText}) @@ plainto_tsquery('spanish', $1)
+             THEN 1 + ts_rank_cd(to_tsvector('spanish', ${candidateText}), plainto_tsquery('spanish', $1))
+             ELSE 0
+           END,
+           0.02 + ts_rank_cd(to_tsvector('spanish', ${candidateExpandedText}), websearch_to_tsquery('spanish', $2))
+         ) AS rank
+       FROM candidates c
+       WHERE ${candidateFilter}
+         AND (
+           to_tsvector('spanish', ${candidateText}) @@ plainto_tsquery('spanish', $1)
+           OR to_tsvector('spanish', ${candidateExpandedText}) @@ websearch_to_tsquery('spanish', $2)
+         )
+
+       UNION ALL
+
+       SELECT d.candidate_id AS id,
+         max(greatest(
+           CASE
+             WHEN to_tsvector('spanish', ${documentText}) @@ plainto_tsquery('spanish', $1)
+             THEN 1 + ts_rank_cd(to_tsvector('spanish', ${documentText}), plainto_tsquery('spanish', $1))
+             ELSE 0
+           END,
+           0.02 + ts_rank_cd(to_tsvector('spanish', ${documentText}), websearch_to_tsquery('spanish', $2))
+         )) AS rank
+       FROM documents d
+       JOIN candidates c ON c.id=d.candidate_id
+       WHERE ${candidateFilter}
+         AND (
+           to_tsvector('spanish', ${documentText}) @@ plainto_tsquery('spanish', $1)
+           OR to_tsvector('spanish', ${documentText}) @@ websearch_to_tsquery('spanish', $2)
+         )
+       GROUP BY d.candidate_id
+     ), matched AS (
+       SELECT id, max(rank) AS rank
+       FROM candidate_hits
+       GROUP BY id
+     ), top_matches AS (
+       SELECT m.id, m.rank
+       FROM matched m
+       JOIN candidates c ON c.id=m.id
+       WHERE EXISTS (SELECT 1 FROM documents available_doc WHERE available_doc.candidate_id=c.id)
+       ORDER BY m.rank DESC, c.quality_score DESC, c.updated_at DESC
+       LIMIT 100
+     )
+     SELECT c.*,
       coalesce(src.source_count, 0)::int AS source_count,
       coalesce(doc.document_count, 0)::int AS document_count,
       doc.primary_document_name,
-      left(coalesce(doc.text, ''), 1200) AS document_snippet,
-      ts_rank_cd(to_tsvector('spanish', ${searchText}), plainto_tsquery('spanish', $1)) AS rank
-     FROM candidates c
+      left(coalesce(doc.document_snippet, ''), 1200) AS document_snippet,
+      top_matches.rank
+     FROM top_matches
+     JOIN candidates c ON c.id=top_matches.id
      LEFT JOIN LATERAL (
        SELECT
-         string_agg(coalesce(d.raw_text,'') || ' ' || coalesce(d.file_name,''), ' ') AS text,
          count(*)::int AS document_count,
-         (array_agg(d.file_name ORDER BY d.is_primary_cv DESC, d.created_at DESC))[1] AS primary_document_name
+         (array_agg(d.file_name ORDER BY
+           (to_tsvector('spanish', ${documentText}) @@ websearch_to_tsquery('spanish', $2)) DESC,
+           d.is_primary_cv DESC,
+           d.created_at DESC
+         ))[1] AS primary_document_name,
+         (array_agg(d.raw_text ORDER BY
+           (to_tsvector('spanish', ${documentText}) @@ websearch_to_tsquery('spanish', $2)) DESC,
+           d.is_primary_cv DESC,
+           d.created_at DESC
+         ) FILTER (WHERE nullif(d.raw_text, '') IS NOT NULL))[1] AS document_snippet
        FROM documents d
        WHERE d.candidate_id = c.id
      ) doc ON true
@@ -115,24 +174,7 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
        FROM candidate_sources cs
        WHERE cs.candidate_id = c.id
      ) src ON true
-     ${where}
-       AND coalesce(doc.document_count, 0) > 0
-       AND (
-         to_tsvector('spanish', ${searchText}) @@ plainto_tsquery('spanish', $1)
-         OR c.full_name ILIKE $2
-         OR coalesce(c.current_role,'') ILIKE $2
-         OR coalesce(c.ai_summary,'') ILIKE $2
-         OR array_to_string(c.ai_tags,' ') ILIKE $2
-         OR coalesce(doc.text,'') ILIKE $2
-         OR ${normalizedSearchText} ILIKE $4
-         OR EXISTS (
-           SELECT 1
-           FROM unnest($3::text[]) term
-           WHERE ${searchText} ILIKE term OR ${normalizedSearchText} ILIKE term
-         )
-       )
-     ORDER BY rank DESC, c.quality_score DESC, c.updated_at DESC
-     LIMIT 20`,
+     ORDER BY top_matches.rank DESC, c.quality_score DESC, c.updated_at DESC`,
     params
   );
   return rows.map((row) => ({

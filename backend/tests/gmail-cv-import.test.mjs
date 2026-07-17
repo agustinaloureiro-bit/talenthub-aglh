@@ -7,6 +7,26 @@ process.env.JWT_SECRET ??= "test-secret";
 process.env.ADMIN_EMAIL ??= "admin@example.com";
 process.env.ADMIN_PASSWORD ??= "password";
 
+test("genera la misma huella para el mismo CV y distingue contenido diferente", async () => {
+  const { documentContentHash } = await import("../dist/services/candidateIngestion.js");
+  const first = documentContentHash(Buffer.from("mismo archivo"), null);
+  const repeated = documentContentHash(Buffer.from("mismo archivo"), "texto ignorado porque existe archivo");
+  const different = documentContentHash(Buffer.from("archivo diferente"), null);
+
+  assert.equal(first, repeated);
+  assert.notEqual(first, different);
+  assert.match(first, /^[a-f0-9]{64}$/);
+});
+
+test("usa el texto extraido como identidad estable cuando no hay archivo guardado", async () => {
+  const { documentContentHash } = await import("../dist/services/candidateIngestion.js");
+  const first = documentContentHash(null, "CV de la misma persona");
+  const repeated = documentContentHash(null, "CV de la misma persona");
+
+  assert.equal(first, repeated);
+  assert.match(first, /^text-sha256:[a-f0-9]{64}$/);
+});
+
 test("Gmail no crea candidatos desde correos administrativos sin nombre real", async () => {
   const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
   const candidate = candidateFromFreeText(

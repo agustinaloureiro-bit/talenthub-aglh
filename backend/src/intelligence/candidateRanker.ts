@@ -131,8 +131,17 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
       const score = interpreted.roles.length > 0 && !primaryRoleMatches(candidate, interpreted)
         ? Math.min(89, rawScore)
         : rawScore;
-      return { ...candidate, score, matchReason: explainCandidateMatch({ ...candidate, score }, interpreted), matchCoverage: conceptCoverage };
+      return {
+        ...candidate,
+        score,
+        matchReason: explainCandidateMatch({ ...candidate, score }, interpreted),
+        matchCoverage: conceptCoverage,
+        primaryRoleAligned: primaryRoleMatches(candidate, interpreted)
+      };
     })
-    .sort((a, b) => (b.matchCoverage?.ratio ?? 0) - (a.matchCoverage?.ratio ?? 0) || b.score - a.score || b.qualityScore - a.qualityScore)
-    .map(({ matchCoverage, ...candidate }) => candidate);
+    .sort((a, b) => (b.matchCoverage?.ratio ?? 0) - (a.matchCoverage?.ratio ?? 0)
+      || Number(b.primaryRoleAligned) - Number(a.primaryRoleAligned)
+      || b.score - a.score
+      || b.qualityScore - a.qualityScore)
+    .map(({ matchCoverage, primaryRoleAligned, ...candidate }) => candidate);
 }

@@ -1,4 +1,5 @@
 import type { CandidateImport } from "../agents/types.js";
+import { createHash } from "crypto";
 import { q } from "../db/pool.js";
 
 export type CandidateImportResult = "new" | "updated" | "skipped";
@@ -119,6 +120,12 @@ function documentFileBuffer(value: string | null | undefined) {
   }
 }
 
+export function documentContentHash(fileData: Buffer | null, rawText: string | null | undefined) {
+  if (fileData?.length) return createHash("sha256").update(fileData).digest("hex");
+  const text = cleanDbText(rawText);
+  return text ? `text-sha256:${createHash("sha256").update(text).digest("hex")}` : null;
+}
+
 async function saveSource(candidateId: string, sourceType: string, candidate: CandidateImport) {
   const existing = await q<{ id: string }>(
     "SELECT id FROM candidate_sources WHERE candidate_id=$1 AND source_type=$2 AND coalesce(source_id,'')=coalesce($3,'') LIMIT 1",
@@ -163,14 +170,22 @@ async function saveDocuments(candidateId: string, sourceType: string, candidate:
     const fileData = documentFileBuffer(document.fileDataBase64);
     if (!document.fileUrl && !document.sourcePath && !document.sourceId && !document.rawText && !fileData) continue;
     const fileName = document.fileName || `${candidate.fullName} - ${document.type}`;
+    const fileHash = cleanDbText(document.fileHash) ?? documentContentHash(fileData, document.rawText);
     const existing = await q<{ id: string }>(
       `SELECT id FROM documents
        WHERE candidate_id=$1
-         AND type=$2
-         AND coalesce(file_url,'')=coalesce($3,'')
-         AND coalesce(source_id,'')=coalesce($4,'')
+         AND (
+           ($2::text IS NOT NULL AND file_hash=$2)
+           OR ($3::text IS NOT NULL AND source_type=$4 AND source_id=$3)
+           OR ($7::text IS NOT NULL AND raw_text=$7)
+           OR (
+             $2::text IS NULL AND $3::text IS NULL AND $7::text IS NULL
+             AND type=$5
+             AND coalesce(file_url,'')=coalesce($6,'')
+           )
+         )
        LIMIT 1`,
-      [candidateId, document.type, document.fileUrl, document.sourceId]
+      [candidateId, fileHash, document.sourceId, sourceType, document.type, document.fileUrl, document.rawText]
     );
 
     if (existing.rows[0]) {
@@ -181,19 +196,19 @@ async function saveDocuments(candidateId: string, sourceType: string, candidate:
           raw_text=coalesce($3,raw_text),
           mime_type=coalesce($4,mime_type),
           source_path=coalesce($5,source_path),
-          is_primary_cv=$6,
+          is_primary_cv=is_primary_cv OR $6,
           file_data=coalesce($7,file_data),
           size_bytes=coalesce($8,size_bytes),
           file_hash=coalesce($9,file_hash),
           file_data_saved_at=case when $7::bytea is not null then now() else file_data_saved_at end
          WHERE id=$10`,
-        [fileName, document.fileUrl, document.rawText, document.mimeType, document.sourcePath, Boolean(document.isPrimaryCv), fileData, document.sizeBytes ?? fileData?.byteLength ?? null, document.fileHash, existing.rows[0].id]
+        [fileName, document.fileUrl, document.rawText, document.mimeType, document.sourcePath, Boolean(document.isPrimaryCv), fileData, document.sizeBytes ?? fileData?.byteLength ?? null, fileHash, existing.rows[0].id]
       );
     } else {
       await q(
         `INSERT INTO documents (candidate_id, type, file_name, file_url, raw_text, mime_type, source_type, source_id, source_path, is_primary_cv, file_data, size_bytes, file_hash, file_data_saved_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,case when $11::bytea is not null then now() else null end)`,
-        [candidateId, document.type, fileName, document.fileUrl ?? document.sourcePath, document.rawText, document.mimeType, sourceType, document.sourceId, document.sourcePath, Boolean(document.isPrimaryCv), fileData, document.sizeBytes ?? fileData?.byteLength ?? null, document.fileHash]
+        [candidateId, document.type, fileName, document.fileUrl ?? document.sourcePath, document.rawText, document.mimeType, sourceType, document.sourceId, document.sourcePath, Boolean(document.isPrimaryCv), fileData, document.sizeBytes ?? fileData?.byteLength ?? null, fileHash]
       );
     }
   }
