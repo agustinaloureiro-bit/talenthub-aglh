@@ -62,7 +62,7 @@ const nav = [
   ["candidates", Users, "Candidatos"],
   ["ai", Bot, "AGLH AI"],
   ["integrations", Plug, "Integraciones"],
-  ["settings", Settings, "ConfiguraciÃ³n"]
+  ["settings", Settings, "Configuración"]
 ] as const;
 
 export function App() {
@@ -102,7 +102,7 @@ export function App() {
             <h1 className="text-lg font-bold">{titleFor(page)}</h1>
           </div>
           <div className="flex items-center gap-3 text-sm">
-            <span className="text-slate-500">{user.name} Â· {user.role}</span>
+            <span className="text-slate-500">{user.name} · {user.role}</span>
             <button className="btn-ghost" onClick={() => { logout(); setUser(null); }}><LogOut size={16} /></button>
           </div>
         </header>
@@ -119,7 +119,7 @@ export function App() {
 }
 
 function titleFor(page: Page) {
-  return ({ dashboard: "Dashboard", finder: "Talent Finder", candidates: "Candidatos", candidate: "Ficha de candidato", ai: "AGLH AI", integrations: "Integraciones", settings: "ConfiguraciÃ³n" } as Record<Page, string>)[page];
+  return ({ dashboard: "Dashboard", finder: "Talent Finder", candidates: "Candidatos", candidate: "Ficha de candidato", ai: "AGLH AI", integrations: "Integraciones", settings: "Configuración" } as Record<Page, string>)[page];
 }
 
 function Login({ onLogin }: { onLogin: (user: User) => void }) {
@@ -143,7 +143,7 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
         {error && <ErrorBox message={error} />}
         <label className="label">Email</label>
         <input className="field mb-3" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-        <label className="label">ContraseÃ±a</label>
+        <label className="label">Contraseña</label>
         <input className="field mb-5" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
         <button className="btn-primary w-full" disabled={loading}>{loading ? "Ingresando..." : "Ingresar"}</button>
       </form>
@@ -166,7 +166,7 @@ function Dashboard() {
   return (
     <PagePad>
       <div className="mb-6 grid gap-4 md:grid-cols-4">{metrics.map(([label, value]) => <div className="card p-5" key={label}><div className="text-sm text-slate-500">{label}</div><div className="mt-2 text-3xl font-extrabold">{value}</div></div>)}</div>
-      <Table title="Sincronizaciones recientes" rows={data.syncLogs} empty="TodavÃ­a no hay sincronizaciones registradas." columns={["source", "status", "new_records", "updated_records", "errors"]} />
+      <Table title="Sincronizaciones recientes" rows={data.syncLogs} empty="Todavía no hay sincronizaciones registradas." columns={["source", "status", "new_records", "updated_records", "errors"]} />
     </PagePad>
   );
 }
@@ -203,7 +203,7 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
         <button className="btn-primary" onClick={() => setShowForm(!showForm)}><Plus size={16} /> Nuevo candidato</button>
       </div>
       {error && <ErrorBox message={error} />}
-      {!error && meta && <div className="mb-3 text-sm text-slate-500">{meta.total} candidatos en base Â· mostrando {meta.returned}</div>}
+      {!error && meta && <div className="mb-3 text-sm text-slate-500">{meta.total} candidatos en base · mostrando {meta.returned}</div>}
       {showImport && <CandidateImportPanel onImported={() => { setShowImport(false); load(); }} />}
       {showForm && <CandidateForm onSaved={() => { setShowForm(false); load(); }} />}
       <div className="grid gap-3">
@@ -304,11 +304,11 @@ function CandidateForm({ onSaved }: { onSaved: () => void }) {
       <Input label="Nombre completo" value={form.fullName} onChange={(v) => setForm({ ...form, fullName: v })} required />
       <Input label="Rol actual" value={form.currentRole} onChange={(v) => setForm({ ...form, currentRole: v })} />
       <Input label="Ciudad" value={form.city} onChange={(v) => setForm({ ...form, city: v })} />
-      <Input label="PaÃ­s" value={form.country} onChange={(v) => setForm({ ...form, country: v })} />
+      <Input label="País" value={form.country} onChange={(v) => setForm({ ...form, country: v })} />
       <Input label="Emails separados por coma" value={form.email} onChange={(v) => setForm({ ...form, email: v })} />
-      <Input label="TelÃ©fonos separados por coma" value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} />
+      <Input label="Teléfonos separados por coma" value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} />
       <Input label="Seniority" value={form.seniority} onChange={(v) => setForm({ ...form, seniority: v })} />
-      <Input label="AÃ±os" type="number" value={String(form.years)} onChange={(v) => setForm({ ...form, years: Number(v) })} />
+      <Input label="Años" type="number" value={String(form.years)} onChange={(v) => setForm({ ...form, years: Number(v) })} />
       <Input label="Tags separados por coma" value={form.tags} onChange={(v) => setForm({ ...form, tags: v })} />
       <div className="md:col-span-2"><label className="label">Resumen</label><textarea className="field" value={form.summary} onChange={(e) => setForm({ ...form, summary: e.target.value })} /></div>
       <button className="btn-primary md:col-span-2"><Save size={16} /> Guardar candidato</button>
@@ -342,7 +342,7 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
   }
   return (
     <PagePad>
-      <textarea className="field min-h-36" placeholder="PegÃ¡ o escribÃ­ la descripciÃ³n del cargo..." value={query} onChange={(e) => setQuery(e.target.value)} />
+      <textarea className="field min-h-36" placeholder="Pegá o escribí la descripción del cargo..." value={query} onChange={(e) => setQuery(e.target.value)} />
       <div className="my-3 flex flex-wrap items-center gap-3">
         <select className="field max-w-48" value={seniority} onChange={(e) => setSeniority(e.target.value)}><option value="">Todo seniority</option><option>Junior</option><option>Semi-Senior</option><option>Senior</option><option>Lead</option><option>Manager</option></select>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)} /> Solo activos</label>
@@ -373,17 +373,17 @@ function CandidateProfile({ id, canEdit }: { id: string; canEdit: boolean }) {
     <PagePad>
       <section className="card mb-4 p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="flex min-w-0 gap-4"><Avatar name={c.fullName} /><div className="min-w-0"><h2 className="break-words text-2xl font-extrabold">{c.fullName}</h2><p className="text-slate-500">{c.currentRole || "Sin rol actual"} Â· {[c.city, c.country].filter(Boolean).join(", ") || "Sin ubicacion"}</p><TagList tags={c.tags} />{primaryDocument && <p className="mt-2 flex items-center gap-2 text-sm text-slate-500"><FileText size={15} /> {shortText(primaryDocument.file_name, 120)}</p>}</div></div>
+          <div className="flex min-w-0 gap-4"><Avatar name={c.fullName} /><div className="min-w-0"><h2 className="break-words text-2xl font-extrabold">{c.fullName}</h2><p className="text-slate-500">{c.currentRole || "Sin rol actual"} · {[c.city, c.country].filter(Boolean).join(", ") || "Sin ubicación"}</p><TagList tags={c.tags} />{primaryDocument && <p className="mt-2 flex items-center gap-2 text-sm text-slate-500"><FileText size={15} /> {shortText(primaryDocument.file_name, 120)}</p>}</div></div>
           <div className="inline-flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800"><CheckCircle2 size={16} /> {primaryDocument ? "CV disponible" : "Sin CV"}</div>
         </div>
       </section>
       <div className="mb-4 flex flex-wrap gap-2">{["resumen", "experiencia", "formacion", "documentos", "procesos", "ia"].map((t) => <button key={t} onClick={() => setTab(t)} className={tab === t ? "btn-primary" : "btn-ghost"}>{t}</button>)}</div>
       {tab === "resumen" && <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]"><div className="grid gap-4"><InfoCard title="Resumen respaldado por el CV" text={summary} /><CvAnalysisCard analysis={cvAnalysis} /><KeyDataCard candidate={c} document={primaryDocument} /></div><div className="grid gap-4"><ContactCard candidate={c} /><DocumentMiniCard candidateId={id} document={primaryDocument} onOpenDocuments={() => setTab("documentos")} /></div></div>}
       {tab === "experiencia" && <ChildList rows={data.work} empty="Sin experiencia registrada." fields={["company", "position", "start_date", "end_date", "description"]} canEdit={canEdit} kind="work" id={id} onSaved={load} />}
-      {tab === "formacion" && <ChildList rows={data.education} empty="Sin formaciÃ³n registrada." fields={["institution", "degree", "field", "start_year", "end_year"]} canEdit={canEdit} kind="education" id={id} onSaved={load} />}
+      {tab === "formacion" && <ChildList rows={data.education} empty="Sin formación registrada." fields={["institution", "degree", "field", "start_year", "end_year"]} canEdit={canEdit} kind="education" id={id} onSaved={load} />}
       {tab === "documentos" && <ChildList rows={documents} empty="Sin documentos registrados." fields={["type", "file_name", "source_type", "created_at"]} canEdit={canEdit} kind="documents" id={id} onSaved={load} />}
       {tab === "procesos" && <ChildList rows={data.processes} empty="Sin procesos registrados." fields={["process_name", "client", "stage", "event_date"]} canEdit={canEdit} kind="processes" id={id} onSaved={load} />}
-      {tab === "ia" && <div className="grid gap-4 md:grid-cols-3"><InfoCard title="Fortalezas" text={c.strengths?.join("\n") || "Sin fortalezas registradas."} /><InfoCard title="Ãreas de oportunidad" text={c.weaknesses?.join("\n") || "Sin Ã¡reas registradas."} /><InfoCard title="Seniority" text={`${c.seniority || "Sin estimaciÃ³n"} ${c.years ? `Â· ${c.years} aÃ±os` : ""}`} /></div>}
+      {tab === "ia" && <div className="grid gap-4 md:grid-cols-3"><InfoCard title="Fortalezas" text={c.strengths?.join("\n") || "Sin fortalezas registradas."} /><InfoCard title="Áreas de oportunidad" text={c.weaknesses?.join("\n") || "Sin áreas registradas."} /><InfoCard title="Seniority" text={`${c.seniority || "Sin estimación"} ${c.years ? `· ${c.years} años` : ""}`} /></div>}
     </PagePad>
   );
 }
@@ -417,7 +417,7 @@ function Chat({ onView }: { onView: (id: string) => void }) {
   const loadSessions = () => api<{ data: any[] }>("/chat/sessions").then((r) => { setSessions(r.data); if (!session && r.data[0]) setSession(r.data[0].id); });
   useEffect(() => { loadSessions(); }, []);
   useEffect(() => { if (session) api<{ data: any[] }>(`/chat/sessions/${session}/messages`).then((r) => setMessages(r.data)); }, [session]);
-  async function newSession() { const r = await api<{ data: any }>("/chat/sessions", { method: "POST", body: JSON.stringify({ title: "Nueva conversaciÃ³n" }) }); setSession(r.data.id); loadSessions(); }
+  async function newSession() { const r = await api<{ data: any }>("/chat/sessions", { method: "POST", body: JSON.stringify({ title: "Nueva conversación" }) }); setSession(r.data.id); loadSessions(); }
   async function send() {
     if (!session || !input.trim()) return;
     const text = input; setInput("");
@@ -570,7 +570,7 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
       setBulkOpen(false);
       load();
     } catch (err: any) {
-      setBulkError(err.message || "JSON invÃ¡lido");
+      setBulkError(err.message || "JSON inválido");
     }
   }
   const template = `{
@@ -849,7 +849,7 @@ function IntegrationConfigPanel({ integration, onSaved }: { integration: any; on
       setSaving(false);
     }
   }
-  return <form onSubmit={saveConfig} className="mt-4 grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-4">{error && <ErrorBox message={error} />}<div className="grid gap-3 md:grid-cols-2"><Input label="URL o endpoint" value={form.baseUrl} onChange={(v) => setForm({ ...form, baseUrl: v })} /><Input label="Usuario/email" value={form.username} onChange={(v) => setForm({ ...form, username: v })} /><Input label="API key/token" type="password" value={form.apiKey} onChange={(v) => setForm({ ...form, apiKey: v })} /><Input label="ContraseÃ±a" type="password" value={form.password} onChange={(v) => setForm({ ...form, password: v })} /></div><div><label className="label">SesiÃ³n/cookies exportadas</label><textarea className="field min-h-28" placeholder="PegÃ¡ acÃ¡ cookies JSON o header Cookie de tu cuenta, si esa fuente lo permite." value={form.sessionCookies} onChange={(e) => setForm({ ...form, sessionCookies: e.target.value })} /></div><div><label className="label">Notas internas</label><textarea className="field min-h-20" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div><button className="btn-primary w-fit" disabled={saving}><Save size={16} /> {saving ? "Guardando..." : "Guardar configuraciÃ³n"}</button></form>;
+  return <form onSubmit={saveConfig} className="mt-4 grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-4">{error && <ErrorBox message={error} />}<div className="grid gap-3 md:grid-cols-2"><Input label="URL o endpoint" value={form.baseUrl} onChange={(v) => setForm({ ...form, baseUrl: v })} /><Input label="Usuario/email" value={form.username} onChange={(v) => setForm({ ...form, username: v })} /><Input label="API key/token" type="password" value={form.apiKey} onChange={(v) => setForm({ ...form, apiKey: v })} /><Input label="Contraseña" type="password" value={form.password} onChange={(v) => setForm({ ...form, password: v })} /></div><div><label className="label">Sesión/cookies exportadas</label><textarea className="field min-h-28" placeholder="Pegá acá cookies JSON o header Cookie de tu cuenta, si esa fuente lo permite." value={form.sessionCookies} onChange={(e) => setForm({ ...form, sessionCookies: e.target.value })} /></div><div><label className="label">Notas internas</label><textarea className="field min-h-20" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div><button className="btn-primary w-fit" disabled={saving}><Save size={16} /> {saving ? "Guardando..." : "Guardar configuración"}</button></form>;
 }
 
 function SettingsPage({ canEdit }: { canEdit: boolean }) {
