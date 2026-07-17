@@ -88,6 +88,11 @@ function sanitizeCandidate(candidate: CandidateImport): CandidateImport {
     currentRole: cleanCurrentRole(candidate.currentRole, tags),
     seniority: cleanDbText(candidate.seniority),
     tags,
+    languages: (candidate.languages ?? []).map((language) => ({
+      lang: cleanDbText(language.lang) ?? language.lang,
+      level: cleanDbText(language.level),
+      evidence: cleanDbText(language.evidence) ?? undefined
+    })),
     summary: cleanDbText(candidate.summary),
     sourceId: cleanDbText(candidate.sourceId),
     sourceUrl: cleanDbText(candidate.sourceUrl),
@@ -242,14 +247,15 @@ export async function importCandidate(sourceType: string, candidate: CandidateIm
         ai_seniority=coalesce($10, ai_seniority),
         ai_seniority_years=coalesce($11, ai_seniority_years),
         ai_tags=coalesce((SELECT array_agg(DISTINCT value) FROM unnest(ai_tags || $12::text[]) AS value), '{}'::text[]),
-        ai_summary=coalesce($13, ai_summary),
+        ai_languages=case when jsonb_array_length($13::jsonb) > 0 then $13::jsonb else ai_languages end,
+        ai_summary=coalesce($14, ai_summary),
         updated_at=now(),
         last_seen_at=now()
-       WHERE id=$14
+       WHERE id=$15
        RETURNING id`,
       [candidate.fullName, candidate.firstName, candidate.lastName, candidate.email, candidate.phone, candidate.city,
         candidate.country, candidate.linkedinUrl, candidate.currentRole, candidate.seniority, candidate.years,
-        candidate.tags, candidate.summary, existingId]
+        candidate.tags, JSON.stringify(candidate.languages ?? []), candidate.summary, existingId]
     );
     const updatedId = updated.rows[0]?.id;
     if (updatedId) {
@@ -261,12 +267,12 @@ export async function importCandidate(sourceType: string, candidate: CandidateIm
 
   const inserted = await q<{ id: string }>(
     `INSERT INTO candidates (full_name, first_name, last_name, email, phone, city, country, linkedin_url, "current_role",
-      ai_seniority, ai_seniority_years, ai_tags, ai_summary, quality_score, status, last_seen_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'active',now())
+      ai_seniority, ai_seniority_years, ai_tags, ai_languages, ai_summary, quality_score, status, last_seen_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14,$15,'active',now())
      RETURNING id`,
     [candidate.fullName, candidate.firstName, candidate.lastName, candidate.email, candidate.phone, candidate.city,
       candidate.country, candidate.linkedinUrl, candidate.currentRole, candidate.seniority, candidate.years,
-      candidate.tags, candidate.summary, candidate.qualityScore]
+      candidate.tags, JSON.stringify(candidate.languages ?? []), candidate.summary, candidate.qualityScore]
   );
   await saveSource(inserted.rows[0].id, sourceType, candidate);
   await saveDocuments(inserted.rows[0].id, sourceType, candidate);

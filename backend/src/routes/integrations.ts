@@ -8,6 +8,7 @@ import { asyncHandler } from "../middleware/errors.js";
 import { requireRole } from "../middleware/auth.js";
 import { config as appConfig } from "../config.js";
 import { importCandidate } from "../services/candidateIngestion.js";
+import { analyzeCvText } from "../services/cvAnalysis.js";
 import type { AgentSyncResult, CandidateImport, SourceConnector } from "../connectors/types.js";
 
 export const integrationsRouter = Router();
@@ -1062,23 +1063,35 @@ export function candidateFromFreeText(sourceType: string, text: string, options:
   if (sourceType === "gmail" && /google cloud team|google workspace team|google team|microsoft account team|linkedin notifications/i.test(fullName)) return null;
   if ((sourceType === "gmail" || sourceType === "drive") && !candidateNameLooksReal(realName)) return null;
 
-  const roleFromText = detectedRoleTags(content)[0] ?? content.match(/(?:cargo|puesto|rol|postulaci[oó]n)\s*[:\-]\s*([^.;\n\r]{3,70})/i)?.[1];
+  const analysis = analyzeCvText(content);
+  const roleFromText = analysis.roles[0] ?? content.match(/(?:cargo|puesto|rol|postulaci[oó]n)\s*[:\-]\s*([^.;\n\r]{3,70})/i)?.[1];
   const fallbackRole = sourceType === "gmail" || sourceType === "drive" ? null : options.currentRole;
   const role = compactLabel(roleFromText ?? fallbackRole, "Candidato importado");
-  const languageTags = detectedLanguages(content);
-  const roleTags = detectedRoleTags(content);
-  const years = detectedExperienceYears(content);
+  const languageTags = analysis.languages.map((language) => language.lang);
+  const roleTags = analysis.roles;
+  const years = analysis.years;
+  const qualityScore = Math.min(100,
+    20
+    + (email.length ? 15 : 0)
+    + (phone.length ? 15 : 0)
+    + (analysis.hasReadableText ? 15 : 0)
+    + (roleTags.length ? 15 : 0)
+    + (analysis.experienceHighlights.length ? 10 : 0)
+    + (analysis.educationHighlights.length ? 5 : 0)
+    + (analysis.languages.length ? 5 : 0)
+  );
   return {
     fullName,
     email,
     phone,
-    city: content.match(/(?:Montevideo|Canelones|Maldonado|San Jose|Colonia|Florida|Rocha|Paysandu|Salto|Rivera|Tacuarembo|Durazno|Soriano|Lavalleja|Artigas|Cerro Largo|Flores|Rio Negro|Treinta y Tres)/i)?.[0] ?? null,
-    country: "Uruguay",
+    city: analysis.city,
+    country: analysis.country,
     currentRole: role,
     years,
-    tags: safeTags([role, ...roleTags, ...languageTags], sourceType),
-    summary: documentSummary(content, role),
-    qualityScore: Math.min(100, 30 + (email.length ? 15 : 0) + (phone.length ? 15 : 0) + (roleTags.length ? 20 : 0) + (languageTags.length ? 10 : 0) + (content.length > 800 ? 10 : 0)),
+    tags: safeTags([role, ...roleTags, ...analysis.skills, ...languageTags], sourceType),
+    languages: analysis.languages,
+    summary: analysis.summary,
+    qualityScore,
     sourceId: options.sourceId ?? `${sourceType}:${email[0] ?? phone[0] ?? fullName}`,
     sourceUrl: options.sourceUrl ?? null,
     documents: [{
@@ -2260,6 +2273,11 @@ function looksLikeOfferText(value: unknown) {
   return /buscamos|estamos buscando|importante empresa|requisitos|principales tareas|tareas:|jornada|carnet|perfil psicografico|postulantes|candidatos|oferta|\[object Object\]/i.test(cleanText(value));
 }
 
+export function isClearlyGenericCandidateName(name: string) {
+  const normalized = name.replace(/\s+/g, " ").trim().toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "");
+  return /^(atencion al cliente|auxiliar administrativ[oa]|administrativ[oa]|asesor(?:a)? comercial|ejecutiv[oa] comercial|vendedor(?:a)?|ventas(?: y marketing)?|recursos humanos|servicios generales|operador(?:a)?|recepcionista|cajer[oa]|repositor(?:a)?|logistica(?: y produccion)?|gastronomia|marketing|diseno grafico|desarrollador(?:a)?|programador(?:a)?|contador(?:a)?|abogad[oa]|enfermer[oa]|tecnico(?: especialista)?|mantenimiento|produccion|supervisor(?:a)?|encargad[oa])$/i.test(normalized);
+}
+
 function candidateNameLooksReal(name: string) {
   const cleaned = name.replace(/\s+/g, " ").trim();
   const words = cleaned.split(/\s+/).filter(Boolean);
@@ -2267,6 +2285,7 @@ function candidateNameLooksReal(name: string) {
   if (words.length < 2 || words.length > 6) return false;
   if (/\b(re|fw|fwd|gallito|postulame|postularme|postulaci[oó]n|postulaciones|vacante|vacantes|futuras|solicitud|empleo|trabajo|curriculum|curr[ií]culo|curriculo|curiculum|curriculun|curriculm|corriculun|corriculum|vitae|adjunto|consulta|buenas|hola|estimados|comparto|env[ií]o|envio|extracted|extracto|experiencia|laboral|deposito|dep[oó]sito|limpieza|atenci[oó]n|cliente|profesional|creativo|juvenil|femenino|morado|rosado|rosa|plantilla|modelo|minimalista|minimalist|mujer|hombre|persona|proactiv[oa]|organizada?|responsable|auxiliar|enfermer[ií]a|reponedor|pickers?|copia|imprimir|chofer|cadete|audiovisual|foto|photo|imagen|image|sencillo|cl[aá]sico|clasico|blanco|beige|simple|compressed|comprimido|ultimo|último|call|automation|financiero|financiera|especialista|gratis|solymarpdf|actividades?)\b/i.test(cleaned)) return false;
   if (/^(soy una|soy un|para\s+)/i.test(cleaned)) return false;
+  if (isClearlyGenericCandidateName(cleaned)) return false;
   if (/\b(fecha|nacimiento|domicilio|direcci[oó]n|cedula|c[eé]dula|documento|telefono|tel[eé]fono|celular|email|correo|uruguay)\b/i.test(cleaned)) return false;
   if (/\b(de|del|de la|la|las|los|y)$/i.test(cleaned)) return false;
   if (/\d/.test(cleaned)) return false;

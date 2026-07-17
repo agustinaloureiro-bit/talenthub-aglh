@@ -25,6 +25,7 @@ export type CandidateImport = {
   seniority?: string | null;
   years?: number | null;
   tags: string[];
+  languages?: Array<{ lang: string; level?: string | null; evidence?: string }>;
   summary?: string | null;
   qualityScore: number;
   sourceId?: string | null;

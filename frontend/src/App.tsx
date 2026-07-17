@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { AlertCircle, Bot, ChevronLeft, Database, Download, ExternalLink, FileText, LayoutDashboard, LogOut, Mail, Phone, Plug, Plus, Save, Search, Send, Settings, UserRound, Users } from "lucide-react";
+import { AlertCircle, Bot, Briefcase, CheckCircle2, ChevronLeft, Database, Download, ExternalLink, FileText, GraduationCap, Languages, LayoutDashboard, LogOut, Mail, MapPin, Phone, Plug, Plus, Save, Search, Send, Settings, UserRound, Users } from "lucide-react";
 import { API_URL, api, authHeaders, currentUser, login, logout, type User } from "./lib/api";
 
 type Page = "dashboard" | "finder" | "candidates" | "candidate" | "ai" | "integrations" | "settings";
@@ -38,6 +38,22 @@ type CandidateDocument = {
   source_path?: string | null;
   created_at?: string;
   is_primary_cv?: boolean;
+  has_stored_file?: boolean;
+};
+
+type CvAnalysis = {
+  hasReadableText: boolean;
+  summary?: string | null;
+  roles: string[];
+  skills: string[];
+  languages: Array<{ lang: string; level?: string | null; evidence?: string }>;
+  years?: number | null;
+  city?: string | null;
+  country?: string | null;
+  experienceHighlights: string[];
+  educationHighlights: string[];
+  confidence: "alta" | "media" | "baja";
+  warning?: string | null;
 };
 
 const nav = [
@@ -294,7 +310,6 @@ function CandidateForm({ onSaved }: { onSaved: () => void }) {
       <Input label="Seniority" value={form.seniority} onChange={(v) => setForm({ ...form, seniority: v })} />
       <Input label="AÃ±os" type="number" value={String(form.years)} onChange={(v) => setForm({ ...form, years: Number(v) })} />
       <Input label="Tags separados por coma" value={form.tags} onChange={(v) => setForm({ ...form, tags: v })} />
-      <Input label="Calidad 0-100" type="number" value={String(form.qualityScore)} onChange={(v) => setForm({ ...form, qualityScore: Number(v) })} />
       <div className="md:col-span-2"><label className="label">Resumen</label><textarea className="field" value={form.summary} onChange={(e) => setForm({ ...form, summary: e.target.value })} /></div>
       <button className="btn-primary md:col-span-2"><Save size={16} /> Guardar candidato</button>
     </form>
@@ -309,9 +324,11 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
   const [results, setResults] = useState<any[]>([]);
   const [searchStatus, setSearchStatus] = useState("");
   const [loading, setLoading] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
   async function run() {
     if (!query.trim()) return;
     setLoading(true);
+    setHasSearched(true);
     setSearchStatus(refreshSources ? "Actualizando fuentes conectadas y buscando..." : "Buscando...");
     try {
       const response = await api<{ data: any[]; sync?: { ran: boolean; sources: number; imported: number; errors: number } }>("/search/talent", { method: "POST", body: JSON.stringify({ query, refreshSources, filters: { seniority: seniority || undefined, activeOnly } }) });
@@ -333,8 +350,8 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
         <button className="btn-primary" onClick={run} disabled={!query.trim() || loading}><Search size={16} /> {loading ? "Buscando..." : "Buscar candidatos"}</button>
       </div>
       {searchStatus && <div className="mb-3 rounded-md border border-slate-200 bg-white p-3 text-sm text-slate-600">{searchStatus}</div>}
-      <div className="mb-3 text-sm text-slate-500">{results.length} candidatos encontrados Â· ordenados por compatibilidad</div>
-      <div className="grid gap-3">{results.length === 0 && <Empty text="La bÃºsqueda todavÃ­a no devolviÃ³ candidatos reales." />}{results.map((c) => <CandidateRow key={c.id} candidate={{ ...c, qualityScore: c.score, sourceCount: c.sourceCount ?? 0, documentCount: c.documentCount ?? 0, primaryDocumentName: c.primaryDocumentName ?? null, email: c.email ?? [], phone: c.phone ?? [], languages: [], strengths: [], weaknesses: [], status: "active" }} onView={onView} reason={c.matchReason} />)}</div>
+      {hasSearched && <div className="mb-3 text-sm text-slate-500">{results.length} candidatos encontrados · ordenados por compatibilidad con esta búsqueda</div>}
+      <div className="grid gap-3">{!hasSearched && <Empty text="Escribí lo que necesitás para calcular la compatibilidad sobre los CVs." />}{hasSearched && !loading && results.length === 0 && <Empty text="La búsqueda no encontró candidatos con evidencia suficiente en los CVs disponibles." />}{results.map((c) => <CandidateRow key={c.id} candidate={{ ...c, sourceCount: c.sourceCount ?? 0, documentCount: c.documentCount ?? 0, primaryDocumentName: c.primaryDocumentName ?? null, email: c.email ?? [], phone: c.phone ?? [], languages: [], strengths: [], weaknesses: [], status: "active" }} onView={onView} reason={c.matchReason} matchScore={c.score} />)}</div>
     </PagePad>
   );
 }
@@ -350,17 +367,18 @@ function CandidateProfile({ id, canEdit }: { id: string; canEdit: boolean }) {
   const c: Candidate = data.data;
   const documents = (data.documents ?? []) as CandidateDocument[];
   const primaryDocument = documents.find((doc) => doc.is_primary_cv) ?? documents[0];
-  const summary = readableCandidateSummary(c, primaryDocument);
+  const cvAnalysis = data.cvAnalysis as CvAnalysis | undefined;
+  const summary = cleanDisplayText(cvAnalysis?.summary) || readableCandidateSummary(c, primaryDocument);
   return (
     <PagePad>
       <section className="card mb-4 p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex min-w-0 gap-4"><Avatar name={c.fullName} /><div className="min-w-0"><h2 className="break-words text-2xl font-extrabold">{c.fullName}</h2><p className="text-slate-500">{c.currentRole || "Sin rol actual"} Â· {[c.city, c.country].filter(Boolean).join(", ") || "Sin ubicacion"}</p><TagList tags={c.tags} />{primaryDocument && <p className="mt-2 flex items-center gap-2 text-sm text-slate-500"><FileText size={15} /> {shortText(primaryDocument.file_name, 120)}</p>}</div></div>
-          <Score score={c.qualityScore} />
+          <div className="inline-flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800"><CheckCircle2 size={16} /> {primaryDocument ? "CV disponible" : "Sin CV"}</div>
         </div>
       </section>
       <div className="mb-4 flex flex-wrap gap-2">{["resumen", "experiencia", "formacion", "documentos", "procesos", "ia"].map((t) => <button key={t} onClick={() => setTab(t)} className={tab === t ? "btn-primary" : "btn-ghost"}>{t}</button>)}</div>
-      {tab === "resumen" && <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]"><div className="grid gap-4"><InfoCard title="Resumen" text={summary} /><KeyDataCard candidate={c} document={primaryDocument} /></div><div className="grid gap-4"><ContactCard candidate={c} /><DocumentMiniCard candidateId={id} document={primaryDocument} onOpenDocuments={() => setTab("documentos")} /></div></div>}
+      {tab === "resumen" && <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]"><div className="grid gap-4"><InfoCard title="Resumen respaldado por el CV" text={summary} /><CvAnalysisCard analysis={cvAnalysis} /><KeyDataCard candidate={c} document={primaryDocument} /></div><div className="grid gap-4"><ContactCard candidate={c} /><DocumentMiniCard candidateId={id} document={primaryDocument} onOpenDocuments={() => setTab("documentos")} /></div></div>}
       {tab === "experiencia" && <ChildList rows={data.work} empty="Sin experiencia registrada." fields={["company", "position", "start_date", "end_date", "description"]} canEdit={canEdit} kind="work" id={id} onSaved={load} />}
       {tab === "formacion" && <ChildList rows={data.education} empty="Sin formaciÃ³n registrada." fields={["institution", "degree", "field", "start_year", "end_year"]} canEdit={canEdit} kind="education" id={id} onSaved={load} />}
       {tab === "documentos" && <ChildList rows={documents} empty="Sin documentos registrados." fields={["type", "file_name", "source_type", "created_at"]} canEdit={canEdit} kind="documents" id={id} onSaved={load} />}
@@ -409,7 +427,7 @@ function Chat({ onView }: { onView: (id: string) => void }) {
     setMessages(m.data);
     loadSessions();
   }
-  return <div className="flex flex-1 overflow-hidden"><aside className="w-72 border-r border-slate-200 bg-white p-4"><button className="btn-primary mb-4 w-full" onClick={newSession}><Plus size={16} /> Nueva conversaciÃ³n</button>{sessions.map((s) => <button key={s.id} onClick={() => setSession(s.id)} className={`mb-1 block w-full rounded-md px-3 py-2 text-left text-sm ${session === s.id ? "bg-teal/10 text-teal" : "hover:bg-slate-50"}`}>{s.title}</button>)}</aside><section className="flex flex-1 flex-col"><div className="flex-1 space-y-3 overflow-auto p-6">{messages.length === 0 && <Empty text="AbrÃ­ una conversaciÃ³n y consultÃ¡ sobre candidatos reales." />}{messages.map((m) => <div key={m.id} className={`max-w-2xl rounded-lg p-3 text-sm ${m.role === "user" ? "ml-auto bg-teal text-white" : "bg-white border border-slate-200"}`}>{m.content}</div>)}{candidates.map((c) => <CandidateRow key={c.id} candidate={{ ...c, qualityScore: c.score, sourceCount: 0, email: [], phone: [], languages: [], strengths: [], weaknesses: [], status: "active" }} onView={onView} />)}</div><div className="border-t border-slate-200 bg-white p-4"><div className="flex gap-2"><textarea className="field min-h-12" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} /><button className="btn-primary" onClick={send}><Send size={16} /></button></div></div></section></div>;
+  return <div className="flex flex-1 overflow-hidden"><aside className="w-72 border-r border-slate-200 bg-white p-4"><button className="btn-primary mb-4 w-full" onClick={newSession}><Plus size={16} /> Nueva conversación</button>{sessions.map((s) => <button key={s.id} onClick={() => setSession(s.id)} className={`mb-1 block w-full rounded-md px-3 py-2 text-left text-sm ${session === s.id ? "bg-teal/10 text-teal" : "hover:bg-slate-50"}`}>{s.title}</button>)}</aside><section className="flex flex-1 flex-col"><div className="flex-1 space-y-3 overflow-auto p-6">{messages.length === 0 && <Empty text="Abrí una conversación y consultá sobre candidatos reales." />}{messages.map((m) => <div key={m.id} className={`max-w-2xl rounded-lg p-3 text-sm ${m.role === "user" ? "ml-auto bg-teal text-white" : "bg-white border border-slate-200"}`}>{m.content}</div>)}{candidates.map((c) => <CandidateRow key={c.id} candidate={{ ...c, qualityScore: c.qualityScore ?? 0, sourceCount: c.sourceCount ?? 0, email: c.email ?? [], phone: c.phone ?? [], languages: [], strengths: [], weaknesses: [], status: "active" }} onView={onView} reason={c.matchReason} matchScore={c.score} />)}</div><div className="border-t border-slate-200 bg-white p-4"><div className="flex gap-2"><textarea className="field min-h-12" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} /><button className="btn-primary" onClick={send}><Send size={16} /></button></div></div></section></div>;
 }
 
 function Integrations({ canEdit }: { canEdit: boolean }) {
@@ -918,6 +936,19 @@ function KeyDataCard({ candidate, document }: { candidate: Candidate; document?:
   return <div className="card p-4"><h3 className="mb-3 font-bold">Datos clave</h3><div className="grid gap-2">{rows.map(([label, value]) => <div key={label} className="grid gap-1 rounded-md border border-slate-100 px-3 py-2 text-sm md:grid-cols-[130px_1fr]"><span className="font-semibold text-slate-500">{label}</span><span className="break-words text-slate-800">{value}</span></div>)}</div></div>;
 }
 
+function CvAnalysisCard({ analysis }: { analysis?: CvAnalysis }) {
+  if (!analysis?.hasReadableText) {
+    return <div className="card p-4"><h3 className="mb-2 font-bold">Información detectada</h3><p className="text-sm text-slate-500">No hay texto suficiente para analizar este CV con confianza. El archivo original sigue disponible para revisión.</p></div>;
+  }
+  const items = [
+    { icon: Briefcase, label: "Áreas y competencias", values: [...analysis.roles, ...analysis.skills] },
+    { icon: Languages, label: "Idiomas", values: analysis.languages.map((item) => `${item.lang}${item.level ? ` · ${item.level}` : " · nivel no indicado"}`) },
+    { icon: MapPin, label: "Ubicación", values: [[analysis.city, analysis.country].filter(Boolean).join(", ")].filter(Boolean) },
+    { icon: GraduationCap, label: "Formación mencionada", values: analysis.educationHighlights.slice(0, 3) }
+  ].filter((item) => item.values.length);
+  return <div className="card p-4"><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="font-bold">Información detectada en el CV</h3><span className={`rounded-full px-2 py-1 text-xs font-semibold ${analysis.confidence === "alta" ? "bg-emerald-50 text-emerald-700" : analysis.confidence === "media" ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-600"}`}>Confiabilidad {analysis.confidence}</span></div>{analysis.warning && <p className="mb-3 rounded-md bg-amber-50 p-3 text-sm text-amber-800">{analysis.warning}</p>}<div className="grid gap-3">{items.map(({ icon: Icon, label, values }) => <div key={label} className="grid gap-2 rounded-md border border-slate-100 p-3 md:grid-cols-[180px_1fr]"><div className="flex items-center gap-2 text-sm font-semibold text-slate-600"><Icon size={16} /> {label}</div><div className="flex flex-wrap gap-2">{values.map((value) => <span key={value} className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-700">{value}</span>)}</div></div>)}{analysis.experienceHighlights.length > 0 && <div className="rounded-md border border-slate-100 p-3"><div className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-600"><Briefcase size={16} /> Evidencia de experiencia</div><ul className="grid gap-2 text-sm text-slate-700">{analysis.experienceHighlights.slice(0, 4).map((value) => <li key={value} className="border-l-2 border-teal pl-3">{value}</li>)}</ul></div>}</div><p className="mt-3 text-xs text-slate-500">Se muestran solamente datos encontrados en el texto del CV. TalentHub no completa información ausente.</p></div>;
+}
+
 function ContactCard({ candidate }: { candidate: Candidate }) {
   const items = [
     ...candidate.email.slice(0, 3).map((value) => ({ icon: Mail, label: value, href: `mailto:${value}` })),
@@ -945,13 +976,13 @@ function DocumentList({ rows, empty, candidateId }: { rows: CandidateDocument[];
   })}</div>;
 }
 
-function CandidateRow({ candidate, onView, reason }: { candidate: Candidate; onView: (id: string) => void; reason?: string }) {
+function CandidateRow({ candidate, onView, reason, matchScore }: { candidate: Candidate; onView: (id: string) => void; reason?: string; matchScore?: number }) {
   const role = shortText(candidate.currentRole || "Sin rol", 90);
   const location = shortText(candidate.city || candidate.country || "Sin ciudad", 45);
   const documents = Number(candidate.documentCount ?? 0);
   const contact = [candidate.phone?.[0], candidate.email?.[0]].filter(Boolean).join(" · ");
   const summary = cleanDisplayText(candidate.summary);
-  return <div className="card flex flex-wrap items-start justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div><div className="truncate text-sm text-slate-500">{role} · {location}{candidate.years ? ` · ${candidate.years} años` : ""}</div>{summary && <p className="mt-2 max-w-3xl text-sm leading-5 text-slate-700">{shortText(summary, 260)}</p>}<div className="mt-2 flex flex-wrap items-center gap-2">{documents > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600"><FileText size={13} /> {documents} CV/doc</span>}{candidate.primaryDocumentName && <span className="max-w-sm truncate text-xs text-slate-500">{shortText(candidate.primaryDocumentName, 70)}</span>}{contact && <span className="max-w-md truncate text-xs text-slate-500">{shortText(contact, 90)}</span>}</div><TagList tags={candidate.tags ?? []} />{reason && <p className="mt-1 text-xs italic text-slate-500">{shortText(reason, 160)}</p>}</div></div><div className="flex shrink-0 items-center gap-3"><Score score={candidate.qualityScore} /><button className={documents > 0 ? "btn-primary" : "btn-ghost"} onClick={() => onView(candidate.id)}>{documents > 0 ? "Ver ficha / CV" : "Ver ficha"}</button></div></div>;
+  return <div className="card flex flex-wrap items-start justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div><div className="truncate text-sm text-slate-500">{role} · {location}{candidate.years ? ` · ${candidate.years} años declarados` : ""}</div>{summary && <p className="mt-2 max-w-3xl text-sm leading-5 text-slate-700">{shortText(summary, 260)}</p>}<div className="mt-2 flex flex-wrap items-center gap-2">{documents > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600"><FileText size={13} /> {documents} CV/doc</span>}{candidate.primaryDocumentName && <span className="max-w-sm truncate text-xs text-slate-500">{shortText(candidate.primaryDocumentName, 70)}</span>}{contact && <span className="max-w-md truncate text-xs text-slate-500">{shortText(contact, 90)}</span>}</div><TagList tags={candidate.tags ?? []} />{reason && <p className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{shortText(reason, 240)}</p>}</div></div><div className="flex shrink-0 items-center gap-3">{typeof matchScore === "number" && <MatchScore score={matchScore} />}<button className={documents > 0 ? "btn-primary" : "btn-ghost"} onClick={() => onView(candidate.id)}>{documents > 0 ? "Ver ficha / CV" : "Ver ficha"}</button></div></div>;
 }
 
 type InputProps = {
@@ -972,7 +1003,7 @@ function ErrorBox({ message }: { message: string }) { return <div className="mb-
 function Skeleton() { return <div className="card h-40 animate-pulse bg-slate-100" />; }
 function Avatar({ name, small = false }: { name: string; small?: boolean }) { const initials = name.split(" ").map((x) => x[0]).join("").slice(0, 2).toUpperCase(); return <div className={`grid shrink-0 place-items-center rounded-md bg-teal font-bold text-white ${small ? "h-10 w-10" : "h-16 w-16 text-xl"}`}>{initials || <UserRound />}</div>; }
 function TagList({ tags }: { tags: string[] }) { const visible = tags.filter((tag) => tag && tag.length <= 40).slice(0, 4); return <div className="mt-2 flex flex-wrap gap-1">{visible.map((t) => <span className="rounded-full bg-teal/10 px-2 py-0.5 text-xs font-semibold text-teal" key={t}>{shortText(t, 32)}</span>)}</div>; }
-function Score({ score }: { score: number }) { return <div className="min-w-24"><div className="text-right text-sm font-extrabold">{score}%</div><div className="h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-teal" style={{ width: `${Math.max(0, Math.min(100, score))}%` }} /></div></div>; }
+function MatchScore({ score }: { score: number }) { return <div className="min-w-28" title="Compatibilidad calculada únicamente para la búsqueda actual"><div className="mb-1 text-right text-xs font-semibold text-slate-500">Coincidencia</div><div className="text-right text-lg font-extrabold text-slate-800">{score}%</div><div className="h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-teal" style={{ width: `${Math.max(0, Math.min(100, score))}%` }} /></div></div>; }
 function InfoCard({ title, text }: { title: string; text: string }) { return <div className="card whitespace-pre-line p-4"><h3 className="mb-2 font-bold">{title}</h3><p className="text-sm text-slate-600">{text}</p></div>; }
 function Table({ title, rows, empty, columns }: any) { return <div className="card overflow-hidden"><div className="border-b border-slate-200 p-4 font-bold">{title}</div>{rows.length === 0 ? <div className="p-4 text-sm text-slate-500">{empty}</div> : <div className="overflow-auto"><table className="w-full text-left text-sm"><thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>{columns.map((c: string) => <th className="px-4 py-2" key={c}>{c}</th>)}</tr></thead><tbody>{rows.map((r: any) => <tr className="border-t border-slate-100" key={r.id}>{columns.map((c: string) => <td className={`px-4 py-2 align-top ${c === "message" || c === "reason" ? "max-w-xl whitespace-normal break-words text-xs leading-relaxed" : "whitespace-nowrap"}`} key={c} title={String(r[c] ?? "")}>{c === "message" || c === "reason" ? shortText(String(r[c] ?? ""), 220) : String(r[c] ?? "")}</td>)}</tr>)}</tbody></table></div>}</div>; }
 function list(value: string) { return value.split(",").map((x) => x.trim()).filter(Boolean); }

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { q } from "../db/pool.js";
 import { asyncHandler } from "../middleware/errors.js";
 import { requireRole } from "../middleware/auth.js";
+import { analyzeCvText } from "../services/cvAnalysis.js";
 
 export const candidatesRouter = Router();
 
@@ -537,11 +538,19 @@ candidatesRouter.get("/:id", asyncHandler(async (req, res) => {
   const [work, education, documents, processes, sources] = await Promise.all([
     q("SELECT * FROM candidate_work_history WHERE candidate_id=$1 ORDER BY is_current DESC, start_date DESC NULLS LAST", [req.params.id]),
     q("SELECT * FROM candidate_education WHERE candidate_id=$1 ORDER BY end_year DESC NULLS LAST", [req.params.id]),
-    q("SELECT * FROM documents WHERE candidate_id=$1 ORDER BY created_at DESC", [req.params.id]),
+    q(`SELECT id, candidate_id, type, file_name, file_url, file_hash, mime_type, size_bytes, raw_text,
+              ai_summary, source_type, source_id, source_path, created_at, processed_at, is_primary_cv,
+              (file_data IS NOT NULL) AS has_stored_file
+       FROM documents
+       WHERE candidate_id=$1
+       ORDER BY is_primary_cv DESC, created_at DESC`, [req.params.id]),
     q("SELECT * FROM candidate_processes WHERE candidate_id=$1 ORDER BY event_date DESC NULLS LAST", [req.params.id]),
     q("SELECT * FROM candidate_sources WHERE candidate_id=$1 ORDER BY last_synced_at DESC", [req.params.id])
   ]);
-  res.json({ data: mapCandidate(rows[0]), work: work.rows, education: education.rows, documents: documents.rows, processes: processes.rows, sources: sources.rows });
+  const primaryDocument = documents.rows.find((document: any) => document.is_primary_cv && document.raw_text)
+    ?? documents.rows.find((document: any) => document.raw_text);
+  const cvAnalysis = analyzeCvText(primaryDocument?.raw_text ?? "");
+  res.json({ data: mapCandidate(rows[0]), work: work.rows, education: education.rows, documents: documents.rows, processes: processes.rows, sources: sources.rows, cvAnalysis });
 }));
 
 candidatesRouter.get("/:id/documents/:documentId/download", asyncHandler(async (req, res) => {

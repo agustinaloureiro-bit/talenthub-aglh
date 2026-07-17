@@ -47,9 +47,9 @@ test("prioriza candidatos con evidencia en documentos/CV", () => {
   const ranked = rerankCandidates(candidates, interpreted);
 
   assert.equal(ranked[0].id, "con-cv");
-  assert.match(ranked[0].matchReason, /rol alineado/i);
+  assert.match(ranked[0].matchReason, /área principal alineada/i);
   assert.match(ranked[0].matchReason, /idioma/i);
-  assert.match(ranked[0].matchReason, /CV\/documentos/i);
+  assert.match(ranked[0].matchReason, /Evidencia encontrada en el CV/i);
 });
 
 test("rankea con acentos, sinonimos y resumen del perfil", () => {
@@ -92,7 +92,7 @@ test("rankea con acentos, sinonimos y resumen del perfil", () => {
   const ranked = rerankCandidates(candidates, interpreted);
 
   assert.equal(ranked[0].id, "abogada-ingles");
-  assert.match(ranked[0].matchReason, /rol alineado/i);
+  assert.match(ranked[0].matchReason, /área principal alineada/i);
   assert.match(ranked[0].matchReason, /idioma/i);
 });
 
@@ -142,5 +142,73 @@ test("prioriza CV con experiencia en ventas y gastronomia", () => {
   const ranked = rerankCandidates(candidates, interpreted);
 
   assert.equal(ranked[0].id, "ventas-gastronomia");
-  assert.match(ranked[0].matchReason, /competencias relevantes/i);
+  assert.match(ranked[0].matchReason, /competencias principales alineadas/i);
+});
+
+test("el porcentaje de match no depende de la calidad general del perfil", () => {
+  const interpreted = interpretTalentQuery("abogado con ingles");
+  const ranked = rerankCandidates([
+    {
+      id: "match-completo",
+      fullName: "Lucia Derecho",
+      currentRole: "Abogada",
+      tags: ["abogado", "ingles"],
+      email: ["lucia@example.com"],
+      qualityScore: 20,
+      documentCount: 1,
+      documentSnippet: "Abogada corporativa con ingles avanzado.",
+      score: 1,
+      matchReason: ""
+    },
+    {
+      id: "perfil-completo-pero-no-match",
+      fullName: "Maria Ventas",
+      currentRole: "Comercial",
+      tags: ["ingles"],
+      email: ["maria@example.com"],
+      qualityScore: 100,
+      documentCount: 1,
+      documentSnippet: "Experiencia comercial. Ingles avanzado.",
+      score: 99,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.equal(ranked[0].id, "match-completo");
+  assert.ok(ranked[0].score > ranked[1].score);
+});
+
+test("una mención secundaria en el CV no empata con un área principal alineada", () => {
+  const interpreted = interpretTalentQuery("abogado con ingles");
+  const ranked = rerankCandidates([
+    {
+      id: "principal",
+      fullName: "Lucia Derecho",
+      currentRole: "Abogada",
+      tags: ["abogado", "ingles"],
+      email: ["lucia@example.com"],
+      qualityScore: 50,
+      documentCount: 1,
+      documentSnippet: "Abogada corporativa con ingles avanzado.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "mencion",
+      fullName: "Persona Logistica",
+      currentRole: "Logistica",
+      tags: ["logistica"],
+      email: ["persona@example.com"],
+      qualityScore: 90,
+      documentCount: 1,
+      documentSnippet: "Curso de derecho e ingles. Experiencia principal en deposito.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.equal(ranked[0].id, "principal");
+  assert.equal(ranked[0].score, 100);
+  assert.ok(ranked[1].score < 100);
+  assert.match(ranked[1].matchReason, /no como perfil principal/i);
 });

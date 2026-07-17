@@ -8,7 +8,10 @@
     "test": "tsc && node --test tests/*.test.mjs",
     "start": "node dist/server.js",
     "migrate": "tsx src/db/migrate.ts",
-    "local:import-gmail": "tsx src/scripts/importGmailTakeoutLocal.ts"
+    "local:import-gmail": "tsx src/scripts/importGmailTakeoutLocal.ts",
+    "reanalyze:candidates": "tsx src/scripts/reanalyzeCandidates.ts",
+    "cleanup:generic-names": "tsx src/scripts/rejectGenericCandidateNames.ts",
+    "validate:product-data": "tsx src/scripts/validateProductData.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

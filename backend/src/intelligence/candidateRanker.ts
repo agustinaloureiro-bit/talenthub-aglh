@@ -53,49 +53,84 @@ function candidateHaystack(candidate: TalentCandidateResult) {
   ].join(" ");
 }
 
+function candidateProfileText(candidate: TalentCandidateResult) {
+  return [
+    candidate.currentRole ?? "",
+    (candidate.tags ?? []).join(" ")
+  ].join(" ");
+}
+
+function primaryRoleMatches(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
+  return interpreted.roles.length === 0 || includesAny(candidate.currentRole ?? "", interpreted.roles);
+}
+
+function conceptMatchesProfile(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery, concept: string) {
+  if (interpreted.roles.some((role) => normalizeSearchValue(role) === normalizeSearchValue(concept))) {
+    return includesAny(candidate.currentRole ?? "", [concept]);
+  }
+  return includesAny(candidateProfileText(candidate), [concept]);
+}
+
+function requestedConcepts(interpreted: InterpretedTalentQuery) {
+  const values = [...interpreted.roles, ...interpreted.skills, ...interpreted.languages, ...interpreted.industries];
+  const byNormalized = new Map<string, string>();
+  for (const value of values) {
+    const normalized = normalizeSearchValue(value);
+    if (normalized && !byNormalized.has(normalized)) byNormalized.set(normalized, value);
+  }
+  return [...byNormalized.values()];
+}
+
 function coverage(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   const haystack = candidateHaystack(candidate);
-  const checks = [
-    interpreted.roles.length ? includesAny(haystack, interpreted.roles) : true,
-    interpreted.skills.length ? includesAny(haystack, interpreted.skills) : true,
-    interpreted.languages.length ? includesAny(haystack, interpreted.languages) : true,
-    interpreted.industries.length ? includesAny(haystack, interpreted.industries) : true
-  ];
-  const required = checks.filter((_, index) => [interpreted.roles, interpreted.skills, interpreted.languages, interpreted.industries][index].length).length;
-  const matched = checks.filter(Boolean).length - (4 - required);
-  return { required, matched, ratio: required ? matched / required : 1 };
+  const concepts = requestedConcepts(interpreted);
+  const matchedConcepts = concepts.filter((concept) => includesAny(haystack, [concept]));
+  return { required: concepts.length, matched: matchedConcepts.length, ratio: concepts.length ? matchedConcepts.length / concepts.length : 1, concepts, matchedConcepts };
 }
 
 export function explainCandidateMatch(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   const haystack = candidateHaystack(candidate);
+  const profileText = candidateProfileText(candidate);
+  const resultCoverage = coverage(candidate, interpreted);
+  const evidenceText = candidate.documentSnippet ?? "";
+  const evidenceConcepts = resultCoverage.concepts.filter((concept) => includesAny(evidenceText, [concept]));
   const reasons: string[] = [];
-
-  if (interpreted.roles.length && includesAny(haystack, interpreted.roles)) reasons.push("rol alineado con la busqueda");
-  if (interpreted.skills.length && includesAny(haystack, interpreted.skills)) reasons.push("menciona competencias relevantes");
-  if (interpreted.languages.length && includesAny(haystack, interpreted.languages)) reasons.push("coincide con idioma solicitado");
-  if ((candidate.documentCount ?? 0) > 0) reasons.push("tiene CV/documentos disponibles");
-  if (interpreted.seniority && haystack.includes(interpreted.seniority.toLowerCase())) reasons.push("seniority compatible");
-  if (candidate.qualityScore >= 70) reasons.push("perfil con buena calidad de datos");
-
-  return reasons.length ? `Recomendado por ${reasons.join(", ")}.` : "Resultado relacionado por texto disponible; falta enriquecer CV para una explicacion mas precisa.";
+  if (interpreted.roles.length && primaryRoleMatches(candidate, interpreted)) reasons.push("área principal alineada");
+  else if (interpreted.roles.length && includesAny(evidenceText, interpreted.roles)) reasons.push("el área aparece en el CV, pero no como perfil principal");
+  if (interpreted.skills.length && includesAny(profileText, interpreted.skills)) reasons.push("competencias principales alineadas");
+  else if (interpreted.skills.length && includesAny(evidenceText, interpreted.skills)) reasons.push("competencias mencionadas en el CV");
+  if (interpreted.languages.length && includesAny(haystack, interpreted.languages)) reasons.push("idioma solicitado");
+  if (interpreted.seniority && normalizeSearchValue(haystack).includes(normalizeSearchValue(interpreted.seniority))) reasons.push("seniority compatible");
+  const matched = resultCoverage.matchedConcepts.length ? resultCoverage.matchedConcepts.join(", ") : "coincidencia textual parcial";
+  const evidence = evidenceConcepts.length ? " Evidencia encontrada en el CV." : " La coincidencia proviene de los datos indexados; conviene revisar el CV.";
+  return `Coincide con: ${matched}.${reasons.length ? ` ${reasons.join(", ")}.` : ""}${evidence}`;
 }
 
 export function rerankCandidates(candidates: TalentCandidateResult[], interpreted: InterpretedTalentQuery) {
   return candidates
     .map((candidate) => {
-      const haystack = candidateHaystack(candidate);
       const conceptCoverage = coverage(candidate, interpreted);
-      let intelligenceBoost = 0;
-      for (const role of interpreted.roles) if (includesAny(haystack, [role])) intelligenceBoost += 18;
-      for (const skill of interpreted.skills) if (includesAny(haystack, [skill])) intelligenceBoost += 10;
-      for (const language of interpreted.languages) if (includesAny(haystack, [language])) intelligenceBoost += 12;
-      for (const industry of interpreted.industries) if (includesAny(haystack, [industry])) intelligenceBoost += 8;
-      if (interpreted.seniority && normalizeSearchValue(haystack).includes(normalizeSearchValue(interpreted.seniority))) intelligenceBoost += 8;
-      if ((candidate.documentCount ?? 0) > 0) intelligenceBoost += 6;
-      if (conceptCoverage.required > 1 && conceptCoverage.ratio < 0.5) intelligenceBoost -= 20;
-      if (conceptCoverage.required > 0 && conceptCoverage.ratio === 1) intelligenceBoost += 15;
-
-      const score = Math.min(100, Math.max(0, Math.round((candidate.score ?? 0) * 0.7 + intelligenceBoost + candidate.qualityScore * 0.15)));
+      const documentText = candidate.documentSnippet ?? "";
+      const documentMatches = conceptCoverage.concepts.filter((concept) => includesAny(documentText, [concept])).length;
+      const documentRatio = conceptCoverage.required ? documentMatches / conceptCoverage.required : 0;
+      const profileText = candidateProfileText(candidate);
+      const profileMatches = conceptCoverage.concepts.filter((concept) => conceptMatchesProfile(candidate, interpreted, concept)).length;
+      const profileRatio = conceptCoverage.required ? profileMatches / conceptCoverage.required : 0;
+      const hasContact = Boolean(candidate.email?.length || candidate.phone?.length);
+      const seniorityMatch = interpreted.seniority
+        ? normalizeSearchValue(candidateHaystack(candidate)).includes(normalizeSearchValue(interpreted.seniority))
+        : true;
+      const rawScore = Math.min(100, Math.max(0, Math.round(
+        conceptCoverage.ratio * 55
+        + documentRatio * 25
+        + profileRatio * 10
+        + ((candidate.documentCount ?? 0) > 0 ? 5 : 0)
+        + (hasContact ? 5 : 0)
+        + (interpreted.seniority && seniorityMatch ? 5 : 0)
+      )));
+      const score = interpreted.roles.length > 0 && !primaryRoleMatches(candidate, interpreted)
+        ? Math.min(89, rawScore)
+        : rawScore;
       return { ...candidate, score, matchReason: explainCandidateMatch({ ...candidate, score }, interpreted), matchCoverage: conceptCoverage };
     })
     .sort((a, b) => (b.matchCoverage?.ratio ?? 0) - (a.matchCoverage?.ratio ?? 0) || b.score - a.score || b.qualityScore - a.qualityScore)

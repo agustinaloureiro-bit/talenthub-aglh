@@ -293,9 +293,9 @@ Ingles avanzado.`,
   assert.ok(candidate);
   assert.equal(candidate.currentRole, "abogado");
   assert.equal(candidate.years, 4);
-  assert.match(candidate.summary, /Perfil detectado: abogado/i);
+  assert.match(candidate.summary, /Áreas mencionadas en el CV: abogado/i);
   assert.match(candidate.summary, /Experiencia/i);
-  assert.match(candidate.summary, /Idiomas: ingles/i);
+  assert.match(candidate.summary, /Idiomas mencionados: ingles/i);
   assert.ok(!candidate.summary?.includes("%PDF"));
 });
 
@@ -746,4 +746,39 @@ ${encoded}
   assert.ok(result.rows[0].tags.includes("abogado"));
   assert.ok(result.rows[0].tags.includes("ingles"));
   assert.match(result.rows[0].summary ?? "", /ingles/i);
+});
+
+test("analisis de CV no inventa ubicacion ni formacion", async () => {
+  const { analyzeCvText } = await import("../dist/services/cvAnalysis.js");
+  const analysis = analyzeCvText(`Lucia Perez
+Experiencia laboral
+Vendedora en comercio minorista desde 2022.
+Ingles intermedio.`);
+
+  assert.equal(analysis.city, null);
+  assert.equal(analysis.country, null);
+  assert.deepEqual(analysis.educationHighlights, []);
+  assert.ok(analysis.roles.includes("ventas"));
+  assert.equal(analysis.languages[0]?.level, "intermedio");
+});
+
+test("analisis de CV conserva solo formacion explicitamente mencionada", async () => {
+  const { analyzeCvText } = await import("../dist/services/cvAnalysis.js");
+  const analysis = analyzeCvText(`Valeria Gomez Montevideo
+Abogada egresada de Facultad de Derecho.
+Experiencia laboral en estudio juridico durante 4 anos.
+Ingles avanzado.`);
+
+  assert.deepEqual(analysis.educationHighlights, ["egresada de Facultad de Derecho"]);
+  assert.match(analysis.summary ?? "", /Formación mencionada: egresada de Facultad de Derecho/i);
+  assert.doesNotMatch(analysis.summary ?? "", /Email|Telefono/i);
+});
+
+test("rechaza cargos genericos como nombres de candidatos", async () => {
+  const { isClearlyGenericCandidateName } = await import("../dist/routes/integrations.js");
+
+  assert.equal(isClearlyGenericCandidateName("Atención Al Cliente"), true);
+  assert.equal(isClearlyGenericCandidateName("Auxiliar Administrativa"), true);
+  assert.equal(isClearlyGenericCandidateName("Ventas y Marketing"), true);
+  assert.equal(isClearlyGenericCandidateName("María García"), false);
 });
