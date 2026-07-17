@@ -20,6 +20,27 @@ function cleanDbTextArray(values: string[] | undefined) {
     .filter((value): value is string => Boolean(value)));
 }
 
+const ROLE_TAGS = new Set([
+  "abogado",
+  "administracion",
+  "atencion al cliente",
+  "comercial",
+  "gastronomia",
+  "logistica",
+  "marketing",
+  "recursos humanos",
+  "tecnico",
+  "ventas"
+]);
+
+function cleanCurrentRole(value: string | null | undefined, tags: string[]) {
+  const role = cleanDbText(value);
+  if (role && !/^(?:postgres|postgresql|database|supabase|render|gmail|google|drive|cv|curriculum|curriculo|currículo|currículum|vitae|pdf|doc|docx|rtf|txt|postulaci[oó]n laboral|trabajo|empleo)$/i.test(role)) {
+    return role;
+  }
+  return tags.find((tag) => ROLE_TAGS.has(tag.toLowerCase())) ?? null;
+}
+
 function scrubJsonForDb(value: unknown): unknown {
   if (typeof value === "string") return value.replace(/\u0000/g, "");
   if (Array.isArray(value)) return value.map(scrubJsonForDb);
@@ -53,6 +74,7 @@ function sanitizePhones(values: string[] | undefined) {
 }
 
 function sanitizeCandidate(candidate: CandidateImport): CandidateImport {
+  const tags = cleanDbTextArray(candidate.tags);
   return {
     ...candidate,
     fullName: cleanDbText(candidate.fullName) ?? candidate.fullName,
@@ -63,9 +85,9 @@ function sanitizeCandidate(candidate: CandidateImport): CandidateImport {
     city: cleanDbText(candidate.city),
     country: cleanDbText(candidate.country),
     linkedinUrl: cleanDbText(candidate.linkedinUrl),
-    currentRole: cleanDbText(candidate.currentRole),
+    currentRole: cleanCurrentRole(candidate.currentRole, tags),
     seniority: cleanDbText(candidate.seniority),
-    tags: cleanDbTextArray(candidate.tags),
+    tags,
     summary: cleanDbText(candidate.summary),
     sourceId: cleanDbText(candidate.sourceId),
     sourceUrl: cleanDbText(candidate.sourceUrl),
@@ -216,7 +238,7 @@ export async function importCandidate(sourceType: string, candidate: CandidateIm
         city=coalesce($6, city),
         country=coalesce($7, country),
         linkedin_url=coalesce($8, linkedin_url),
-        "current_role"=coalesce($9, "current_role"),
+        "current_role"=coalesce($9, case when "current_role" ~* '^(postgres|postgresql|database|supabase|render|gmail|google|drive|cv|curriculum|curriculo|currículo|currículum|vitae|pdf|doc|docx|rtf|txt|postulación laboral|postulacion laboral|trabajo|empleo)$' then null else "current_role" end),
         ai_seniority=coalesce($10, ai_seniority),
         ai_seniority_years=coalesce($11, ai_seniority_years),
         ai_tags=coalesce((SELECT array_agg(DISTINCT value) FROM unnest(ai_tags || $12::text[]) AS value), '{}'::text[]),
