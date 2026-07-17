@@ -1,0 +1,5 @@
+ALTER TABLE documents
+  ADD COLUMN IF NOT EXISTS file_data BYTEA;
+
+ALTER TABLE documents
+  ADD COLUMN IF NOT EXISTS file_data_saved_at TIMESTAMPTZ;

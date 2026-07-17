@@ -613,6 +613,10 @@ ${encoded}
   assert.ok(result.rows[0].tags.includes("ventas"));
   assert.ok(result.rows[0].tags.includes("gastronomia"));
   assert.match(result.rows[0].summary ?? "", /gastronomia/i);
+  assert.ok(result.rows[0].documents?.[0]?.fileDataBase64);
+  assert.equal(Buffer.from(result.rows[0].documents[0].fileDataBase64, "base64").toString("utf8"), cvText);
+  assert.equal(result.rows[0].documents[0].sizeBytes, Buffer.byteLength(cvText));
+  assert.match(result.rows[0].documents[0].fileHash, /^[a-f0-9]{64}$/);
 });
 
 function zipWithStoredFile(fileName, content) {
@@ -698,6 +702,10 @@ ${encoded}
   assert.equal(result.rows.length, 1);
   assert.equal(result.rows[0].fullName, "Valeria Gomez");
   assert.ok(result.rows[0].documents?.[0]?.rawText?.includes("ventas gastronomia ingles"));
+  assert.ok(result.rows[0].documents?.[0]?.fileDataBase64);
+  assert.equal(Buffer.from(result.rows[0].documents[0].fileDataBase64, "base64").subarray(0, 5).toString("latin1"), "%PDF-");
+  assert.equal(result.rows[0].documents[0].sizeBytes, pdf.byteLength);
+  assert.match(result.rows[0].documents[0].fileHash, /^[a-f0-9]{64}$/);
   assert.ok(result.rows[0].tags.includes("ventas"));
   assert.ok(result.rows[0].tags.includes("gastronomia"));
 });

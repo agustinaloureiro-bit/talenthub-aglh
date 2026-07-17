@@ -1,5 +1,6 @@
 import express, { Router } from "express";
 import { inflateRawSync } from "zlib";
+import { createHash } from "crypto";
 import { z } from "zod";
 import { PDFParse } from "pdf-parse";
 import { q } from "../db/pool.js";
@@ -23,6 +24,7 @@ const DEFAULT_INTEGRATIONS = [
 
 const SYNC_ENGINE_VERSION = "2026-07-13.1";
 const DEFAULT_GMAIL_QUERY = "has:attachment (filename:pdf OR filename:doc OR filename:docx OR filename:rtf OR filename:txt) newer_than:3650d";
+const MAX_STORED_CV_BYTES = 8 * 1024 * 1024;
 
 function gmailAfterDate(value: unknown) {
   const date = new Date(cleanText(value));
@@ -1455,8 +1457,8 @@ function decodeMimeBody(body: string, transferEncoding: string) {
   return Buffer.from(body, "utf8");
 }
 
-async function collectMimeAttachments(raw: string): Promise<Array<{ fileName: string; mimeType: string; rawText: string; bodyText: string }>> {
-  const attachments: Array<{ fileName: string; mimeType: string; rawText: string; bodyText: string }> = [];
+async function collectMimeAttachments(raw: string): Promise<Array<{ fileName: string; mimeType: string; rawText: string; bodyText: string; fileDataBase64?: string | null; sizeBytes?: number | null; fileHash?: string | null }>> {
+  const attachments: Array<{ fileName: string; mimeType: string; rawText: string; bodyText: string; fileDataBase64?: string | null; sizeBytes?: number | null; fileHash?: string | null }> = [];
   async function visit(partRaw: string): Promise<void> {
     const { headers, body } = splitMimeMessage(partRaw);
     const contentType = headers["content-type"] ?? "text/plain";
@@ -1478,11 +1480,15 @@ async function collectMimeAttachments(raw: string): Promise<Array<{ fileName: st
       if (bodyText) attachments.push({ fileName: "", mimeType, rawText: "", bodyText });
       return;
     }
+    const shouldStoreFile = decoded.byteLength > 0 && decoded.byteLength <= MAX_STORED_CV_BYTES;
     attachments.push({
       fileName,
       mimeType,
       rawText: await attachmentText(fileName, mimeType, decoded) || fileName,
-      bodyText
+      bodyText,
+      fileDataBase64: shouldStoreFile ? decoded.toString("base64") : null,
+      sizeBytes: decoded.byteLength,
+      fileHash: createHash("sha256").update(decoded).digest("hex")
     });
   }
   await visit(raw);
@@ -1551,6 +1557,9 @@ export async function candidatesFromGmailRawMessage(rawMessage: string | Buffer,
       fileName: attachment.fileName,
       rawText: cleanDocumentTextForImport(attachment.rawText),
       mimeType: attachment.mimeType,
+      fileDataBase64: attachment.fileDataBase64,
+      sizeBytes: attachment.sizeBytes,
+      fileHash: attachment.fileHash,
       sourceId: candidate.sourceId,
       sourcePath: `Google Takeout: ${fileName}${date ? ` - ${date}` : ""}`,
       isPrimaryCv: true
@@ -1642,10 +1651,14 @@ async function gmailAttachments(messageId: string, parts: any[], token: string, 
       if (!body?.data) continue;
       const buffer = decodeGmailAttachmentData(String(body.data));
       const rawText = await attachmentText(fileName, mimeType, buffer);
+      const shouldStoreFile = buffer.byteLength > 0 && buffer.byteLength <= MAX_STORED_CV_BYTES;
       attachments.push({
         fileName,
         mimeType,
         rawText,
+        fileDataBase64: shouldStoreFile ? buffer.toString("base64") : null,
+        sizeBytes: buffer.byteLength,
+        fileHash: createHash("sha256").update(buffer).digest("hex"),
         sourceId: `gmail:${messageId}:${attachmentId || fileName}`,
         sourcePath: `https://mail.google.com/mail/u/0/#all/${messageId}`,
         isPrimaryCv: true
@@ -1788,6 +1801,9 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
           fileName: attachment.fileName || candidate.documents?.[0]?.fileName || parsed.subject || "CV Gmail",
           rawText: cleanRawText || undefined,
           mimeType: attachment.mimeType,
+          fileDataBase64: attachment.fileDataBase64,
+          sizeBytes: attachment.sizeBytes,
+          fileHash: attachment.fileHash,
           sourceId: attachment.sourceId || candidate.sourceId,
           sourcePath: attachment.sourcePath || candidate.sourceUrl,
           isPrimaryCv: true

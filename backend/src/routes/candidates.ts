@@ -546,7 +546,7 @@ candidatesRouter.get("/:id", asyncHandler(async (req, res) => {
 
 candidatesRouter.get("/:id/documents/:documentId/download", asyncHandler(async (req, res) => {
   const { rows } = await q(
-    `SELECT id, candidate_id, file_name, file_url, mime_type, source_type, source_id, source_path, raw_text
+    `SELECT id, candidate_id, file_name, file_url, mime_type, source_type, source_id, source_path, raw_text, file_data
      FROM documents
      WHERE id=$1 AND candidate_id=$2
      LIMIT 1`,
@@ -554,6 +554,13 @@ candidatesRouter.get("/:id/documents/:documentId/download", asyncHandler(async (
   );
   const document = rows[0];
   if (!document) return res.status(404).json({ error: "Documento no encontrado" });
+
+  if (document.file_data) {
+    const buffer = Buffer.isBuffer(document.file_data) ? document.file_data : Buffer.from(document.file_data);
+    res.setHeader("content-type", document.mime_type || "application/octet-stream");
+    res.setHeader("content-disposition", `attachment; filename="${safeDownloadName(document.file_name, "cv").replace(/"/g, "")}"`);
+    return res.send(buffer);
+  }
 
   if (document.source_type === "gmail" && cleanText(document.source_id).startsWith("gmail:")) {
     const [, messageId, attachmentId] = cleanText(document.source_id).split(":");

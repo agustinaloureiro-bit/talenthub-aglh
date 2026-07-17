@@ -9,6 +9,26 @@ function unique(values: string[]) {
   return [...new Set(values)];
 }
 
+function cleanDbText(value: string | null | undefined) {
+  const text = value == null ? null : String(value).replace(/\u0000/g, "").trim();
+  return text || null;
+}
+
+function cleanDbTextArray(values: string[] | undefined) {
+  return unique((values ?? [])
+    .map((value) => cleanDbText(value))
+    .filter((value): value is string => Boolean(value)));
+}
+
+function scrubJsonForDb(value: unknown): unknown {
+  if (typeof value === "string") return value.replace(/\u0000/g, "");
+  if (Array.isArray(value)) return value.map(scrubJsonForDb);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, scrubJsonForDb(item)]));
+  }
+  return value;
+}
+
 function sanitizeEmails(values: string[] | undefined) {
   return unique((values ?? [])
     .map((value) => String(value).trim().toLowerCase())
@@ -22,9 +42,12 @@ function sanitizePhones(values: string[] | undefined) {
     .filter((value) => {
       const digits = value.replace(/\D/g, "");
       if (digits.length < 7 || digits.length > 15) return false;
+      if (digits.length > 9 && !digits.startsWith("598")) return false;
       if (/^0+$/.test(digits)) return false;
       if (/^(\d)\1{6,}$/.test(digits)) return false;
       if (/^(?:19|20)\d{6}(?:\d{4,6})?$/.test(digits)) return false;
+      if (/^(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{6}$/.test(digits)) return false;
+      if (/^(?:\d{1,2}) ?(?:\d{1,2}) ?0{5,}$/.test(value)) return false;
       return true;
     }));
 }
@@ -32,9 +55,41 @@ function sanitizePhones(values: string[] | undefined) {
 function sanitizeCandidate(candidate: CandidateImport): CandidateImport {
   return {
     ...candidate,
+    fullName: cleanDbText(candidate.fullName) ?? candidate.fullName,
+    firstName: cleanDbText(candidate.firstName),
+    lastName: cleanDbText(candidate.lastName),
     email: sanitizeEmails(candidate.email),
-    phone: sanitizePhones(candidate.phone)
+    phone: sanitizePhones(candidate.phone),
+    city: cleanDbText(candidate.city),
+    country: cleanDbText(candidate.country),
+    linkedinUrl: cleanDbText(candidate.linkedinUrl),
+    currentRole: cleanDbText(candidate.currentRole),
+    seniority: cleanDbText(candidate.seniority),
+    tags: cleanDbTextArray(candidate.tags),
+    summary: cleanDbText(candidate.summary),
+    sourceId: cleanDbText(candidate.sourceId),
+    sourceUrl: cleanDbText(candidate.sourceUrl),
+    raw: scrubJsonForDb(candidate.raw ?? {}) as Record<string, unknown>,
+    documents: candidate.documents?.map((document) => ({
+      ...document,
+      type: cleanDbText(document.type) ?? document.type,
+      fileName: cleanDbText(document.fileName) ?? document.fileName,
+      fileUrl: cleanDbText(document.fileUrl),
+      rawText: cleanDbText(document.rawText),
+      mimeType: cleanDbText(document.mimeType),
+      sourceId: cleanDbText(document.sourceId),
+      sourcePath: cleanDbText(document.sourcePath)
+    }))
   };
+}
+
+function documentFileBuffer(value: string | null | undefined) {
+  if (!value) return null;
+  try {
+    return Buffer.from(value, "base64");
+  } catch {
+    return null;
+  }
 }
 
 async function saveSource(candidateId: string, sourceType: string, candidate: CandidateImport) {
@@ -78,7 +133,8 @@ export async function recordRejectedImport(sourceType: string, candidate: Candid
 
 async function saveDocuments(candidateId: string, sourceType: string, candidate: CandidateImport) {
   for (const document of candidate.documents ?? []) {
-    if (!document.fileUrl && !document.sourcePath && !document.sourceId && !document.rawText) continue;
+    const fileData = documentFileBuffer(document.fileDataBase64);
+    if (!document.fileUrl && !document.sourcePath && !document.sourceId && !document.rawText && !fileData) continue;
     const fileName = document.fileName || `${candidate.fullName} - ${document.type}`;
     const existing = await q<{ id: string }>(
       `SELECT id FROM documents
@@ -98,15 +154,19 @@ async function saveDocuments(candidateId: string, sourceType: string, candidate:
           raw_text=coalesce($3,raw_text),
           mime_type=coalesce($4,mime_type),
           source_path=coalesce($5,source_path),
-          is_primary_cv=$6
-         WHERE id=$7`,
-        [fileName, document.fileUrl, document.rawText, document.mimeType, document.sourcePath, Boolean(document.isPrimaryCv), existing.rows[0].id]
+          is_primary_cv=$6,
+          file_data=coalesce($7,file_data),
+          size_bytes=coalesce($8,size_bytes),
+          file_hash=coalesce($9,file_hash),
+          file_data_saved_at=case when $7::bytea is not null then now() else file_data_saved_at end
+         WHERE id=$10`,
+        [fileName, document.fileUrl, document.rawText, document.mimeType, document.sourcePath, Boolean(document.isPrimaryCv), fileData, document.sizeBytes ?? fileData?.byteLength ?? null, document.fileHash, existing.rows[0].id]
       );
     } else {
       await q(
-        `INSERT INTO documents (candidate_id, type, file_name, file_url, raw_text, mime_type, source_type, source_id, source_path, is_primary_cv)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-        [candidateId, document.type, fileName, document.fileUrl ?? document.sourcePath, document.rawText, document.mimeType, sourceType, document.sourceId, document.sourcePath, Boolean(document.isPrimaryCv)]
+        `INSERT INTO documents (candidate_id, type, file_name, file_url, raw_text, mime_type, source_type, source_id, source_path, is_primary_cv, file_data, size_bytes, file_hash, file_data_saved_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,case when $11::bytea is not null then now() else null end)`,
+        [candidateId, document.type, fileName, document.fileUrl ?? document.sourcePath, document.rawText, document.mimeType, sourceType, document.sourceId, document.sourcePath, Boolean(document.isPrimaryCv), fileData, document.sizeBytes ?? fileData?.byteLength ?? null, document.fileHash]
       );
     }
   }

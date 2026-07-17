@@ -4,6 +4,9 @@ export type CandidateDocumentImport = {
   fileUrl?: string | null;
   rawText?: string | null;
   mimeType?: string | null;
+  fileDataBase64?: string | null;
+  sizeBytes?: number | null;
+  fileHash?: string | null;
   sourceId?: string | null;
   sourcePath?: string | null;
   isPrimaryCv?: boolean;
