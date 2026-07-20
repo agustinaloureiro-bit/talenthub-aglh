@@ -3348,12 +3348,6 @@ async function syncIntegration(integrationId: string) {
         numberFromConfig(config.syncTimeoutMs, 70_000),
         `${agent.name} no respondio a tiempo. Proba sincronizar esa fuente sola o vuelve a guardar la sesion.`
       );
-      if (scraperResult.configUpdate) {
-        await q(
-          "UPDATE integrations SET config=config || $1::jsonb, updated_at=now() WHERE id=$2",
-          [JSON.stringify({ syncEngineVersion: SYNC_ENGINE_VERSION, ...scraperResult.configUpdate }), integrationId]
-        );
-      }
     } catch (error: any) {
       scraperError = error?.message ?? `Error desconocido leyendo ${agent.name}.`;
       await q(
@@ -3373,19 +3367,27 @@ async function syncIntegration(integrationId: string) {
 
   if (rowsToImport.length > 0) {
     for (const row of rowsToImport) {
-      const candidate = scraperResult && isAgentCandidate(row)
-        ? row
-        : integrationId === "buscojobs"
-          ? (applicantFromRow(row as Record<string, unknown>, {}) ?? normalizeCandidate(row as Record<string, unknown>, integrationId))
-          : normalizeCandidate(row as Record<string, unknown>, integrationId);
-      if (!candidate) {
+      try {
+        const candidate = scraperResult && isAgentCandidate(row)
+          ? row
+          : integrationId === "buscojobs"
+            ? (applicantFromRow(row as Record<string, unknown>, {}) ?? normalizeCandidate(row as Record<string, unknown>, integrationId))
+            : normalizeCandidate(row as Record<string, unknown>, integrationId);
+        if (!candidate) {
+          errors += 1;
+          continue;
+        }
+        const result = await importCandidate(integrationId, candidate, isUsableCandidate);
+        if (result === "new") newRecords += 1;
+        if (result === "updated") updatedRecords += 1;
+        if (result === "skipped") errors += 1;
+      } catch (error: any) {
         errors += 1;
-        continue;
+        console.error(`candidate import failed for ${integrationId}`, {
+          sourceId: isAgentCandidate(row) ? cleanText(row.sourceId).slice(0, 120) : null,
+          error: cleanText(error?.message).slice(0, 240)
+        });
       }
-      const result = await importCandidate(integrationId, candidate, isUsableCandidate);
-      if (result === "new") newRecords += 1;
-      if (result === "updated") updatedRecords += 1;
-      if (result === "skipped") errors += 1;
     }
     const savedRecords = newRecords + updatedRecords;
     status = savedRecords > 0 ? (errors > 0 ? "warning" : "success") : (errors > 0 ? "error" : "warning");
@@ -3404,11 +3406,12 @@ async function syncIntegration(integrationId: string) {
     message = `${agent?.name ?? integration.rows[0].name} no pudo sincronizar: ${scraperError}`;
   }
 
-  if (scraperResult?.message) {
+  if (scraperResult?.message || scraperResult?.configUpdate) {
     const resultStatus = status === "error" ? cleanText(scraperResult.configUpdate?.sessionStatus) || "error" : "connected";
     await q(
       "UPDATE integrations SET config=config || $1::jsonb, updated_at=now() WHERE id=$2",
       [JSON.stringify({
+        ...(scraperResult.configUpdate ?? {}),
         sessionStatus: resultStatus,
         sessionLastError: status === "error" ? (scraperResult.configUpdate?.sessionLastError ?? scraperResult.message) : null,
         lastAgentMessage: message,
