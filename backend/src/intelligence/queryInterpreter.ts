@@ -71,6 +71,16 @@ const SKILL_HINTS = [
   "moza"
 ];
 
+const CONCEPT_PATTERNS: Array<{ pattern: RegExp; skill: string }> = [
+  { pattern: /lider|jefatura|supervis|coordinar (?:un |el )?equipo|manejo de (?:personal|equipos)|personas a cargo/i, skill: "liderazgo" },
+  { pattern: /organizad|planific|ordenad|gesti[oó]n del tiempo|seguimiento de tareas/i, skill: "organizacion" },
+  { pattern: /comunicaci[oó]n|buen trato|trat(?:o|ar) con (?:el |los )?clientes?|relaciones interpersonales/i, skill: "comunicacion" },
+  { pattern: /negoci|cierre de ventas|desarrollo de clientes|manejo de cuentas/i, skill: "negociacion" },
+  { pattern: /resolver problemas|resoluci[oó]n de problemas|anal[ií]tic|pensamiento cr[ií]tico/i, skill: "resolucion de problemas" },
+  { pattern: /adaptab|flexib|trabajo bajo presi[oó]n|entorno din[aá]mico/i, skill: "adaptabilidad" },
+  { pattern: /trabajo en equipo|colaboraci[oó]n|colaborativ/i, skill: "trabajo en equipo" }
+];
+
 function normalizeHint(value: string) {
   return value.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "");
 }
@@ -83,7 +93,10 @@ function findHints(query: string, hints: string[]) {
 export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   const normalizedQuery = query.replace(/\s+/g, " ").trim();
   const roles = findHints(normalizedQuery, ROLE_HINTS);
-  const skills = findHints(normalizedQuery, SKILL_HINTS);
+  const skills = [...new Set([
+    ...findHints(normalizedQuery, SKILL_HINTS),
+    ...CONCEPT_PATTERNS.filter(({ pattern }) => pattern.test(normalizedQuery)).map(({ skill }) => skill)
+  ])];
   const languages = LANGUAGE_PATTERNS.filter(([pattern]) => pattern.test(normalizedQuery)).map(([, language]) => language);
   const seniority = SENIORITY_PATTERNS.find(([pattern]) => pattern.test(normalizedQuery))?.[1] ?? null;
   const industries = findHints(normalizedQuery, ["industria", "retail", "logistica", "logística", "manufactura", "tecnologia", "tecnología", "gastronomia", "gastronomía", "restaurante"]);

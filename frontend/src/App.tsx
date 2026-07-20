@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { AlertCircle, Bot, Briefcase, CheckCircle2, ChevronLeft, Database, Download, ExternalLink, FileText, GraduationCap, Languages, LayoutDashboard, LogOut, Mail, MapPin, Phone, Plug, Plus, Save, Search, Send, Settings, UserRound, Users } from "lucide-react";
+import { AlertCircle, Bot, Briefcase, CheckCircle2, ChevronLeft, Database, Download, ExternalLink, Eye, FileText, GraduationCap, Languages, LayoutDashboard, LogOut, Mail, MapPin, Phone, Plug, Plus, Save, Search, Send, Settings, UserRound, Users, X } from "lucide-react";
 import { API_URL, api, authHeaders, currentUser, login, logout, type User } from "./lib/api";
 
 type Page = "dashboard" | "finder" | "candidates" | "candidate" | "ai" | "integrations" | "settings";
@@ -25,6 +25,12 @@ type Candidate = {
   sourceTypes?: string[];
   documentCount?: number;
   primaryDocumentName?: string | null;
+  primaryDocumentId?: string | null;
+  primaryDocumentMimeType?: string | null;
+  primaryDocumentSourceType?: string | null;
+  documentSnippet?: string | null;
+  score?: number;
+  matchReason?: string;
   status: string;
   createdAt?: string;
   lastSeenAt?: string;
@@ -342,18 +348,31 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
   const [searchStatus, setSearchStatus] = useState("");
   const [loading, setLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
+  const [interpretedTerms, setInterpretedTerms] = useState<string[]>([]);
+  const [previewCandidate, setPreviewCandidate] = useState<Candidate | null>(null);
   async function run(page = 1, append = false) {
     if (!query.trim()) return;
     setLoading(true);
     setHasSearched(true);
+    if (page === 1) {
+      setResults([]);
+      setTotalResults(0);
+      setInterpretedTerms([]);
+    }
     setSearchStatus(refreshSources ? "Actualizando fuentes conectadas y buscando..." : "Buscando...");
     try {
-      const response = await api<{ data: any[]; meta: { total: number; page: number; pageSize: number; hasMore: boolean }; sync?: { ran: boolean; sources: number; imported: number; errors: number } }>("/search/talent", { method: "POST", body: JSON.stringify({ query, refreshSources: page === 1 && refreshSources, page, pageSize: 50, filters: { seniority: seniority || undefined, activeOnly } }) });
+      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean }; sync?: { ran: boolean; sources: number; imported: number; errors: number } }>("/search/talent", { method: "POST", body: JSON.stringify({ query, refreshSources: page === 1 && refreshSources, page, pageSize: 50, filters: { seniority: seniority || undefined, activeOnly } }) });
       setResults((previous) => append
         ? [...new Map([...previous, ...response.data].map((candidate) => [candidate.id, candidate])).values()]
         : response.data);
       setTotalResults(response.meta.total);
       setCurrentPage(response.meta.page);
+      if (page === 1) setInterpretedTerms([...new Set([
+        ...(response.query?.roles ?? []),
+        ...(response.query?.skills ?? []),
+        ...(response.query?.languages ?? []),
+        ...(response.query?.industries ?? [])
+      ])]);
       setSearchStatus(response.sync?.ran ? `Fuentes consultadas: ${response.sync.sources}. Importados/actualizados: ${response.sync.imported}. Errores u omitidos: ${response.sync.errors}.` : "");
     } catch (err: any) {
       setSearchStatus(err.message || "No se pudo completar la busqueda.");
@@ -371,9 +390,14 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
         <button className="btn-primary" onClick={() => run(1, false)} disabled={!query.trim() || loading}><Search size={16} /> {loading ? "Buscando..." : "Buscar candidatos"}</button>
       </div>
       {searchStatus && <div className="mb-3 rounded-md border border-slate-200 bg-white p-3 text-sm text-slate-600">{searchStatus}</div>}
+      {hasSearched && interpretedTerms.length > 0 && <div className="mb-3 flex flex-wrap items-center gap-2 border-y border-slate-200 bg-white px-3 py-3 text-sm"><span className="font-semibold text-slate-600">La búsqueda entendió:</span>{interpretedTerms.map((term) => <span key={term} className="rounded-full bg-teal/10 px-2 py-1 text-xs font-semibold text-teal">{term}</span>)}</div>}
       {hasSearched && <div className="mb-3 text-sm text-slate-500">Mostrando {results.length} de {totalResults} candidatos relacionados · ordenados por compatibilidad</div>}
-      <div className="grid gap-3">{!hasSearched && <Empty text="Escribí lo que necesitás para calcular la compatibilidad sobre los CVs." />}{hasSearched && !loading && results.length === 0 && <Empty text="La búsqueda no encontró candidatos con evidencia suficiente en los CVs disponibles." />}{results.map((c) => <CandidateRow key={c.id} candidate={{ ...c, sourceCount: c.sourceCount ?? 0, documentCount: c.documentCount ?? 0, primaryDocumentName: c.primaryDocumentName ?? null, email: c.email ?? [], phone: c.phone ?? [], languages: [], strengths: [], weaknesses: [], status: "active" }} onView={onView} reason={c.matchReason} matchScore={c.score} />)}</div>
+      <div className="grid gap-3">{!hasSearched && <Empty text="Escribí lo que necesitás para calcular la compatibilidad sobre los CVs." />}{hasSearched && !loading && results.length === 0 && <Empty text="La búsqueda no encontró candidatos con evidencia suficiente en los CVs disponibles." />}{results.map((c) => {
+        const candidate = { ...c, sourceCount: c.sourceCount ?? 0, documentCount: c.documentCount ?? 0, primaryDocumentName: c.primaryDocumentName ?? null, email: c.email ?? [], phone: c.phone ?? [], languages: [], strengths: [], weaknesses: [], status: "active" } as Candidate;
+        return <CandidateRow key={c.id} candidate={candidate} onView={onView} onPreview={candidate.primaryDocumentId ? () => setPreviewCandidate(candidate) : undefined} reason={c.matchReason} matchScore={c.score} />;
+      })}</div>
       {results.length < totalResults && <div className="mt-4 flex justify-center"><button className="btn-ghost" onClick={() => run(currentPage + 1, true)} disabled={loading}>{loading ? "Cargando..." : `Cargar 50 más (${totalResults - results.length} restantes)`}</button></div>}
+      {previewCandidate && <CvPreviewModal candidate={previewCandidate} onClose={() => setPreviewCandidate(null)} onView={() => { setPreviewCandidate(null); onView(previewCandidate.id); }} />}
     </PagePad>
   );
 }
@@ -1001,14 +1025,89 @@ function DocumentList({ rows, empty, candidateId }: { rows: CandidateDocument[];
   })}</div>;
 }
 
-function CandidateRow({ candidate, onView, reason, matchScore }: { candidate: Candidate; onView: (id: string) => void; reason?: string; matchScore?: number }) {
+function CvPreviewModal({ candidate, onClose, onView }: { candidate: Candidate; onClose: () => void; onView: () => void }) {
+  const [blobUrl, setBlobUrl] = useState("");
+  const [mimeType, setMimeType] = useState(candidate.primaryDocumentMimeType ?? "");
+  const [fileName, setFileName] = useState(candidate.primaryDocumentName || "CV");
+  const [error, setError] = useState("");
+  const document: CandidateDocument = {
+    id: candidate.primaryDocumentId || "",
+    file_name: candidate.primaryDocumentName || undefined,
+    mime_type: candidate.primaryDocumentMimeType,
+    source_type: candidate.primaryDocumentSourceType
+  };
+
+  useEffect(() => {
+    const previousOverflow = window.document.body.style.overflow;
+    window.document.body.style.overflow = "hidden";
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", closeOnEscape);
+    let active = true;
+    let objectUrl = "";
+    fetchDocumentBlob(candidate.id, document)
+      .then(({ blob, fileName: loadedName }) => {
+        if (!active) return;
+        objectUrl = URL.createObjectURL(blob);
+        setBlobUrl(objectUrl);
+        setMimeType(blob.type || document.mime_type || "");
+        setFileName(loadedName);
+      })
+      .catch((reason) => { if (active) setError(reason.message || "No se pudo abrir el CV."); });
+    return () => {
+      active = false;
+      window.removeEventListener("keydown", closeOnEscape);
+      window.document.body.style.overflow = previousOverflow;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [candidate.id, candidate.primaryDocumentId]);
+
+  const isPdf = mimeType.includes("pdf") || fileName.toLowerCase().endsWith(".pdf");
+  const isImage = mimeType.startsWith("image/");
+  const extractedText = cleanDisplayText(candidate.documentSnippet);
+  return <div className="fixed inset-0 z-50 bg-slate-950/60 p-3 md:p-5" role="dialog" aria-modal="true" aria-label={`CV de ${candidate.fullName}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className="mx-auto flex h-full max-w-7xl flex-col overflow-hidden rounded-md bg-white shadow-2xl">
+      <header className="flex items-start justify-between gap-4 border-b border-slate-200 px-4 py-3 md:px-5">
+        <div className="min-w-0"><div className="truncate text-lg font-extrabold text-slate-900">{candidate.fullName}</div><div className="truncate text-sm text-slate-500">{candidate.currentRole || "Perfil sin rol definido"} · {fileName}</div></div>
+        <button className="btn-ghost shrink-0" onClick={onClose} title="Cerrar vista previa" aria-label="Cerrar vista previa"><X size={18} /></button>
+      </header>
+      <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <section className="min-h-[48vh] overflow-hidden bg-slate-100">
+          {!blobUrl && !error && <div className="grid h-full place-items-center text-sm text-slate-500">Preparando vista previa del CV...</div>}
+          {error && <div className="grid h-full place-items-center p-6"><ErrorBox message={error} /></div>}
+          {blobUrl && isPdf && <iframe className="h-full min-h-[58vh] w-full bg-white" src={blobUrl} title={`CV de ${candidate.fullName}`} />}
+          {blobUrl && isImage && <div className="h-full overflow-auto p-4"><img className="mx-auto max-w-full" src={blobUrl} alt={`CV de ${candidate.fullName}`} /></div>}
+          {blobUrl && !isPdf && !isImage && <div className="h-full overflow-auto p-5"><h3 className="mb-3 font-bold">Texto extraído del CV</h3><p className="mb-4 text-sm text-slate-500">El formato original se puede descargar. Esta vista muestra el contenido indexado disponible.</p><pre className="whitespace-pre-wrap text-sm leading-6 text-slate-700">{extractedText || "No hay texto legible disponible para previsualizar."}</pre></div>}
+        </section>
+        <aside className="min-h-0 overflow-auto border-t border-slate-200 p-5 lg:border-l lg:border-t-0">
+          {typeof candidate.score === "number" && <div className="mb-5"><MatchScore score={candidate.score} /></div>}
+          <h3 className="mb-2 font-bold">Por qué aparece</h3>
+          <p className="mb-5 text-sm leading-6 text-slate-700">{cleanDisplayText(candidate.matchReason) || "El perfil contiene evidencia relacionada con la búsqueda actual."}</p>
+          <h3 className="mb-2 font-bold">Datos disponibles</h3>
+          <div className="mb-5 grid gap-2 text-sm text-slate-700">
+            {candidate.phone?.[0] && <a className="flex items-center gap-2" href={`tel:${candidate.phone[0]}`}><Phone size={15} /> {candidate.phone[0]}</a>}
+            {candidate.email?.[0] && <a className="flex items-center gap-2 break-all" href={`mailto:${candidate.email[0]}`}><Mail size={15} /> {candidate.email[0]}</a>}
+            {(candidate.city || candidate.country) && <div className="flex items-center gap-2"><MapPin size={15} /> {[candidate.city, candidate.country].filter(Boolean).join(", ")}</div>}
+            <div className="flex items-center gap-2"><FileText size={15} /> {fileName}</div>
+          </div>
+          <TagList tags={candidate.tags ?? []} />
+          <div className="mt-6 grid gap-2">
+            <button className="btn-primary justify-center" onClick={onView}><UserRound size={16} /> Abrir ficha completa</button>
+            <button className="btn-ghost justify-center" onClick={() => downloadDocument(candidate.id, document).catch((reason) => setError(reason.message))}><Download size={16} /> Descargar CV</button>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </div>;
+}
+
+function CandidateRow({ candidate, onView, onPreview, reason, matchScore }: { candidate: Candidate; onView: (id: string) => void; onPreview?: () => void; reason?: string; matchScore?: number }) {
   const role = shortText(candidate.currentRole || "Sin rol", 90);
   const location = shortText(candidate.city || candidate.country || "Sin ciudad", 45);
   const documents = Number(candidate.documentCount ?? 0);
   const contact = [candidate.phone?.[0], candidate.email?.[0]].filter(Boolean).join(" · ");
   const summary = cleanDisplayText(candidate.summary);
   const updated = candidate.lastSeenAt ? new Date(candidate.lastSeenAt).toLocaleDateString("es-UY") : "";
-  return <div className="card flex flex-wrap items-start justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div>{candidate.status === "needs_review" && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">Revisar datos</span>}</div><div className="truncate text-sm text-slate-500">{role} · {location}{candidate.years ? ` · ${candidate.years} años declarados` : ""}</div>{summary && <p className="mt-2 max-w-3xl text-sm leading-5 text-slate-700">{shortText(summary, 260)}</p>}<div className="mt-2 flex flex-wrap items-center gap-2">{documents > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600"><FileText size={13} /> {documents} CV/doc</span>}{candidate.primaryDocumentName && <span className="max-w-sm truncate text-xs text-slate-500">{shortText(candidate.primaryDocumentName, 70)}</span>}{contact && <span className="max-w-md truncate text-xs text-slate-500">{shortText(contact, 90)}</span>}{updated && <span className="text-xs text-slate-400">Actualizado {updated}</span>}</div><div className="mt-2 flex flex-wrap gap-1">{(candidate.sourceTypes ?? []).map((source) => <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600" key={source}>{source}</span>)}</div><TagList tags={candidate.tags ?? []} />{reason && <p className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{shortText(reason, 240)}</p>}</div></div><div className="flex shrink-0 items-center gap-3">{typeof matchScore === "number" && <MatchScore score={matchScore} />}<button className={documents > 0 ? "btn-primary" : "btn-ghost"} onClick={() => onView(candidate.id)}>{documents > 0 ? "Ver ficha / CV" : "Ver ficha"}</button></div></div>;
+  return <div className="card flex flex-wrap items-start justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div>{candidate.status === "needs_review" && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">Revisar datos</span>}</div><div className="truncate text-sm text-slate-500">{role} · {location}{candidate.years ? ` · ${candidate.years} años declarados` : ""}</div>{summary && <p className="mt-2 max-w-3xl text-sm leading-5 text-slate-700">{shortText(summary, 260)}</p>}<div className="mt-2 flex flex-wrap items-center gap-2">{documents > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600"><FileText size={13} /> {documents} CV/doc</span>}{candidate.primaryDocumentName && <span className="max-w-sm truncate text-xs text-slate-500">{shortText(candidate.primaryDocumentName, 70)}</span>}{contact && <span className="max-w-md truncate text-xs text-slate-500">{shortText(contact, 90)}</span>}{updated && <span className="text-xs text-slate-400">Actualizado {updated}</span>}</div><div className="mt-2 flex flex-wrap gap-1">{(candidate.sourceTypes ?? []).map((source) => <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600" key={source}>{source}</span>)}</div><TagList tags={candidate.tags ?? []} />{reason && <p className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{shortText(reason, 240)}</p>}</div></div><div className="flex shrink-0 items-center gap-3">{typeof matchScore === "number" && <MatchScore score={matchScore} />}<div className="grid gap-2">{onPreview && documents > 0 && <button className="btn-primary justify-center" onClick={onPreview}><Eye size={16} /> Ver CV</button>}<button className="btn-ghost justify-center" onClick={() => onView(candidate.id)}>Ver ficha</button></div></div></div>;
 }
 
 type InputProps = {

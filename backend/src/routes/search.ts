@@ -56,7 +56,19 @@ function expandedSearchTerms(query: string) {
     restaurante: ["gastronomia", "gastronomía", "cocina", "mozo", "moza"],
     cocina: ["gastronomia", "gastronomía", "restaurante"],
     mozo: ["moza", "gastronomia", "gastronomía", "restaurante"],
-    moza: ["mozo", "gastronomia", "gastronomía", "restaurante"]
+    moza: ["mozo", "gastronomia", "gastronomía", "restaurante"],
+    liderazgo: ["lider", "líder", "jefe", "supervisor", "coordinador", "encargado", "gerente", "team leader", "manejo de equipos"],
+    organizacion: ["organización", "planificacion", "planificación", "coordinacion", "coordinación", "gestion", "gestión"],
+    comunicacion: ["comunicación", "trato con clientes", "atencion al cliente", "atención al cliente", "relaciones interpersonales"],
+    negociacion: ["negociación", "ventas", "comercial", "compras", "cuentas"],
+    administrativo: ["administrativa", "administracion", "administración", "auxiliar administrativo", "back office", "oficina"],
+    administracion: ["administración", "administrativo", "administrativa", "auxiliar administrativo", "back office", "oficina"],
+    logistica: ["logística", "deposito", "depósito", "almacen", "almacén", "inventario", "distribucion", "distribución", "supply chain"],
+    contable: ["contador", "contadora", "contabilidad", "finanzas", "tesoreria", "tesorería", "facturacion", "facturación"],
+    marketing: ["mercadeo", "comunicacion", "comunicación", "redes sociales", "contenido", "publicidad"],
+    tecnologia: ["tecnología", "sistemas", "software", "informatica", "informática", "it", "soporte tecnico", "soporte técnico"],
+    mantenimiento: ["mecanica", "mecánica", "electromecanica", "electromecánica", "tecnico", "técnico"],
+    compras: ["abastecimiento", "procurement", "proveedores", "negociacion", "negociación"]
   };
   return [...new Set([normalizedQuery, ...words, ...words.flatMap((word) => extras[word] ?? [])].map(normalizeSearchText))]
     .filter(Boolean);
@@ -151,6 +163,9 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
       coalesce(src.source_types, '{}'::text[]) AS source_types,
       coalesce(doc.document_count, 0)::int AS document_count,
       doc.primary_document_name,
+      doc.primary_document_id,
+      doc.primary_document_mime_type,
+      doc.primary_document_source_type,
       left(coalesce(doc.document_snippet, ''), 1200) AS document_snippet,
       top_matches.rank
      FROM top_matches
@@ -163,6 +178,21 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
            d.is_primary_cv DESC,
            d.created_at DESC
          ))[1] AS primary_document_name,
+         (array_agg(d.id ORDER BY
+           (to_tsvector('spanish', ${documentText}) @@ websearch_to_tsquery('spanish', $2)) DESC,
+           d.is_primary_cv DESC,
+           d.created_at DESC
+         ))[1] AS primary_document_id,
+         (array_agg(d.mime_type ORDER BY
+           (to_tsvector('spanish', ${documentText}) @@ websearch_to_tsquery('spanish', $2)) DESC,
+           d.is_primary_cv DESC,
+           d.created_at DESC
+         ))[1] AS primary_document_mime_type,
+         (array_agg(d.source_type ORDER BY
+           (to_tsvector('spanish', ${documentText}) @@ websearch_to_tsquery('spanish', $2)) DESC,
+           d.is_primary_cv DESC,
+           d.created_at DESC
+         ))[1] AS primary_document_source_type,
          (array_agg(d.raw_text ORDER BY
            (to_tsvector('spanish', ${documentText}) @@ websearch_to_tsquery('spanish', $2)) DESC,
            d.is_primary_cv DESC,
@@ -197,6 +227,9 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     sourceTypes: row.source_types ?? [],
     documentCount: Number(row.document_count ?? 0),
     primaryDocumentName: row.primary_document_name ?? null,
+    primaryDocumentId: row.primary_document_id ?? null,
+    primaryDocumentMimeType: row.primary_document_mime_type ?? null,
+    primaryDocumentSourceType: row.primary_document_source_type ?? null,
     documentSnippet: row.document_snippet ?? null,
     score: Math.min(100, Math.max(0, Math.round((Number(row.rank) * 60) + (row.quality_score * 0.4)))),
     matchReason: row.rank > 0 ? "Coincide por texto, rol, competencias o resumen registrado." : "Sin coincidencia semantica directa; ordenado por calidad del perfil."

@@ -31,6 +31,9 @@ export type TalentCandidateResult = {
   sourceCount?: number;
   documentCount?: number;
   primaryDocumentName?: string | null;
+  primaryDocumentId?: string | null;
+  primaryDocumentMimeType?: string | null;
+  primaryDocumentSourceType?: string | null;
   documentSnippet?: string | null;
   score: number;
   matchReason: string;

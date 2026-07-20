@@ -27,7 +27,14 @@ const EQUIVALENT_TERMS: Record<string, string[]> = {
   gastronomia: ["gastonomia", "restaurante", "cocina", "mozo", "moza", "atencion al cliente"],
   gastonomia: ["gastronomia", "restaurante", "cocina", "mozo", "moza"],
   logistica: ["logistica y produccion", "logistica y produccion", "deposito", "almacen"],
-  seleccion: ["reclutamiento", "recursos humanos", "rrhh"]
+  seleccion: ["reclutamiento", "recursos humanos", "rrhh"],
+  liderazgo: ["lider", "jefe", "supervisor", "coordinador", "encargado", "gerente", "team leader", "manejo de equipos", "personal a cargo"],
+  organizacion: ["organizacion", "planificacion", "coordinacion", "gestion del tiempo", "seguimiento"],
+  comunicacion: ["comunicacion", "trato con clientes", "atencion al cliente", "relaciones interpersonales"],
+  negociacion: ["negociacion", "cierre de ventas", "manejo de cuentas", "desarrollo de clientes"],
+  "resolucion de problemas": ["resolver problemas", "analitico", "pensamiento critico", "toma de decisiones"],
+  adaptabilidad: ["flexibilidad", "entorno dinamico", "trabajo bajo presion"],
+  "trabajo en equipo": ["colaboracion", "colaborativo", "equipos multidisciplinarios"]
 };
 
 function equivalentValues(value: string) {

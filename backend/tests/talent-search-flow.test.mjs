@@ -15,6 +15,27 @@ test("interpreta abogado con ingles como rol e idioma", () => {
   assert.ok(interpreted.mustHave.includes("ingles"));
 });
 
+test("interpreta una necesidad conceptual aunque no nombre la competencia", () => {
+  const interpreted = interpretTalentQuery("Busco una persona organizada para coordinar un equipo y tratar con clientes");
+
+  assert.ok(interpreted.skills.includes("organizacion"));
+  assert.ok(interpreted.skills.includes("liderazgo"));
+  assert.ok(interpreted.skills.includes("comunicacion"));
+});
+
+test("amplia la consulta conceptual antes de buscar en todos los CV", async () => {
+  let providerQuery = "";
+  const engine = new RecruitmentIntelligenceEngine(async (query) => {
+    providerQuery = query;
+    return [];
+  });
+
+  await engine.search("Busco una persona organizada para coordinar un equipo");
+
+  assert.match(providerQuery, /organizacion/);
+  assert.match(providerQuery, /liderazgo/);
+});
+
 test("no corta el ranking en veinte candidatos", async () => {
   const candidates = Array.from({ length: 65 }, (_, index) => ({
     id: `candidate-${index}`,
