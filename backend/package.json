@@ -11,6 +11,7 @@
     "local:import-gmail": "tsx src/scripts/importGmailTakeoutLocal.ts",
     "reanalyze:candidates": "tsx src/scripts/reanalyzeCandidates.ts",
     "cleanup:generic-names": "tsx src/scripts/rejectGenericCandidateNames.ts",
+    "cleanup:storage": "tsx src/scripts/cleanupDatabaseStorage.ts",
     "validate:product-data": "tsx src/scripts/validateProductData.ts"
   },
   "dependencies": {

@@ -61,7 +61,8 @@ function candidateProfileText(candidate: TalentCandidateResult) {
 }
 
 function primaryRoleMatches(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
-  return interpreted.roles.length === 0 || includesAny(candidate.currentRole ?? "", interpreted.roles);
+  const requestedAreas = [...interpreted.roles, ...interpreted.skills, ...interpreted.industries];
+  return requestedAreas.length === 0 || includesAny(candidate.currentRole ?? "", requestedAreas);
 }
 
 function conceptMatchesProfile(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery, concept: string) {

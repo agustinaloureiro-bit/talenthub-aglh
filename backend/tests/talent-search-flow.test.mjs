@@ -221,3 +221,34 @@ test("una mención secundaria en el CV no empata con un área principal alineada
   assert.ok(ranked[1].score < 100);
   assert.match(ranked[1].matchReason, /no como perfil principal/i);
 });
+
+test("ventas como rol principal queda antes que una mención secundaria de gastronomía", () => {
+  const interpreted = interpretTalentQuery("ventas y gastronomia");
+  const ranked = rerankCandidates([
+    {
+      id: "ventas-principal",
+      fullName: "Persona Comercial",
+      currentRole: "Ventas",
+      tags: ["ventas", "gastronomia"],
+      qualityScore: 40,
+      documentCount: 1,
+      documentSnippet: "Experiencia en ventas y atención en restaurante.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "mencion-secundaria",
+      fullName: "Persona Legal",
+      currentRole: "Abogado",
+      tags: ["ventas", "gastronomia"],
+      qualityScore: 100,
+      documentCount: 1,
+      documentSnippet: "Asesoría legal para empresas de ventas y gastronomía.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.equal(ranked[0].id, "ventas-principal");
+  assert.ok(ranked[0].score > ranked[1].score);
+});
