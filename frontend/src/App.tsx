@@ -337,17 +337,23 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
   const [activeOnly, setActiveOnly] = useState(true);
   const [refreshSources, setRefreshSources] = useState(false);
   const [results, setResults] = useState<any[]>([]);
+  const [totalResults, setTotalResults] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
   const [searchStatus, setSearchStatus] = useState("");
   const [loading, setLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
-  async function run() {
+  async function run(page = 1, append = false) {
     if (!query.trim()) return;
     setLoading(true);
     setHasSearched(true);
     setSearchStatus(refreshSources ? "Actualizando fuentes conectadas y buscando..." : "Buscando...");
     try {
-      const response = await api<{ data: any[]; sync?: { ran: boolean; sources: number; imported: number; errors: number } }>("/search/talent", { method: "POST", body: JSON.stringify({ query, refreshSources, filters: { seniority: seniority || undefined, activeOnly } }) });
-      setResults(response.data);
+      const response = await api<{ data: any[]; meta: { total: number; page: number; pageSize: number; hasMore: boolean }; sync?: { ran: boolean; sources: number; imported: number; errors: number } }>("/search/talent", { method: "POST", body: JSON.stringify({ query, refreshSources: page === 1 && refreshSources, page, pageSize: 50, filters: { seniority: seniority || undefined, activeOnly } }) });
+      setResults((previous) => append
+        ? [...new Map([...previous, ...response.data].map((candidate) => [candidate.id, candidate])).values()]
+        : response.data);
+      setTotalResults(response.meta.total);
+      setCurrentPage(response.meta.page);
       setSearchStatus(response.sync?.ran ? `Fuentes consultadas: ${response.sync.sources}. Importados/actualizados: ${response.sync.imported}. Errores u omitidos: ${response.sync.errors}.` : "");
     } catch (err: any) {
       setSearchStatus(err.message || "No se pudo completar la busqueda.");
@@ -362,11 +368,12 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
         <select className="field max-w-48" value={seniority} onChange={(e) => setSeniority(e.target.value)}><option value="">Todo seniority</option><option>Junior</option><option>Semi-Senior</option><option>Senior</option><option>Lead</option><option>Manager</option></select>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)} /> Solo activos</label>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={refreshSources} onChange={(e) => setRefreshSources(e.target.checked)} /> Sincronizar antes de buscar</label>
-        <button className="btn-primary" onClick={run} disabled={!query.trim() || loading}><Search size={16} /> {loading ? "Buscando..." : "Buscar candidatos"}</button>
+        <button className="btn-primary" onClick={() => run(1, false)} disabled={!query.trim() || loading}><Search size={16} /> {loading ? "Buscando..." : "Buscar candidatos"}</button>
       </div>
       {searchStatus && <div className="mb-3 rounded-md border border-slate-200 bg-white p-3 text-sm text-slate-600">{searchStatus}</div>}
-      {hasSearched && <div className="mb-3 text-sm text-slate-500">{results.length} candidatos encontrados · ordenados por compatibilidad con esta búsqueda</div>}
+      {hasSearched && <div className="mb-3 text-sm text-slate-500">Mostrando {results.length} de {totalResults} candidatos relacionados · ordenados por compatibilidad</div>}
       <div className="grid gap-3">{!hasSearched && <Empty text="Escribí lo que necesitás para calcular la compatibilidad sobre los CVs." />}{hasSearched && !loading && results.length === 0 && <Empty text="La búsqueda no encontró candidatos con evidencia suficiente en los CVs disponibles." />}{results.map((c) => <CandidateRow key={c.id} candidate={{ ...c, sourceCount: c.sourceCount ?? 0, documentCount: c.documentCount ?? 0, primaryDocumentName: c.primaryDocumentName ?? null, email: c.email ?? [], phone: c.phone ?? [], languages: [], strengths: [], weaknesses: [], status: "active" }} onView={onView} reason={c.matchReason} matchScore={c.score} />)}</div>
+      {results.length < totalResults && <div className="mt-4 flex justify-center"><button className="btn-ghost" onClick={() => run(currentPage + 1, true)} disabled={loading}>{loading ? "Cargando..." : `Cargar 50 más (${totalResults - results.length} restantes)`}</button></div>}
     </PagePad>
   );
 }

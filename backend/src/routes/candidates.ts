@@ -132,7 +132,8 @@ const excludeFalseGmailCandidatesSql = `NOT (
         )
     )
   )
-)`;
+)
+AND lower(trim(coalesce(candidates.full_name, ''))) !~ '(preparaci[oó]n|entrega de|[oó]rdenes|experiencia en|responsable de|tareas de|funciones|perfil profesional|objetivo laboral|curr[ií]culum|curriculum vitae|postulaci[oó]n|futuras vacantes)'`;
 
 async function cleanupFalseGmailCandidates() {
   await q(

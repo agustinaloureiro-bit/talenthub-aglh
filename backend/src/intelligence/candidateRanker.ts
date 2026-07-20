@@ -8,6 +8,15 @@ function normalizeSearchValue(value: string) {
     .trim();
 }
 
+export function isCredibleCandidateName(value: string) {
+  const name = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (name.length < 4 || name.length > 90 || /[@\d]|https?:|www\.|:/.test(name)) return false;
+  const words = name.split(" ").filter(Boolean);
+  if (words.length < 2 || words.length > 8) return false;
+  if (!words.every((word) => /^[\p{L}'-]+$/u.test(word))) return false;
+  return !/(preparaci[oó]n|entrega de|[oó]rdenes|experiencia en|responsable de|tareas de|funciones|perfil profesional|objetivo laboral|curr[ií]culum|curriculum vitae|postulaci[oó]n|futuras vacantes)/i.test(name);
+}
+
 const EQUIVALENT_TERMS: Record<string, string[]> = {
   abogado: ["abogada", "legal", "derecho", "juridico", "asesor legal", "asesora legal"],
   abogada: ["abogado", "legal", "derecho", "juridico", "asesor legal", "asesora legal"],
@@ -109,6 +118,7 @@ export function explainCandidateMatch(candidate: TalentCandidateResult, interpre
 
 export function rerankCandidates(candidates: TalentCandidateResult[], interpreted: InterpretedTalentQuery) {
   return candidates
+    .filter((candidate) => isCredibleCandidateName(candidate.fullName))
     .map((candidate) => {
       const conceptCoverage = coverage(candidate, interpreted);
       const documentText = candidate.documentSnippet ?? "";

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const { interpretTalentQuery } = await import("../dist/intelligence/queryInterpreter.js");
-const { rerankCandidates } = await import("../dist/intelligence/candidateRanker.js");
+const { isCredibleCandidateName, rerankCandidates } = await import("../dist/intelligence/candidateRanker.js");
+const { RecruitmentIntelligenceEngine } = await import("../dist/intelligence/intelligenceEngine.js");
 const { downloadContentDisposition } = await import("../dist/routes/candidates.js");
 
 test("interpreta abogado con ingles como rol e idioma", () => {
@@ -12,6 +13,29 @@ test("interpreta abogado con ingles como rol e idioma", () => {
   assert.ok(interpreted.languages.includes("ingles"));
   assert.ok(interpreted.mustHave.includes("abogado"));
   assert.ok(interpreted.mustHave.includes("ingles"));
+});
+
+test("no corta el ranking en veinte candidatos", async () => {
+  const candidates = Array.from({ length: 65 }, (_, index) => ({
+    id: `candidate-${index}`,
+    fullName: `Persona Ejemplo${String.fromCharCode(65 + (index % 26))}`,
+    currentRole: "Ventas",
+    tags: ["ventas"],
+    qualityScore: 50,
+    documentCount: 1,
+    documentSnippet: "Experiencia comprobable en ventas.",
+    score: 0,
+    matchReason: ""
+  }));
+  const engine = new RecruitmentIntelligenceEngine(async () => candidates);
+  const result = await engine.search("ventas", { activeOnly: true });
+
+  assert.equal(result.data.length, 65);
+});
+
+test("excluye frases del CV usadas por error como nombre", () => {
+  assert.equal(isCredibleCandidateName("la preparación y entrega de órdenes"), false);
+  assert.equal(isCredibleCandidateName("Gimena Gonzalez"), true);
 });
 
 test("genera un nombre de descarga valido para archivos con acentos combinados", () => {

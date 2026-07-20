@@ -11,6 +11,8 @@ export const searchRouter = Router();
 const searchSchema = z.object({
   query: z.string().min(1),
   refreshSources: z.boolean().optional().default(false),
+  page: z.number().int().min(1).optional().default(1),
+  pageSize: z.number().int().min(10).max(100).optional().default(50),
   filters: z.object({
     source: z.array(z.string()).optional(),
     seniority: z.string().optional(),
@@ -143,7 +145,6 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
        JOIN candidates c ON c.id=m.id
        WHERE EXISTS (SELECT 1 FROM documents available_doc WHERE available_doc.candidate_id=c.id)
        ORDER BY m.rank DESC, c.quality_score DESC, c.updated_at DESC
-       LIMIT 100
      )
      SELECT c.*,
       coalesce(src.source_count, 0)::int AS source_count,
@@ -213,11 +214,20 @@ searchRouter.post("/talent", asyncHandler(async (req, res) => {
   const syncResults = body.refreshSources ? await syncConnectedIntegrations() : [];
   await q("INSERT INTO saved_searches (user_id, query, filters) VALUES ($1,$2,$3)", [req.user!.id, body.query, JSON.stringify(body.filters)]);
   const result = await searchTalent(body.query, body.filters);
+  const offset = (body.page - 1) * body.pageSize;
+  const pageData = result.data.slice(offset, offset + body.pageSize);
   res.json({
-    data: result.data,
+    data: pageData,
     query: result.query,
     explanation: result.explanation,
     mode: result.mode,
+    meta: {
+      total: result.data.length,
+      returned: pageData.length,
+      page: body.page,
+      pageSize: body.pageSize,
+      hasMore: offset + pageData.length < result.data.length
+    },
     sync: {
       ran: body.refreshSources,
       sources: syncResults.length,

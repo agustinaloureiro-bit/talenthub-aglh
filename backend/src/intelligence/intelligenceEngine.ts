@@ -10,7 +10,7 @@ export class RecruitmentIntelligenceEngine {
   async search(query: string, filters: TalentSearchFilters = {}): Promise<TalentSearchResult> {
     const interpreted = interpretTalentQuery(query);
     const candidates = await this.fallbackSearch(interpreted.normalizedQuery, filters);
-    const ranked = rerankCandidates(candidates, interpreted).slice(0, 20);
+    const ranked = rerankCandidates(candidates, interpreted);
 
     return {
       query: interpreted,
