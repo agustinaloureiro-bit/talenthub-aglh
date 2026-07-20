@@ -23,7 +23,7 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-13.1";
+const SYNC_ENGINE_VERSION = "2026-07-20.1";
 const DEFAULT_GMAIL_QUERY = "has:attachment (filename:pdf OR filename:doc OR filename:docx OR filename:rtf OR filename:txt) newer_than:3650d";
 const MAX_STORED_CV_BYTES = 8 * 1024 * 1024;
 
@@ -68,6 +68,8 @@ function maskConfig(config: Record<string, unknown> | null) {
     "gmailHasMore",
     "gmailSyncMode",
     "gmailIncrementalSince",
+    "gmailHistoryId",
+    "gmailHistorySyncActive",
     "gmailBackfillCompleteAt",
     "gmailHistoricalStartedAt",
     "gmailTotalMatchingMessages",
@@ -1181,6 +1183,25 @@ async function googleConnectedEmail(sourceType: "gmail" | "drive", token: string
   return cleanText(about?.user?.emailAddress).toLowerCase();
 }
 
+export function gmailHistoryMessageIds(payload: any) {
+  const ids: string[] = [];
+  for (const entry of Array.isArray(payload?.history) ? payload.history : []) {
+    for (const added of Array.isArray(entry?.messagesAdded) ? entry.messagesAdded : []) {
+      const id = cleanText(added?.message?.id);
+      if (id) ids.push(id);
+    }
+  }
+  return unique(ids);
+}
+
+async function gmailProfile(token: string) {
+  const profile = await googleJson("https://gmail.googleapis.com/gmail/v1/users/me/profile", token);
+  return {
+    emailAddress: cleanText(profile.emailAddress).toLowerCase(),
+    historyId: cleanText(profile.historyId)
+  };
+}
+
 async function googleAccountConfigUpdate(sourceType: "gmail" | "drive", token: string, config: Record<string, unknown>) {
   const connectedGoogleEmail = await googleConnectedEmail(sourceType, token);
   const expected = expectedGoogleEmail(config);
@@ -1645,7 +1666,7 @@ async function gmailAttachments(messageId: string, parts: any[], token: string, 
     const mimeType = cleanText(part.mimeType);
     if (!fileName || !looksLikeCvAttachment(fileName, mimeType)) continue;
     const size = Number(part.body?.size ?? 0);
-    if (Number.isFinite(size) && size > 4_000_000) {
+    if (Number.isFinite(size) && size > MAX_STORED_CV_BYTES) {
       attachments.push({
         fileName,
         mimeType,
@@ -1739,23 +1760,76 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
       ? (config.gmailPendingMessageIds as unknown[]).map(cleanText).filter(Boolean)
       : [];
     const storedNextPageToken = cleanText(config.gmailNextPageToken);
-    const syncQuery = gmailSyncQueryForConfig(config, storedPendingIds.length > 0 || Boolean(storedNextPageToken));
+    const storedHistoryId = cleanText(config.gmailHistoryId);
+    const storedHistoryStartId = cleanText(config.gmailHistoryStartId);
+    const storedHistoryTargetId = cleanText(config.gmailHistoryTargetId);
+    const storedHistoryPageToken = cleanText(config.gmailHistoryNextPageToken);
+    const canUseHistory = Boolean(
+      cleanText(config.gmailBackfillCompleteAt)
+      && !cleanText(config.query)
+      && (storedHistoryId || storedHistoryStartId)
+    );
+    const historyMode = canUseHistory && (storedPendingIds.length > 0 || storedHistoryId || storedHistoryStartId);
+    const syncQuery = historyMode
+      ? { query: "", mode: "history", since: storedHistoryStartId || storedHistoryId }
+      : gmailSyncQueryForConfig(config, storedPendingIds.length > 0 || Boolean(storedNextPageToken));
+    let historySeedId = cleanText(config.gmailHistorySeedId);
+    if (!historyMode && syncQuery.mode !== "custom" && !historySeedId) {
+      historySeedId = (await gmailProfile(auth.token)).historyId;
+    }
     const query = syncQuery.query;
-    const resetStoredQueue = Boolean(storedQuery && storedQuery !== query);
+    const resetStoredQueue = !historyMode && Boolean(storedQuery && storedQuery !== query);
     const pendingIds = resetStoredQueue ? [] : storedPendingIds;
     let nextPageToken = resetStoredQueue ? "" : storedNextPageToken;
+    let historyStartId = storedHistoryStartId || storedHistoryId;
+    let historyTargetId = storedHistoryTargetId;
+    let historyNextPageToken = storedHistoryPageToken;
     let fetchedPage = false;
     let totalMatchingMessages = Number(config.gmailTotalMatchingMessages ?? 0);
     let batchMessageIds = pendingIds;
     if (batchMessageIds.length === 0) {
-      const pageToken = resetStoredQueue ? "" : cleanText(config.gmailNextPageToken);
-      const params = new URLSearchParams({ q: query, maxResults: String(maxResults) });
-      if (pageToken) params.set("pageToken", pageToken);
-      const list = await googleJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`, auth.token);
-      batchMessageIds = (list.messages ?? []).map((item: any) => cleanText(item.id)).filter(Boolean);
-      nextPageToken = cleanText(list.nextPageToken);
-      totalMatchingMessages = Number(list.resultSizeEstimate ?? totalMatchingMessages);
-      fetchedPage = true;
+      if (historyMode && historyStartId) {
+        const params = new URLSearchParams({
+          startHistoryId: historyStartId,
+          historyTypes: "messageAdded",
+          maxResults: String(maxResults)
+        });
+        if (historyNextPageToken) params.set("pageToken", historyNextPageToken);
+        try {
+          const history = await googleJson(`https://gmail.googleapis.com/gmail/v1/users/me/history?${params.toString()}`, auth.token);
+          batchMessageIds = gmailHistoryMessageIds(history);
+          historyNextPageToken = cleanText(history.nextPageToken);
+          historyTargetId = cleanText(history.historyId) || historyTargetId;
+          totalMatchingMessages = batchMessageIds.length;
+          fetchedPage = true;
+        } catch (error: any) {
+          if (!/Google API respondio 404:/i.test(cleanText(error?.message))) throw error;
+          // Gmail expires old history cursors. A one-day-overlap search safely rebuilds it.
+          historyStartId = "";
+          historyTargetId = "";
+          historyNextPageToken = "";
+          historySeedId = (await gmailProfile(auth.token)).historyId;
+          const fallback = gmailSyncQueryForConfig({ ...config, gmailHistoryId: null }, false);
+          const params = new URLSearchParams({ q: fallback.query, maxResults: String(maxResults) });
+          const list = await googleJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`, auth.token);
+          batchMessageIds = (list.messages ?? []).map((item: any) => cleanText(item.id)).filter(Boolean);
+          nextPageToken = cleanText(list.nextPageToken);
+          totalMatchingMessages = Number(list.resultSizeEstimate ?? totalMatchingMessages);
+          fetchedPage = true;
+          syncQuery.query = fallback.query;
+          syncQuery.mode = "incremental";
+          syncQuery.since = fallback.since;
+        }
+      } else {
+        const pageToken = resetStoredQueue ? "" : cleanText(config.gmailNextPageToken);
+        const params = new URLSearchParams({ q: query, maxResults: String(maxResults) });
+        if (pageToken) params.set("pageToken", pageToken);
+        const list = await googleJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`, auth.token);
+        batchMessageIds = (list.messages ?? []).map((item: any) => cleanText(item.id)).filter(Boolean);
+        nextPageToken = cleanText(list.nextPageToken);
+        totalMatchingMessages = Number(list.resultSizeEstimate ?? totalMatchingMessages);
+        fetchedPage = true;
+      }
     }
     const messageIds = batchMessageIds.slice(0, maxMessages);
     const rows: CandidateImport[] = [];
@@ -1825,13 +1899,21 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
       }
     }
     const remainingPendingIds = batchMessageIds.slice(processedMessages);
-    const hasMore = remainingPendingIds.length > 0 || Boolean(nextPageToken);
+    const hasMore = remainingPendingIds.length > 0 || Boolean(syncQuery.mode === "history" ? historyNextPageToken : nextPageToken);
     const finishedAt = new Date().toISOString();
     const completedHistoricalAt = !hasMore && syncQuery.mode === "historical" ? finishedAt : (cleanText(config.gmailBackfillCompleteAt) || null);
-    const lastIncrementalSyncAt = !hasMore && syncQuery.mode === "incremental" ? finishedAt : (cleanText(config.gmailLastIncrementalSyncAt) || null);
+    const lastIncrementalSyncAt = !hasMore && (syncQuery.mode === "incremental" || syncQuery.mode === "history") ? finishedAt : (cleanText(config.gmailLastIncrementalSyncAt) || null);
+    let committedHistoryId = storedHistoryId || null;
+    if (!hasMore && syncQuery.mode === "history") {
+      committedHistoryId = historyTargetId || historyStartId || storedHistoryId || null;
+    } else if (!hasMore && syncQuery.mode !== "historical" && syncQuery.mode !== "custom") {
+      committedHistoryId = historySeedId || (await gmailProfile(auth.token)).historyId || committedHistoryId;
+    } else if (!hasMore && syncQuery.mode === "historical") {
+      committedHistoryId = historySeedId || (await gmailProfile(auth.token)).historyId || committedHistoryId;
+    }
     const sampleText = unique(sampleAttachments).slice(0, 5).join(", ");
     const progressText = totalMatchingMessages ? ` de aprox. ${totalMatchingMessages}` : "";
-    const modeText = syncQuery.mode === "incremental" ? `modo nuevos desde ${syncQuery.since}` : (syncQuery.mode === "custom" ? "modo busqueda personalizada" : "modo historico");
+    const modeText = syncQuery.mode === "history" ? "modo correos nuevos" : (syncQuery.mode === "incremental" ? `modo nuevos desde ${syncQuery.since}` : (syncQuery.mode === "custom" ? "modo busqueda personalizada" : "modo historico"));
     const diagnostic = `Gmail (${modeText}): procesados ${processedMessages}${progressText} correos de la tanda, ${messagesWithAttachments} con adjuntos, ${reviewedAttachments} adjuntos PDF/Word/texto revisados, ${candidateAttachmentCount} con pinta de CV, ${rows.length} candidatos extraidos. Ignorados: ${skippedSystem} sistema, ${skippedNoSignal} sin senales, ${parsedNoCandidate} sin nombre/contacto.${hasMore ? " Quedan mas correos: volve a sincronizar para seguir importando." : " Se llego al final de la busqueda guardada; las proximas sincronizaciones van a revisar solo correos nuevos."}${stoppedByTime ? " Se corto por tiempo y guardo resultado parcial." : ""}${sampleText ? ` Adjuntos ejemplo: ${sampleText}.` : ""}`;
     return {
       rows,
@@ -1843,6 +1925,12 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
         gmailQuery: query,
         gmailNextPageToken: remainingPendingIds.length ? nextPageToken : (nextPageToken || null),
         gmailPendingMessageIds: remainingPendingIds,
+        gmailHistoryId: committedHistoryId,
+        gmailHistoryStartId: hasMore && syncQuery.mode === "history" ? historyStartId : null,
+        gmailHistoryTargetId: hasMore && syncQuery.mode === "history" ? historyTargetId : null,
+        gmailHistoryNextPageToken: hasMore && syncQuery.mode === "history" ? historyNextPageToken : null,
+        gmailHistorySyncActive: syncQuery.mode === "history" && hasMore,
+        gmailHistorySeedId: hasMore && syncQuery.mode !== "history" ? historySeedId : null,
         gmailTotalMatchingMessages: totalMatchingMessages,
         gmailLastFetchedNewPage: fetchedPage,
         gmailHasMore: hasMore,
@@ -3417,6 +3505,12 @@ integrationsRouter.post("/gmail/backfill-start", requireRole("recruiter"), async
          - 'gmailPendingMessageIds'
          - 'gmailHasMore'
          - 'gmailSyncMode'
+         - 'gmailHistoryId'
+         - 'gmailHistoryStartId'
+         - 'gmailHistoryTargetId'
+         - 'gmailHistoryNextPageToken'
+         - 'gmailHistorySyncActive'
+         - 'gmailHistorySeedId'
        ) || $1::jsonb,
        status='connected',
        updated_at=now()
@@ -3449,6 +3543,7 @@ integrationsRouter.post("/gmail/takeout-import", requireRole("recruiter"), expre
     if (result === "skipped") skipped += 1;
   }
   const zipDetail = "mboxFiles" in parsed.stats ? `, ${parsed.stats.mboxFiles} archivos mbox` : "";
+  const takeoutCompletedAt = new Date().toISOString();
   const message = `Gmail Takeout: ${parsed.stats.messages} mails revisados${zipDetail}, ${parsed.stats.reviewedAttachments} adjuntos revisados, ${parsed.stats.candidateAttachments} CVs detectados. Importados: ${newRecords} nuevos, ${updatedRecords} actualizados, ${skipped} omitidos.`;
   await q(
     "INSERT INTO sync_logs (integration_id, source, finished_at, duration_ms, status, new_records, updated_records, errors, message) VALUES ('gmail','Gmail Takeout',now(),$1,$2,$3,$4,$5,$6) RETURNING *",
@@ -3462,6 +3557,16 @@ integrationsRouter.post("/gmail/takeout-import", requireRole("recruiter"), expre
       lastAgentMessage: message,
       gmailTakeoutImportedAt: new Date().toISOString(),
       gmailTakeoutLastFile: fileName,
+      gmailBackfillCompleteAt: takeoutCompletedAt,
+      gmailPendingMessageIds: [],
+      gmailNextPageToken: null,
+      gmailHasMore: false,
+      gmailSyncMode: "incremental",
+      gmailHistoryId: null,
+      gmailHistoryStartId: null,
+      gmailHistoryTargetId: null,
+      gmailHistoryNextPageToken: null,
+      gmailHistorySeedId: null,
       syncEngineVersion: SYNC_ENGINE_VERSION
     })]
   );

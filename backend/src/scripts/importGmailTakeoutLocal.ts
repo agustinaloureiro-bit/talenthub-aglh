@@ -217,6 +217,7 @@ async function main() {
   }
 
   if (!dryRun) {
+    const completedAt = limit <= 0 ? new Date().toISOString() : null;
     const message = `Gmail Takeout local: ${totals.processedMessages} mails procesados, ${totals.reviewedAttachments} adjuntos revisados, ${totals.candidateAttachments} CVs detectados. Importados: ${totals.newRecords} nuevos, ${totals.updatedRecords} actualizados, ${totals.skipped} omitidos.`;
     await q(
       "INSERT INTO sync_logs (integration_id, source, finished_at, duration_ms, status, new_records, updated_records, errors, message) VALUES ('gmail','Gmail Takeout local',now(),0,$1,$2,$3,$4,$5)",
@@ -229,7 +230,19 @@ async function main() {
         sessionLastError: null,
         lastAgentMessage: message,
         gmailTakeoutLocalImportedAt: new Date().toISOString(),
-        gmailTakeoutLocalLastFile: path.basename(filePath)
+        gmailTakeoutLocalLastFile: path.basename(filePath),
+        ...(completedAt ? {
+          gmailBackfillCompleteAt: completedAt,
+          gmailPendingMessageIds: [],
+          gmailNextPageToken: null,
+          gmailHasMore: false,
+          gmailSyncMode: "incremental",
+          gmailHistoryId: null,
+          gmailHistoryStartId: null,
+          gmailHistoryTargetId: null,
+          gmailHistoryNextPageToken: null,
+          gmailHistorySeedId: null
+        } : {})
       })]
     );
   }

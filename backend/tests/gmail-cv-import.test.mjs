@@ -598,6 +598,19 @@ test("Gmail respeta busqueda personalizada si fue configurada", async () => {
   assert.equal(result.query, "from:seleccion@aglh.com.uy has:attachment");
 });
 
+test("Gmail extrae sin duplicar los mensajes nuevos del historial", async () => {
+  const { gmailHistoryMessageIds } = await import("../dist/routes/integrations.js");
+  const result = gmailHistoryMessageIds({
+    history: [
+      { messagesAdded: [{ message: { id: "nuevo-1" } }, { message: { id: "nuevo-2" } }] },
+      { messagesAdded: [{ message: { id: "nuevo-1" } }, { message: {} }] },
+      { messages: [{ id: "modificado-pero-no-nuevo" }] }
+    ]
+  });
+
+  assert.deepEqual(result, ["nuevo-1", "nuevo-2"]);
+});
+
 test("Gmail Takeout MBOX importa CV adjunto con ventas y gastronomia", async () => {
   const { candidatesFromGmailMbox } = await import("../dist/routes/integrations.js");
   const cvText = `Camila Perez
