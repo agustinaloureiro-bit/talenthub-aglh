@@ -10,7 +10,7 @@ import { config as appConfig } from "../config.js";
 import { importCandidate } from "../services/candidateIngestion.js";
 import { analyzeCvText } from "../services/cvAnalysis.js";
 import { selectCandidateEmails } from "../services/candidateIdentity.js";
-import { syncAglh } from "../services/aglhClient.js";
+import { loginAglh, syncAglh } from "../services/aglhClient.js";
 import {
   buscojobsAuthFromConfig,
   downloadBuscojobsCv,
@@ -3212,7 +3212,20 @@ integrationsRouter.patch("/:id", requireRole("admin"), asyncHandler(async (req, 
     status: z.enum(["not_configured", "connected", "warning", "error", "soon"]).optional(),
     config: z.record(z.any()).optional()
   }).parse(req.body);
-  const configToSave = prepareConfigForSave(String(req.params.id), body.config);
+  const integrationId = String(req.params.id);
+  if (integrationId === "aglh" && body.config?.password) {
+    try {
+      await loginAglh(body.config);
+    } catch (error: any) {
+      const rejected = Number(error?.status) === 401;
+      return res.status(400).json({
+        error: rejected
+          ? "AGLH rechazó ese usuario o contraseña. Probá primero esas mismas credenciales en AGLH y volvé a guardarlas."
+          : `No se pudo validar la cuenta de AGLH: ${cleanText(error?.message) || "error desconocido"}`
+      });
+    }
+  }
+  const configToSave = prepareConfigForSave(integrationId, body.config);
   const { rows } = await q(
     `INSERT INTO integrations (id, name, status, config)
      VALUES ($3,$4,coalesce($1,'connected'),coalesce($2::jsonb,'{}'::jsonb))
