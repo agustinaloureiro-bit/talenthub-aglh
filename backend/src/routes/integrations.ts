@@ -23,7 +23,7 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-20.1";
+const SYNC_ENGINE_VERSION = "2026-07-20.2";
 const DEFAULT_GMAIL_QUERY = "has:attachment (filename:pdf OR filename:doc OR filename:docx OR filename:rtf OR filename:txt) newer_than:3650d";
 const MAX_STORED_CV_BYTES = 8 * 1024 * 1024;
 
