@@ -10,6 +10,7 @@ import { config as appConfig } from "../config.js";
 import { importCandidate } from "../services/candidateIngestion.js";
 import { analyzeCvText } from "../services/cvAnalysis.js";
 import { selectCandidateEmails } from "../services/candidateIdentity.js";
+import { syncAglh } from "../services/aglhClient.js";
 import {
   buscojobsAuthFromConfig,
   downloadBuscojobsCv,
@@ -30,7 +31,7 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-20.4";
+const SYNC_ENGINE_VERSION = "2026-07-20.5";
 const DEFAULT_GMAIL_QUERY = "has:attachment (filename:pdf OR filename:doc OR filename:docx OR filename:rtf OR filename:txt) newer_than:3650d";
 const MAX_STORED_CV_BYTES = 8 * 1024 * 1024;
 
@@ -391,6 +392,21 @@ function prepareConfigForSave(integrationId: string, config?: Record<string, unk
       return value !== undefined;
     })
   );
+  if (integrationId === "aglh") {
+    const hasCredentials = hasUsernamePassword(next);
+    const providedSession = ["aglhAccessToken", "aglhRefreshToken", "apiKey", "token", "accessToken", "sessionCookies"]
+      .some((key) => key in next && cleanText(next[key]).length > 0);
+    if (hasCredentials && !providedSession) {
+      for (const key of ["aglhAccessToken", "aglhRefreshToken", "apiKey", "token", "accessToken", "sessionCookies", "browserStorageState"]) {
+        next[key] = null;
+      }
+      next.aglhNextPage = 1;
+      next.sessionStatus = "credentials_saved";
+      next.sessionLastError = null;
+      next.lastAgentMessage = "Credenciales AGLH guardadas. Al sincronizar, TalentHub inicia sesión en la API oficial y trae perfiles con CV.";
+    }
+    return next;
+  }
   if (integrationId !== "buscojobs") return next;
 
   const hasCredentials = hasBuscojobsCredentials(next);
@@ -3047,7 +3063,7 @@ const AGENTS: Record<string, SourceConnector> = {
   aglh: {
     id: "aglh",
     name: "AGLH Platform",
-    sync: (config) => scrapeGenericWebSource("aglh", "AGLH Platform", config)
+    sync: syncAglh
   },
   buscojobs: {
     id: "buscojobs",
