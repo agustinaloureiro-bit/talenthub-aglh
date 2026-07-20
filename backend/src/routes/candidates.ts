@@ -4,6 +4,7 @@ import { q } from "../db/pool.js";
 import { asyncHandler } from "../middleware/errors.js";
 import { requireRole } from "../middleware/auth.js";
 import { analyzeCvText } from "../services/cvAnalysis.js";
+import { downloadBuscojobsCv } from "../services/buscojobsClient.js";
 
 export const candidatesRouter = Router();
 
@@ -616,6 +617,22 @@ candidatesRouter.get("/:id/documents/:documentId/download", asyncHandler(async (
     const buffer = decodeBase64UrlBuffer(String(payload.data));
     res.setHeader("content-type", document.mime_type || "application/octet-stream");
     res.setHeader("content-disposition", downloadContentDisposition(document.file_name, "cv"));
+    return res.send(buffer);
+  }
+
+  if (document.source_type === "buscojobs" && cleanText(document.source_id).startsWith("buscojobs:")) {
+    const [, offerId, postulationId] = cleanText(document.source_id).split(":");
+    if (!offerId || !postulationId) return res.status(404).json({ error: "El CV de Buscojobs no tiene una referencia valida." });
+    const integration = await q<{ config: Record<string, unknown> }>("SELECT config FROM integrations WHERE id='buscojobs' LIMIT 1");
+    const config = integration.rows[0]?.config ?? {};
+    const { response, configUpdate } = await downloadBuscojobsCv(config, offerId, postulationId);
+    if (Object.keys(configUpdate).length) {
+      await q("UPDATE integrations SET config=config || $1::jsonb, updated_at=now() WHERE id='buscojobs'", [JSON.stringify(configUpdate)]);
+    }
+    if (!response.ok) return res.status(502).json({ error: "Buscojobs no devolvio el CV. La sesion se intentara renovar en la proxima sincronizacion." });
+    const buffer = Buffer.from(await response.arrayBuffer());
+    res.setHeader("content-type", response.headers.get("content-type") || document.mime_type || "application/pdf");
+    res.setHeader("content-disposition", downloadContentDisposition(document.file_name, "cv-buscojobs.pdf"));
     return res.send(buffer);
   }
 
