@@ -20,6 +20,7 @@ import { intelligenceRouter } from "./routes/intelligence.js";
 
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const release = "2026-07-20.6";
 
 app.use(helmet());
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
@@ -27,7 +28,11 @@ app.use(express.json({ limit: "2mb" }));
 app.use((pinoHttp as any)());
 app.use(rateLimit({ windowMs: 60_000, limit: 300 }));
 
-app.get("/health", (_req, res) => res.json({ ok: true }));
+app.get("/health", (_req, res) => res.json({
+  ok: true,
+  release,
+  commit: process.env.RENDER_GIT_COMMIT?.slice(0, 12) ?? null
+}));
 app.use("/api/auth", authRouter);
 app.use("/api/integrations", integrationsPublicRouter);
 app.use("/api/dashboard", requireAuth, dashboardRouter);
