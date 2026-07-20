@@ -49,10 +49,12 @@ function mapCandidate(row: any) {
     weaknesses: row.ai_weaknesses ?? [],
     qualityScore: row.quality_score,
     sourceCount: row.source_count,
+    sourceTypes: row.source_types ?? [],
     documentCount: Number(row.document_count ?? 0),
     primaryDocumentName: row.primary_document_name ?? null,
     status: row.status,
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    lastSeenAt: row.last_seen_at ?? row.updated_at
   };
 }
 
@@ -450,7 +452,7 @@ async function upsertImportedCandidate(sourceType: string, candidate: ImportedCa
       [row.id, `${candidate.fullName} - importacion`, candidate.rawText.slice(0, 50000), sourceType, candidate.sourceId]
     );
   }
-  await q("UPDATE candidates SET source_count=(SELECT count(*)::int FROM candidate_sources WHERE candidate_id=$1) WHERE id=$1", [row.id]);
+  await q("UPDATE candidates SET source_count=(SELECT count(DISTINCT source_type)::int FROM candidate_sources WHERE candidate_id=$1) WHERE id=$1", [row.id]);
   return { created, candidate: mapCandidate(row) };
 }
 
@@ -458,8 +460,14 @@ async function upsertImportedCandidate(sourceType: string, candidate: ImportedCa
 candidatesRouter.get("/", asyncHandler(async (req, res) => {
   await cleanupFalseGmailCandidates();
   const search = String(req.query.search ?? "");
+  const source = String(req.query.source ?? "").trim();
+  const contact = String(req.query.contact ?? "").trim();
+  const status = String(req.query.status ?? "active") === "needs_review" ? "needs_review" : "active";
+  const limit = Math.max(10, Math.min(100, Number(req.query.limit ?? 50) || 50));
+  const offset = Math.max(0, Number(req.query.offset ?? 0) || 0);
   const params: unknown[] = [];
-  let where = `WHERE duplicate_of IS NULL AND status='active' AND ${excludeFalseGmailCandidatesSql} AND EXISTS (SELECT 1 FROM documents visible_doc WHERE visible_doc.candidate_id = candidates.id)`;
+  params.push(status);
+  let where = `WHERE duplicate_of IS NULL AND status=$1 AND ${excludeFalseGmailCandidatesSql} AND EXISTS (SELECT 1 FROM documents visible_doc WHERE visible_doc.candidate_id = candidates.id)`;
   if (search) {
     params.push(`%${search}%`);
     params.push(expandedSearchTerms(search));
@@ -488,19 +496,30 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
       )
     )`;
   }
-  const [{ rows }, total] = await Promise.all([
+  if (source) {
+    params.push(source);
+    where += ` AND EXISTS (SELECT 1 FROM candidate_sources source_filter WHERE source_filter.candidate_id=candidates.id AND source_filter.source_type=$${params.length})`;
+  }
+  if (contact === "email") where += " AND cardinality(coalesce(email, '{}'::text[])) > 0";
+  if (contact === "phone") where += " AND cardinality(coalesce(phone, '{}'::text[])) > 0";
+  if (contact === "both") where += " AND cardinality(coalesce(email, '{}'::text[])) > 0 AND cardinality(coalesce(phone, '{}'::text[])) > 0";
+
+  const rowParams = [...params, limit, offset];
+  const [{ rows }, filteredTotal, databaseTotal] = await Promise.all([
     q(
       `SELECT candidates.*,
         (SELECT count(*)::int FROM documents d WHERE d.candidate_id = candidates.id) AS document_count,
-        (SELECT d.file_name FROM documents d WHERE d.candidate_id = candidates.id ORDER BY d.is_primary_cv DESC, d.created_at DESC LIMIT 1) AS primary_document_name
+        (SELECT d.file_name FROM documents d WHERE d.candidate_id = candidates.id ORDER BY d.is_primary_cv DESC, d.created_at DESC LIMIT 1) AS primary_document_name,
+        (SELECT array_agg(DISTINCT cs.source_type ORDER BY cs.source_type) FROM candidate_sources cs WHERE cs.candidate_id=candidates.id) AS source_types
        FROM candidates ${where}
        ORDER BY updated_at DESC
-       LIMIT 100`,
-      params
+       LIMIT $${rowParams.length - 1} OFFSET $${rowParams.length}`,
+      rowParams
     ),
-    q<{ count: string }>(`SELECT count(*)::text FROM candidates WHERE duplicate_of IS NULL AND status='active' AND ${excludeFalseGmailCandidatesSql} AND EXISTS (SELECT 1 FROM documents visible_doc WHERE visible_doc.candidate_id = candidates.id)`)
+    q<{ count: string }>(`SELECT count(*)::text FROM candidates ${where}`, params),
+    q<{ count: string }>(`SELECT count(*)::text FROM candidates WHERE duplicate_of IS NULL AND status=$1 AND ${excludeFalseGmailCandidatesSql} AND EXISTS (SELECT 1 FROM documents visible_doc WHERE visible_doc.candidate_id = candidates.id)`, [status])
   ]);
-  res.json({ data: rows.map(mapCandidate), meta: { total: Number(total.rows[0]?.count ?? 0), returned: rows.length } });
+  res.json({ data: rows.map(mapCandidate), meta: { total: Number(filteredTotal.rows[0]?.count ?? 0), databaseTotal: Number(databaseTotal.rows[0]?.count ?? 0), returned: rows.length, limit, offset } });
 }));
 
 candidatesRouter.post("/", requireRole("recruiter"), asyncHandler(async (req, res) => {

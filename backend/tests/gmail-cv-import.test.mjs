@@ -293,6 +293,27 @@ test("Gmail no mezcla contactos ajenos del cuerpo del correo con el CV", async (
   assert.deepEqual(candidate.phone, ["099 111 222"]);
 });
 
+test("Gmail conserva solo los emails compatibles cuando un archivo contiene contactos de varias personas", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const candidate = candidateFromFreeText(
+    "gmail",
+    `Lucas Techera
+lucas.techera@gmail.com
+lucastechera@outlook.com
+referencia.empresa@example.com
+otra.persona@example.com
+Experiencia en logistica.`,
+    {
+      sourceId: "gmail:multi-contact",
+      fileName: "CV_Lucas_Techera.pdf",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+
+  assert.ok(candidate);
+  assert.deepEqual(candidate.email, ["lucas.techera@gmail.com", "lucastechera@outlook.com"]);
+});
+
 test("Gmail resume el perfil del CV con datos utiles sin inventar", async () => {
   const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
   const candidate = candidateFromFreeText(

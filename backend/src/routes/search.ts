@@ -147,6 +147,7 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
      )
      SELECT c.*,
       coalesce(src.source_count, 0)::int AS source_count,
+      coalesce(src.source_types, '{}'::text[]) AS source_types,
       coalesce(doc.document_count, 0)::int AS document_count,
       doc.primary_document_name,
       left(coalesce(doc.document_snippet, ''), 1200) AS document_snippet,
@@ -170,7 +171,8 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
        WHERE d.candidate_id = c.id
      ) doc ON true
      LEFT JOIN LATERAL (
-       SELECT count(*)::int AS source_count
+       SELECT count(DISTINCT source_type)::int AS source_count,
+         array_agg(DISTINCT source_type ORDER BY source_type) AS source_types
        FROM candidate_sources cs
        WHERE cs.candidate_id = c.id
      ) src ON true
@@ -191,6 +193,7 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     summary: cleanResultSummary(row.ai_summary),
     qualityScore: row.quality_score,
     sourceCount: Number(row.source_count ?? 0),
+    sourceTypes: row.source_types ?? [],
     documentCount: Number(row.document_count ?? 0),
     primaryDocumentName: row.primary_document_name ?? null,
     documentSnippet: row.document_snippet ?? null,

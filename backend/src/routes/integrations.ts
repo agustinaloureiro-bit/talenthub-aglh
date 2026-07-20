@@ -9,6 +9,7 @@ import { requireRole } from "../middleware/auth.js";
 import { config as appConfig } from "../config.js";
 import { importCandidate } from "../services/candidateIngestion.js";
 import { analyzeCvText } from "../services/cvAnalysis.js";
+import { selectCandidateEmails } from "../services/candidateIdentity.js";
 import type { AgentSyncResult, CandidateImport, SourceConnector } from "../connectors/types.js";
 
 export const integrationsRouter = Router();
@@ -23,7 +24,7 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-20.2";
+const SYNC_ENGINE_VERSION = "2026-07-20.3";
 const DEFAULT_GMAIL_QUERY = "has:attachment (filename:pdf OR filename:doc OR filename:docx OR filename:rtf OR filename:txt) newer_than:3650d";
 const MAX_STORED_CV_BYTES = 8 * 1024 * 1024;
 
@@ -1047,10 +1048,9 @@ export function candidateFromFreeText(sourceType: string, text: string, options:
   if (!content || content.length < 8) return null;
   const contactText = normalizeWhitespace(options.contactText ?? content);
   const senderContact = mailHeaderLooksInternalOrSystem(options.sender) ? "" : cleanText(options.sender);
-  const email = unique([...extractEmails(contactText), ...extractEmails(senderContact)])
+  const allEmails = unique([...extractEmails(textWithoutReferenceSections(contactText)), ...extractEmails(senderContact)])
     .map((item) => item.toLowerCase())
     .filter((item) => !emailLooksInternalOrSystem(item));
-  const phone = extractPhones(contactText);
   const explicitName = cleanCandidateNameText(content.match(/(?:nombre|name|candidato|postulante)\s*[:\-]\s*([A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{4,80})/i)?.[1] ?? "");
   const fallbackName = nameFromFileName(options.fallbackName ?? options.fileName);
   const senderName = nameFromMailHeader(options.sender);
@@ -1058,8 +1058,11 @@ export function candidateFromFreeText(sourceType: string, text: string, options:
     .split(/[|•\n\r,]/)
     .map((part) => cleanCandidateNameText(normalizeWhitespace(part)))
     .find((part) => candidateNameLooksReal(part) && part.toLowerCase() !== fallbackName.toLowerCase());
-  const fromEmailName = nameFromEmailAddress(email[0]);
+  const fromEmailName = nameFromEmailAddress(allEmails[0]);
   const realName = fallbackName || explicitName || senderName || firstLikelyName || fromEmailName;
+  const senderEmail = extractEmails(senderContact).find((item) => !emailLooksInternalOrSystem(item)) ?? null;
+  const email = selectCandidateEmails(allEmails, realName, senderEmail);
+  const phone = extractPhones(textWithoutReferenceSections(contactText)).slice(0, 2);
   const fullName = realName || email[0] || phone[0];
   if (!fullName) return null;
   if (sourceType === "gmail" && /google cloud team|google workspace team|google team|microsoft account team|linkedin notifications/i.test(fullName)) return null;

@@ -22,9 +22,12 @@ type Candidate = {
   weaknesses: string[];
   qualityScore: number;
   sourceCount: number;
+  sourceTypes?: string[];
   documentCount?: number;
   primaryDocumentName?: string | null;
   status: string;
+  createdAt?: string;
+  lastSeenAt?: string;
 };
 
 type CandidateDocument = {
@@ -174,18 +177,24 @@ function Dashboard() {
 function Candidates({ onView }: { onView: (id: string) => void }) {
   const [items, setItems] = useState<Candidate[]>([]);
   const [search, setSearch] = useState("");
+  const [source, setSource] = useState("");
+  const [contact, setContact] = useState("");
+  const [status, setStatus] = useState("active");
+  const [page, setPage] = useState(0);
   const [showForm, setShowForm] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [meta, setMeta] = useState<{ total: number; returned: number } | null>(null);
-  const load = async () => {
+  const [meta, setMeta] = useState<{ total: number; databaseTotal: number; returned: number; limit: number; offset: number } | null>(null);
+  const load = async (nextPage = page) => {
     setLoading(true);
     setError("");
     try {
-      const response = await api<{ data: Candidate[]; meta?: { total: number; returned: number } }>(`/candidates?search=${encodeURIComponent(search)}`);
+      const query = new URLSearchParams({ search, source, contact, status, limit: "50", offset: String(nextPage * 50) });
+      const response = await api<{ data: Candidate[]; meta?: { total: number; databaseTotal: number; returned: number; limit: number; offset: number } }>(`/candidates?${query}`);
       setItems(response.data);
-      setMeta(response.meta ?? { total: response.data.length, returned: response.data.length });
+      setMeta(response.meta ?? { total: response.data.length, databaseTotal: response.data.length, returned: response.data.length, limit: 50, offset: nextPage * 50 });
+      setPage(nextPage);
     } catch (err: any) {
       setItems([]);
       setError(err.message || "No se pudieron cargar los candidatos.");
@@ -196,20 +205,26 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
   useEffect(() => { load(); }, []);
   return (
     <PagePad>
+      <div className="mb-4 grid gap-2 lg:grid-cols-[minmax(260px,1fr)_170px_190px_190px_auto]">
+        <input className="field" placeholder="Buscar por nombre, experiencia, rol o contacto" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && load(0)} />
+        <select className="field" value={source} onChange={(e) => setSource(e.target.value)}><option value="">Todas las fuentes</option><option value="gmail">Gmail</option><option value="drive">Google Drive</option><option value="buscojobs">Buscojobs</option><option value="yoiners">Yoiners</option><option value="aglh">AGLH</option></select>
+        <select className="field" value={contact} onChange={(e) => setContact(e.target.value)}><option value="">Cualquier contacto</option><option value="phone">Con teléfono</option><option value="email">Con email</option><option value="both">Con teléfono y email</option></select>
+        <select className="field" value={status} onChange={(e) => setStatus(e.target.value)}><option value="active">Base confiable</option><option value="needs_review">Requieren revisión</option></select>
+        <button className="btn-ghost" onClick={() => load(0)} disabled={loading}><Search size={16} /> {loading ? "Cargando..." : "Aplicar"}</button>
+      </div>
       <div className="mb-4 flex flex-wrap gap-2">
-        <input className="field max-w-md" placeholder="Buscar por nombre, rol o tag" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && load()} />
-        <button className="btn-ghost" onClick={load} disabled={loading}><Search size={16} /> {loading ? "Cargando..." : "Buscar"}</button>
         <button className="btn-ghost" onClick={() => setShowImport(!showImport)}><Database size={16} /> Importar candidatos</button>
         <button className="btn-primary" onClick={() => setShowForm(!showForm)}><Plus size={16} /> Nuevo candidato</button>
       </div>
       {error && <ErrorBox message={error} />}
-      {!error && meta && <div className="mb-3 text-sm text-slate-500">{meta.total} candidatos en base · mostrando {meta.returned}</div>}
+      {!error && meta && <div className="mb-3 text-sm text-slate-500">{meta.total === meta.databaseTotal ? `${meta.databaseTotal} candidatos disponibles` : `${meta.total} resultados de ${meta.databaseTotal}`} · {meta.returned > 0 ? `mostrando ${meta.offset + 1}-${Math.min(meta.offset + meta.returned, meta.total)}` : "sin resultados en esta pagina"}</div>}
       {showImport && <CandidateImportPanel onImported={() => { setShowImport(false); load(); }} />}
       {showForm && <CandidateForm onSaved={() => { setShowForm(false); load(); }} />}
       <div className="grid gap-3">
         {!loading && !error && items.length === 0 && <Empty text="No hay candidatos cargados. Crea el primero o conecta una integracion real." />}
         {items.map((c) => <CandidateRow key={c.id} candidate={c} onView={onView} />)}
       </div>
+      {!error && meta && meta.total > meta.limit && <div className="mt-4 flex items-center justify-between"><button className="btn-ghost" disabled={page === 0 || loading} onClick={() => load(page - 1)}>Anterior</button><span className="text-sm text-slate-500">Página {page + 1} de {Math.ceil(meta.total / meta.limit)}</span><button className="btn-ghost" disabled={meta.offset + meta.returned >= meta.total || loading} onClick={() => load(page + 1)}>Siguiente</button></div>}
     </PagePad>
   );
 }
@@ -985,7 +1000,8 @@ function CandidateRow({ candidate, onView, reason, matchScore }: { candidate: Ca
   const documents = Number(candidate.documentCount ?? 0);
   const contact = [candidate.phone?.[0], candidate.email?.[0]].filter(Boolean).join(" · ");
   const summary = cleanDisplayText(candidate.summary);
-  return <div className="card flex flex-wrap items-start justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div><div className="truncate text-sm text-slate-500">{role} · {location}{candidate.years ? ` · ${candidate.years} años declarados` : ""}</div>{summary && <p className="mt-2 max-w-3xl text-sm leading-5 text-slate-700">{shortText(summary, 260)}</p>}<div className="mt-2 flex flex-wrap items-center gap-2">{documents > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600"><FileText size={13} /> {documents} CV/doc</span>}{candidate.primaryDocumentName && <span className="max-w-sm truncate text-xs text-slate-500">{shortText(candidate.primaryDocumentName, 70)}</span>}{contact && <span className="max-w-md truncate text-xs text-slate-500">{shortText(contact, 90)}</span>}</div><TagList tags={candidate.tags ?? []} />{reason && <p className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{shortText(reason, 240)}</p>}</div></div><div className="flex shrink-0 items-center gap-3">{typeof matchScore === "number" && <MatchScore score={matchScore} />}<button className={documents > 0 ? "btn-primary" : "btn-ghost"} onClick={() => onView(candidate.id)}>{documents > 0 ? "Ver ficha / CV" : "Ver ficha"}</button></div></div>;
+  const updated = candidate.lastSeenAt ? new Date(candidate.lastSeenAt).toLocaleDateString("es-UY") : "";
+  return <div className="card flex flex-wrap items-start justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div>{candidate.status === "needs_review" && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">Revisar datos</span>}</div><div className="truncate text-sm text-slate-500">{role} · {location}{candidate.years ? ` · ${candidate.years} años declarados` : ""}</div>{summary && <p className="mt-2 max-w-3xl text-sm leading-5 text-slate-700">{shortText(summary, 260)}</p>}<div className="mt-2 flex flex-wrap items-center gap-2">{documents > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600"><FileText size={13} /> {documents} CV/doc</span>}{candidate.primaryDocumentName && <span className="max-w-sm truncate text-xs text-slate-500">{shortText(candidate.primaryDocumentName, 70)}</span>}{contact && <span className="max-w-md truncate text-xs text-slate-500">{shortText(contact, 90)}</span>}{updated && <span className="text-xs text-slate-400">Actualizado {updated}</span>}</div><div className="mt-2 flex flex-wrap gap-1">{(candidate.sourceTypes ?? []).map((source) => <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600" key={source}>{source}</span>)}</div><TagList tags={candidate.tags ?? []} />{reason && <p className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{shortText(reason, 240)}</p>}</div></div><div className="flex shrink-0 items-center gap-3">{typeof matchScore === "number" && <MatchScore score={matchScore} />}<button className={documents > 0 ? "btn-primary" : "btn-ghost"} onClick={() => onView(candidate.id)}>{documents > 0 ? "Ver ficha / CV" : "Ver ficha"}</button></div></div>;
 }
 
 type InputProps = {

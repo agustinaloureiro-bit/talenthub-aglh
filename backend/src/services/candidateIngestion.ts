@@ -1,6 +1,7 @@
 import type { CandidateImport } from "../agents/types.js";
 import { createHash } from "crypto";
 import { q } from "../db/pool.js";
+import { namesLikelySame, normalizePhoneIdentity } from "./candidateIdentity.js";
 
 export type CandidateImportResult = "new" | "updated" | "skipped";
 
@@ -145,7 +146,7 @@ async function saveSource(candidateId: string, sourceType: string, candidate: Ca
   }
 
   await q(
-    "UPDATE candidates SET source_count=(SELECT count(*)::int FROM candidate_sources WHERE candidate_id=$1) WHERE id=$1",
+    "UPDATE candidates SET source_count=(SELECT count(DISTINCT source_type)::int FROM candidate_sources WHERE candidate_id=$1) WHERE id=$1",
     [candidateId]
   );
 }
@@ -231,13 +232,32 @@ export async function importCandidate(sourceType: string, candidate: CandidateIm
   }
 
   if (!existingId && candidate.email.length > 0) {
-    const byEmail = await q<{ id: string }>("SELECT id FROM candidates WHERE email && $1::text[] LIMIT 1", [candidate.email]);
-    existingId = byEmail.rows[0]?.id ?? null;
+    const byEmail = await q<{ id: string; full_name: string }>(
+      "SELECT id, full_name FROM candidates WHERE duplicate_of IS NULL AND email && $1::text[] ORDER BY updated_at DESC LIMIT 20",
+      [candidate.email]
+    );
+    existingId = byEmail.rows.find((row) => namesLikelySame(row.full_name, candidate.fullName))?.id ?? null;
   }
 
   if (!existingId && candidate.phone.length > 0) {
-    const byPhone = await q<{ id: string }>("SELECT id FROM candidates WHERE phone && $1::text[] LIMIT 1", [candidate.phone]);
-    existingId = byPhone.rows[0]?.id ?? null;
+    const normalizedPhones = candidate.phone.map(normalizePhoneIdentity).filter(Boolean);
+    const byPhone = await q<{ id: string; full_name: string }>(
+      `SELECT DISTINCT c.id, c.full_name
+       FROM candidates c
+       CROSS JOIN LATERAL unnest(c.phone) AS stored_phone(value)
+       WHERE c.duplicate_of IS NULL
+         AND (
+           CASE
+             WHEN regexp_replace(stored_phone.value, '\\D', '', 'g') ~ '^598[0-9]{8}$'
+             THEN '0' || substring(regexp_replace(stored_phone.value, '\\D', '', 'g') from 4)
+             ELSE regexp_replace(stored_phone.value, '\\D', '', 'g')
+           END
+         ) = ANY($1::text[])
+       ORDER BY c.id
+       LIMIT 20`,
+      [normalizedPhones]
+    );
+    existingId = byPhone.rows.find((row) => namesLikelySame(row.full_name, candidate.fullName))?.id ?? null;
   }
 
   if (existingId) {
