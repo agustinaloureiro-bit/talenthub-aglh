@@ -118,6 +118,7 @@ test("AGLH usa solo la ventana reciente despues de completar el historico", asyn
       username: "account@example.com",
       password: "secret",
       aglhBackfillCompleteAt: "2026-07-20T12:00:00.000Z",
+      aglhNextPage: 201,
       aglhHeadSourceIds: ["aglh:known"],
       aglhCvDownloadsPerSync: 0
     });

@@ -300,7 +300,9 @@ export async function syncAglh(config: JsonObject): Promise<AgentSyncResult> {
 
   const historicalComplete = Boolean(text(config.aglhBackfillCompleteAt));
   const knownHeadIds = stringList(config.aglhHeadSourceIds);
-  const incrementalMode = historicalComplete && Math.max(1, Number(config.aglhNextPage ?? 1) || 1) === 1;
+  // A completed backfill is authoritative. Older deployments could leave a stale
+  // page cursor behind after completion; following it would replay the archive.
+  const incrementalMode = historicalComplete;
   const startPage = incrementalMode ? 1 : Math.max(1, Number(config.aglhNextPage ?? 1) || 1);
   const configuredPages = incrementalMode ? config.aglhIncrementalPages : config.maxPagesPerSync;
   const defaultPages = incrementalMode ? DEFAULT_INCREMENTAL_PAGES : DEFAULT_PAGES_PER_SYNC;
