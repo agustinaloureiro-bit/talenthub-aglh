@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { q } from "../db/pool.js";
+import { q, qWithTimeout } from "../db/pool.js";
 import { asyncHandler } from "../middleware/errors.js";
 import { RecruitmentIntelligenceEngine } from "../intelligence/intelligenceEngine.js";
 import { syncConnectedIntegrations } from "./integrations.js";
@@ -30,7 +30,9 @@ function normalizeSearchText(value: string) {
 
 function expandedSearchTerms(query: string) {
   const normalizedQuery = normalizeSearchText(query);
-  const words = normalizedQuery.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 3);
+  const ignoredWords = new Set(["busco", "buscar", "necesito", "persona", "alguien", "perfil", "candidato", "candidata", "con", "sin", "para", "experiencia", "experiencias", "tener", "tenga", "que", "una", "uno"]);
+  const words = normalizedQuery.split(/[^\p{L}\p{N}]+/u)
+    .filter((word) => word.length >= 3 && !ignoredWords.has(word));
   const extras: Record<string, string[]> = {
     vendedor: ["ventas", "comercial", "ejecutivo comercial"],
     vendedora: ["ventas", "comercial", "ejecutiva comercial"],
@@ -74,8 +76,9 @@ function expandedSearchTerms(query: string) {
     ambulanciero: ["chofer de ambulancia", "conductor de ambulancia", "ambulancia", "traslado de pacientes"],
     ambulancia: ["chofer de ambulancia", "conductor de ambulancia", "ambulanciero", "emergencia movil", "emergencia médica", "traslado de pacientes"]
   };
-  return [...new Set([normalizedQuery, ...words, ...words.flatMap((word) => extras[word] ?? [])].map(normalizeSearchText))]
+  const terms = [...new Set([...words, ...words.flatMap((word) => extras[word] ?? [])].map(normalizeSearchText))]
     .filter(Boolean);
+  return terms.length ? terms : [normalizedQuery];
 }
 
 function expandedWebsearchQuery(query: string) {
@@ -112,9 +115,8 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     candidateFilter += ` AND EXISTS (SELECT 1 FROM candidate_sources cs WHERE cs.candidate_id=c.id AND cs.source_type = ANY($${params.length}))`;
   }
   const candidateText = "coalesce(c.full_name,'') || ' ' || coalesce(c.current_role,'') || ' ' || coalesce(c.ai_summary,'')";
-  const candidateExpandedText = `${candidateText} || ' ' || coalesce(array_to_string(c.ai_tags,' '),'')`;
   const documentText = "coalesce(d.raw_text,'') || ' ' || coalesce(d.file_name,'')";
-  const { rows } = await q(
+  const { rows } = await qWithTimeout(
     `WITH candidate_hits AS (
        SELECT c.id,
          greatest(
@@ -123,13 +125,13 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
              THEN 1 + ts_rank_cd(to_tsvector('spanish', ${candidateText}), plainto_tsquery('spanish', $1))
              ELSE 0
            END,
-           0.02 + ts_rank_cd(to_tsvector('spanish', ${candidateExpandedText}), websearch_to_tsquery('spanish', $2))
+           0.02 + ts_rank_cd(to_tsvector('spanish', ${candidateText}), websearch_to_tsquery('spanish', $2))
          ) AS rank
        FROM candidates c
        WHERE ${candidateFilter}
          AND (
            to_tsvector('spanish', ${candidateText}) @@ plainto_tsquery('spanish', $1)
-           OR to_tsvector('spanish', ${candidateExpandedText}) @@ websearch_to_tsquery('spanish', $2)
+           OR to_tsvector('spanish', ${candidateText}) @@ websearch_to_tsquery('spanish', $2)
          )
 
        UNION ALL
@@ -161,50 +163,35 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
        JOIN candidates c ON c.id=m.id
        WHERE EXISTS (SELECT 1 FROM documents available_doc WHERE available_doc.candidate_id=c.id)
        ORDER BY m.rank DESC, c.quality_score DESC, c.updated_at DESC
+       LIMIT 1200
      )
      SELECT c.*,
       coalesce(src.source_count, 0)::int AS source_count,
       coalesce(src.source_types, '{}'::text[]) AS source_types,
-      coalesce(doc.document_count, 0)::int AS document_count,
-      doc.primary_document_name,
-      doc.primary_document_id,
-      doc.primary_document_mime_type,
-      doc.primary_document_source_type,
-      left(coalesce(doc.document_snippet, ''), 1200) AS document_snippet,
+      coalesce(doc_count.document_count, 0)::int AS document_count,
+      primary_doc.file_name AS primary_document_name,
+      primary_doc.id AS primary_document_id,
+      primary_doc.mime_type AS primary_document_mime_type,
+      primary_doc.source_type AS primary_document_source_type,
+      left(coalesce(primary_doc.raw_text, ''), 1200) AS document_snippet,
       top_matches.rank
      FROM top_matches
      JOIN candidates c ON c.id=top_matches.id
      LEFT JOIN LATERAL (
-       SELECT
-         count(*)::int AS document_count,
-         (array_agg(d.file_name ORDER BY
-           (to_tsvector('spanish', ${documentText}) @@ websearch_to_tsquery('spanish', $2)) DESC,
-           d.is_primary_cv DESC,
-           d.created_at DESC
-         ))[1] AS primary_document_name,
-         (array_agg(d.id ORDER BY
-           (to_tsvector('spanish', ${documentText}) @@ websearch_to_tsquery('spanish', $2)) DESC,
-           d.is_primary_cv DESC,
-           d.created_at DESC
-         ))[1] AS primary_document_id,
-         (array_agg(d.mime_type ORDER BY
-           (to_tsvector('spanish', ${documentText}) @@ websearch_to_tsquery('spanish', $2)) DESC,
-           d.is_primary_cv DESC,
-           d.created_at DESC
-         ))[1] AS primary_document_mime_type,
-         (array_agg(d.source_type ORDER BY
-           (to_tsvector('spanish', ${documentText}) @@ websearch_to_tsquery('spanish', $2)) DESC,
-           d.is_primary_cv DESC,
-           d.created_at DESC
-         ))[1] AS primary_document_source_type,
-         (array_agg(d.raw_text ORDER BY
-           (to_tsvector('spanish', ${documentText}) @@ websearch_to_tsquery('spanish', $2)) DESC,
-           d.is_primary_cv DESC,
-           d.created_at DESC
-         ) FILTER (WHERE nullif(d.raw_text, '') IS NOT NULL))[1] AS document_snippet
+       SELECT count(*)::int AS document_count
        FROM documents d
        WHERE d.candidate_id = c.id
-     ) doc ON true
+     ) doc_count ON true
+     LEFT JOIN LATERAL (
+       SELECT d.id, d.file_name, d.mime_type, d.source_type, d.raw_text
+       FROM documents d
+       WHERE d.candidate_id = c.id
+       ORDER BY
+         (to_tsvector('spanish', ${documentText}) @@ websearch_to_tsquery('spanish', $2)) DESC,
+         d.is_primary_cv DESC,
+         d.created_at DESC
+       LIMIT 1
+     ) primary_doc ON true
      LEFT JOIN LATERAL (
        SELECT count(DISTINCT source_type)::int AS source_count,
          array_agg(DISTINCT source_type ORDER BY source_type) AS source_types
@@ -212,7 +199,8 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
        WHERE cs.candidate_id = c.id
      ) src ON true
      ORDER BY top_matches.rank DESC, c.quality_score DESC, c.updated_at DESC`,
-    params
+    params,
+    15_000
   );
   return rows.map((row) => ({
     id: row.id,
@@ -250,7 +238,13 @@ searchRouter.post("/talent", asyncHandler(async (req, res) => {
   const body = searchSchema.parse(req.body);
   const syncResults = body.refreshSources ? await syncConnectedIntegrations() : [];
   await q("INSERT INTO saved_searches (user_id, query, filters) VALUES ($1,$2,$3)", [req.user!.id, body.query, JSON.stringify(body.filters)]);
-  const result = await searchTalent(body.query, body.filters);
+  let result;
+  try {
+    result = await searchTalent(body.query, body.filters);
+  } catch (error: any) {
+    if (error?.code === "57014") return res.status(503).json({ error: "La búsqueda demoró demasiado. Probá con un cargo o competencia más específica." });
+    throw error;
+  }
   const offset = (body.page - 1) * body.pageSize;
   const pageData = result.data.slice(offset, offset + body.pageSize);
   res.json({

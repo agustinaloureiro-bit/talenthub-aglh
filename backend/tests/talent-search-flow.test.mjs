@@ -15,6 +15,23 @@ test("interpreta abogado con ingles como rol e idioma", () => {
   assert.ok(interpreted.mustHave.includes("ingles"));
 });
 
+test("interpreta auxiliar administrativo con facturacion sin palabras de relleno", async () => {
+  const interpreted = interpretTalentQuery("Busco un auxiliar administrativo con experiencia en facturación");
+  assert.deepEqual(interpreted.roles, ["auxiliar administrativo"]);
+  assert.ok(interpreted.skills.includes("facturación"));
+
+  let providerQuery = "";
+  const engine = new RecruitmentIntelligenceEngine(async (query) => {
+    providerQuery = query;
+    return [];
+  });
+  await engine.search("Busco un auxiliar administrativo con experiencia en facturación");
+
+  assert.match(providerQuery, /auxiliar administrativo/);
+  assert.match(providerQuery, /facturaci[oó]n/);
+  assert.doesNotMatch(providerQuery, /\bbusco\b|\bexperiencia\b/);
+});
+
 test("interpreta chofer de ambulancia como un rol especializado con requisitos obligatorios", () => {
   const interpreted = interpretTalentQuery("Necesito un chofer de ambulancia");
 

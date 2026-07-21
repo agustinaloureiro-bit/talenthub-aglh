@@ -8,15 +8,27 @@ export class ApiError extends Error {
   }
 }
 
-export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+type ApiRequestOptions = RequestInit & { timeoutMs?: number };
+
+export async function api<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
   const token = localStorage.getItem("talenthub_token");
   const headers: Record<string, string> = { "Content-Type": "application/json", ...(options.headers as Record<string, string> | undefined) };
   if (token) headers.Authorization = `Bearer ${token}`;
-  const response = await fetch(`${API_URL}${path}`, { ...options, headers });
-  if (response.status === 204) return undefined as T;
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new ApiError(payload.error ?? "Error de API", response.status);
-  return payload as T;
+  const controller = options.signal ? null : new AbortController();
+  const timeout = controller && options.timeoutMs ? window.setTimeout(() => controller.abort(), options.timeoutMs) : null;
+  const { timeoutMs: _timeoutMs, ...fetchOptions } = options;
+  try {
+    const response = await fetch(`${API_URL}${path}`, { ...fetchOptions, headers, signal: options.signal ?? controller?.signal });
+    if (response.status === 204) return undefined as T;
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new ApiError(payload.error ?? "Error de API", response.status);
+    return payload as T;
+  } catch (error: any) {
+    if (error?.name === "AbortError") throw new ApiError("La búsqueda demoró demasiado. Probá nuevamente con un criterio más específico.", 408);
+    throw error;
+  } finally {
+    if (timeout) window.clearTimeout(timeout);
+  }
 }
 
 export function authHeaders(): Record<string, string> {

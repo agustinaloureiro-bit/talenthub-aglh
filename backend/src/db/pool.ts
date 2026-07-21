@@ -25,3 +25,19 @@ export async function q<T extends QueryResultRow = any>(text: string, params: un
   }
   return pool.query<T>(text, params);
 }
+
+export async function qWithTimeout<T extends QueryResultRow = any>(text: string, params: unknown[] = [], timeoutMs = 15_000) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('statement_timeout', $1, true)", [`${Math.max(1_000, timeoutMs)}ms`]);
+    const result = await client.query<T>(text, params);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}

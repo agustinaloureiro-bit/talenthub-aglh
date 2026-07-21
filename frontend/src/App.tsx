@@ -407,7 +407,7 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
     }
     setSearchStatus(refreshSources ? "Actualizando fuentes conectadas y buscando..." : "Buscando...");
     try {
-      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean }; sync?: { ran: boolean; sources: number; imported: number; errors: number } }>("/search/talent", { method: "POST", body: JSON.stringify({ query, refreshSources: page === 1 && refreshSources, page, pageSize: 50, filters: { seniority: seniority || undefined, activeOnly } }) });
+      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean }; sync?: { ran: boolean; sources: number; imported: number; errors: number } }>("/search/talent", { method: "POST", timeoutMs: 20_000, body: JSON.stringify({ query, refreshSources: page === 1 && refreshSources, page, pageSize: 50, filters: { seniority: seniority || undefined, activeOnly } }) });
       setResults((previous) => append
         ? [...new Map([...previous, ...response.data].map((candidate) => [candidate.id, candidate])).values()]
         : response.data);

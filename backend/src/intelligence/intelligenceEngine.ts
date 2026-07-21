@@ -9,13 +9,13 @@ export class RecruitmentIntelligenceEngine {
 
   async search(query: string, filters: TalentSearchFilters = {}): Promise<TalentSearchResult> {
     const interpreted = interpretTalentQuery(query);
-    const retrievalQuery = [...new Set([
-      interpreted.normalizedQuery,
+    const understoodConcepts = [
       ...interpreted.roles,
       ...interpreted.skills,
       ...interpreted.languages,
       ...interpreted.industries
-    ].filter(Boolean))].join(" ");
+    ].filter(Boolean);
+    const retrievalQuery = [...new Set(understoodConcepts.length ? understoodConcepts : [interpreted.normalizedQuery])].join(" ");
     const candidates = await this.fallbackSearch(retrievalQuery, filters);
     const ranked = rerankCandidates(candidates, interpreted);
 

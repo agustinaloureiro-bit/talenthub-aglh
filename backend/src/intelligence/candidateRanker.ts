@@ -18,6 +18,7 @@ export function isCredibleCandidateName(value: string) {
 }
 
 const EQUIVALENT_TERMS: Record<string, string[]> = {
+  "auxiliar administrativo": ["administrativo", "administrativa", "asistente administrativo", "asistente administrativa", "back office"],
   "chofer de ambulancia": ["conductor de ambulancia", "ambulanciero", "traslado de pacientes", "emergencia movil"],
   "conductor de ambulancia": ["chofer de ambulancia", "ambulanciero", "traslado de pacientes", "emergencia movil"],
   ambulanciero: ["chofer de ambulancia", "conductor de ambulancia", "traslado de pacientes"],
