@@ -755,6 +755,9 @@ function integrationNextStep(integration: any) {
     return { kind: "warn", title: "Falta una cuenta AGLH válida", body: "Abrí Configurar AGLH y guardá el email y la contraseña actuales. TalentHub inicia sesión automáticamente en la API oficial y recorre los perfiles con CV.", action: "Configurar AGLH" };
   }
   if (id === "yoiners") {
+    if (status === "requires_manual_validation") {
+      return { kind: "warn", title: "Yoiners pide una validación humana", body: "Iniciá sesión una vez en Yoiners y completá el CAPTCHA. Después exportá sus cookies con Cookie-Editor y pegá el resultado en Configurar Yoiners. TalentHub conservará y renovará esa sesión.", action: "Guardar sesión Yoiners" };
+    }
     return { kind: "warn", title: "Falta una cuenta Yoiners válida", body: "Abrí Configurar Yoiners y guardá el email y la contraseña vigentes. TalentHub inicia sesión en Yoiners, recuerda la sesión y trae únicamente perfiles de la cuenta que tengan CV.", action: "Configurar Yoiners" };
   }
   return { kind: "neutral", title: "Pendiente de configuracion", body: "Esta fuente todavia no tiene datos suficientes para sincronizar candidatos reales.", action: "Configurar" };
@@ -884,6 +887,7 @@ function IntegrationConfigPanelV2({ integration, onSaved }: { integration: any; 
       {integration.id === "buscojobs" && <p className="text-xs text-slate-500">Para Buscojobs, completa usuario/email y contrasena. TalentHub intenta iniciar sesion y guardar la sesion renovada al sincronizar.</p>}
       {isAglh && <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">Solo necesitás el email y la contraseña vigentes de la cuenta AGLH. Al sincronizar, TalentHub renueva la sesión, continúa desde la última página revisada e importa únicamente perfiles reales que tengan CV.</div>}
       {isYoiners && <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">Solo necesitás el email y la contraseña vigentes de la cuenta Yoiners. TalentHub usa la API de Yoiners, conserva la sesión renovable y en las próximas sincronizaciones procesa solo perfiles nuevos o actualizados que tengan CV.</div>}
+      {isYoiners && String(integration.config?.sessionStatus ?? "").startsWith("requires_manual") && <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">Yoiners activó un CAPTCHA. Iniciá sesión una vez en Yoiners, exportá las cookies con Cookie-Editor y pegá el JSON abajo. Después TalentHub reutiliza y renueva esa sesión sin pedirte este paso en cada sincronización.</div>}
       {isGoogle && (
         <div className="grid gap-3 rounded-md border border-slate-200 bg-white p-3">
           {integration.config?.connectedGoogleEmail && (
@@ -912,7 +916,7 @@ function IntegrationConfigPanelV2({ integration, onSaved }: { integration: any; 
         </div>
       )}
       {isGoogle && <div className="grid gap-3 md:grid-cols-2"><div><label className="label">URLs donde buscar candidatos</label><textarea className="field min-h-24" placeholder="Una o varias URLs separadas por coma o punto y coma." value={form.searchUrls} onChange={(e) => setForm({ ...form, searchUrls: e.target.value })} /></div><Input label="Patron links candidatos" value={form.candidateLinkPattern} onChange={(v) => setForm({ ...form, candidateLinkPattern: v })} /></div>}
-      {!isAglh && !isYoiners && <div><label className="label">Sesion/cookies exportadas</label><textarea className="field min-h-24" placeholder="Opcional. Dejalo vacio si no sabes que es." value={form.sessionCookies} onChange={(e) => setForm({ ...form, sessionCookies: e.target.value })} /></div>}
+      {!isAglh && <div><label className="label">{isYoiners ? "Sesión exportada de Yoiners" : "Sesion/cookies exportadas"}</label><textarea className="field min-h-24" placeholder={isYoiners ? "Pegá aquí la exportación JSON de Cookie-Editor después de iniciar sesión en Yoiners." : "Opcional. Dejalo vacio si no sabes que es."} value={form.sessionCookies} onChange={(e) => setForm({ ...form, sessionCookies: e.target.value })} /></div>}
       <div><label className="label">Archivo historico exportado</label><input className="field" type="file" accept=".csv,.txt,.json" onChange={(e) => loadHistoricalFile(e.target.files?.[0])} /><p className="mt-1 text-xs text-slate-500">Si una plataforma bloquea login automatico, carga aca un exportado de candidatos como respaldo.</p></div>
       <div><label className="label">Datos historicos JSON/CSV</label><textarea className="field min-h-40 font-mono text-xs" placeholder={`Pega aca un exportado de candidatos. Ejemplo CSV:\nnombre,email,telefono,cargo,ciudad\nAna Perez,ana@mail.com,099123456,Analista,Montevideo`} value={form.historicalData} onChange={(e) => setForm({ ...form, historicalData: e.target.value })} /></div>
       <div><label className="label">Notas internas</label><textarea className="field min-h-20" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>

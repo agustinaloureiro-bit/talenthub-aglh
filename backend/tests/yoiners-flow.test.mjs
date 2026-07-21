@@ -32,6 +32,26 @@ test("rechaza registros Yoiners sin CV o sin nombre de persona", async () => {
   assert.equal(yoinersCandidateFromTalent({ _id: "2", full_name: "Oferta Auxiliar", talent_cv: "https://files.yoiners.com/offer.pdf" }), null);
 });
 
+test("reutiliza una sesión exportada de Cookie-Editor", async () => {
+  const { yoinersSessionFromConfig } = await import("../dist/services/yoinersClient.js");
+  const session = yoinersSessionFromConfig({
+    sessionCookies: JSON.stringify([
+      { name: "UserToken", value: "saved-access" },
+      { name: "RefreshToken", value: "saved-refresh" },
+      { name: "UserId", value: "saved-user" },
+      { name: "UserRole", value: "YOINER" }
+    ])
+  });
+
+  assert.deepEqual(session, {
+    token: "saved-access",
+    refreshToken: "saved-refresh",
+    userId: "saved-user",
+    role: "YOINER",
+    companyId: ""
+  });
+});
+
 test("sincroniza la API de Yoiners, guarda sesion e importa solo perfiles con CV", async () => {
   const { syncYoiners } = await import("../dist/services/yoinersClient.js");
   const originalFetch = globalThis.fetch;

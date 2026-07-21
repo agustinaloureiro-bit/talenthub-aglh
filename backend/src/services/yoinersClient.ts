@@ -27,6 +27,56 @@ function list(value: unknown) {
   return Array.isArray(value) ? unique(value.map(text)) : [];
 }
 
+function sessionValuesFromExport(value: unknown) {
+  const result: Record<string, string> = {};
+  const collect = (input: unknown, depth = 0) => {
+    if (!input || depth > 5) return;
+    if (Array.isArray(input)) {
+      input.forEach((item) => collect(item, depth + 1));
+      return;
+    }
+    const row = object(input);
+    if (row) {
+      const name = text(row.name ?? row.key);
+      const storedValue = text(row.value);
+      if (name && storedValue) result[name.toLowerCase()] = storedValue;
+      Object.values(row).forEach((item) => collect(item, depth + 1));
+      return;
+    }
+    const raw = text(input);
+    if (!raw) return;
+    try {
+      collect(JSON.parse(raw), depth + 1);
+      return;
+    } catch {
+      // Cookie-Editor can also export a regular Cookie header.
+    }
+    for (const part of raw.split(/[;\n]/)) {
+      const separator = part.indexOf("=");
+      if (separator < 1) continue;
+      const name = part.slice(0, separator).trim().toLowerCase();
+      const storedValue = part.slice(separator + 1).trim();
+      if (name && storedValue) result[name] = storedValue;
+    }
+  };
+  collect(value);
+  return result;
+}
+
+export function yoinersSessionFromConfig(config: JsonObject) {
+  const exported = {
+    ...sessionValuesFromExport(config.sessionCookies ?? config.cookies ?? config.cookie),
+    ...sessionValuesFromExport(config.browserStorageState)
+  };
+  return {
+    token: text(config.yoinersAccessToken ?? config.accessToken ?? config.apiKey ?? config.token ?? exported.usertoken),
+    refreshToken: text(config.yoinersRefreshToken ?? config.refreshToken ?? exported.refreshtoken),
+    userId: text(config.yoinersUserId ?? config.userId ?? exported.userid),
+    role: text(config.yoinersRole ?? config.role ?? exported.userrole),
+    companyId: text(config.yoinersCompanyId ?? config.companyId ?? exported.usercompanyid)
+  };
+}
+
 function deepValuesForKeys(value: unknown, keys: string[], depth = 0): unknown[] {
   if (!value || depth > 6) return [];
   if (Array.isArray(value)) return value.flatMap((item) => deepValuesForKeys(item, keys, depth + 1));
@@ -227,8 +277,9 @@ async function loginYoiners(config: JsonObject) {
 }
 
 async function refreshYoiners(config: JsonObject) {
-  const refreshToken = text(config.yoinersRefreshToken ?? config.refreshToken);
-  const userId = text(config.yoinersUserId ?? config.userId);
+  const saved = yoinersSessionFromConfig(config);
+  const refreshToken = saved.refreshToken;
+  const userId = saved.userId;
   if (!refreshToken || !userId) return null;
   const payload = await jsonRequest("/auth/refreshToken", {
     method: "POST",
@@ -240,17 +291,8 @@ async function refreshYoiners(config: JsonObject) {
 }
 
 async function resolveSession(config: JsonObject) {
-  const directToken = text(config.yoinersAccessToken ?? config.accessToken ?? config.apiKey ?? config.token);
-  const directUserId = text(config.yoinersUserId ?? config.userId);
-  if (directToken && directUserId) {
-    return {
-      token: directToken,
-      refreshToken: text(config.yoinersRefreshToken ?? config.refreshToken),
-      userId: directUserId,
-      role: text(config.yoinersRole ?? config.role),
-      companyId: text(config.yoinersCompanyId ?? config.companyId)
-    };
-  }
+  const saved = yoinersSessionFromConfig(config);
+  if (saved.token && saved.userId) return saved;
   try {
     const refreshed = await refreshYoiners(config);
     if (refreshed) return refreshed;
@@ -328,7 +370,7 @@ export async function syncYoiners(config: JsonObject): Promise<AgentSyncResult> 
     const captcha = /captcha|recaptcha/i.test(detail);
     const rejected = Number(error?.status) === 401 || Number(error?.status) === 403;
     const message = captcha
-      ? "Yoiners exige validar el inicio de sesión en su sitio. La cuenta quedó guardada, pero Yoiners bloqueó el acceso automático con CAPTCHA."
+      ? "Yoiners exige validar el inicio de sesión en su sitio. Completá el CAPTCHA una sola vez en Yoiners y guardá la sesión exportada en Configurar Yoiners; luego TalentHub la renueva automáticamente."
       : rejected
         ? "Yoiners rechazó el usuario o la contraseña guardados. Abrí Configurar Yoiners y guardá la clave actual."
         : `Yoiners no pudo iniciar sesión: ${detail}`;
