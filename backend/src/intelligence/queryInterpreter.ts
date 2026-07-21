@@ -15,6 +15,11 @@ const SENIORITY_PATTERNS: Array<[RegExp, string]> = [
 ];
 
 const ROLE_HINTS = [
+  "chofer de ambulancia",
+  "conductor de ambulancia",
+  "ambulanciero",
+  "chofer",
+  "conductor",
   "abogado",
   "abogada",
   "legal",
@@ -87,7 +92,25 @@ function normalizeHint(value: string) {
 
 function findHints(query: string, hints: string[]) {
   const normalized = normalizeHint(query);
-  return hints.filter((hint) => normalized.includes(normalizeHint(hint)));
+  const matches = hints
+    .filter((hint) => normalized.includes(normalizeHint(hint)))
+    .sort((left, right) => normalizeHint(right).length - normalizeHint(left).length);
+  return matches.filter((hint, index) => !matches.slice(0, index).some((longer) => {
+    const normalizedHint = normalizeHint(hint);
+    const normalizedLonger = normalizeHint(longer);
+    return normalizedLonger.includes(normalizedHint) && normalizedLonger !== normalizedHint;
+  }));
+}
+
+function requiredGroupsForQuery(query: string, roles: string[]) {
+  const normalized = normalizeHint(query);
+  if (/\b(chofer|conductor|ambulanciero)\b/.test(normalized) && /\b(ambulancia|emergencia movil|traslado de pacientes)\b/.test(normalized)) {
+    return [
+      ["chofer", "conductor", "driver", "ambulanciero"],
+      ["ambulancia", "emergencia movil", "emergencia medica", "traslado de pacientes"]
+    ];
+  }
+  return roles.map((role) => [role]);
 }
 
 export function interpretTalentQuery(query: string): InterpretedTalentQuery {
@@ -109,6 +132,7 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
     languages,
     seniority,
     industries,
-    mustHave: [...roles, ...skills, ...languages]
+    mustHave: [...roles, ...skills, ...languages],
+    requiredGroups: requiredGroupsForQuery(normalizedQuery, roles)
   };
 }

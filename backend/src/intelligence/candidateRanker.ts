@@ -18,6 +18,12 @@ export function isCredibleCandidateName(value: string) {
 }
 
 const EQUIVALENT_TERMS: Record<string, string[]> = {
+  "chofer de ambulancia": ["conductor de ambulancia", "ambulanciero", "traslado de pacientes", "emergencia movil"],
+  "conductor de ambulancia": ["chofer de ambulancia", "ambulanciero", "traslado de pacientes", "emergencia movil"],
+  ambulanciero: ["chofer de ambulancia", "conductor de ambulancia", "traslado de pacientes"],
+  chofer: ["conductor", "driver"],
+  conductor: ["chofer", "driver"],
+  ambulancia: ["emergencia movil", "emergencia medica", "traslado de pacientes"],
   abogado: ["abogada", "legal", "derecho", "juridico", "asesor legal", "asesora legal"],
   abogada: ["abogado", "legal", "derecho", "juridico", "asesor legal", "asesora legal"],
   legal: ["abogado", "abogada", "derecho", "juridico"],
@@ -105,6 +111,12 @@ function coverage(candidate: TalentCandidateResult, interpreted: InterpretedTale
   return { required: concepts.length, matched: matchedConcepts.length, ratio: concepts.length ? matchedConcepts.length / concepts.length : 1, concepts, matchedConcepts };
 }
 
+function satisfiesRequiredGroups(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
+  if (!interpreted.requiredGroups.length) return true;
+  const haystack = candidateHaystack(candidate);
+  return interpreted.requiredGroups.every((group) => includesAny(haystack, group));
+}
+
 export function explainCandidateMatch(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   const haystack = candidateHaystack(candidate);
   const profileText = candidateProfileText(candidate);
@@ -126,6 +138,7 @@ export function explainCandidateMatch(candidate: TalentCandidateResult, interpre
 export function rerankCandidates(candidates: TalentCandidateResult[], interpreted: InterpretedTalentQuery) {
   return candidates
     .filter((candidate) => isCredibleCandidateName(candidate.fullName))
+    .filter((candidate) => satisfiesRequiredGroups(candidate, interpreted))
     .map((candidate) => {
       const conceptCoverage = coverage(candidate, interpreted);
       const documentText = candidate.documentSnippet ?? "";

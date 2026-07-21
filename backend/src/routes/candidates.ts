@@ -59,6 +59,15 @@ function mapCandidate(row: any) {
   };
 }
 
+function isAllowedExternalDocumentUrl(value: unknown) {
+  try {
+    const url = new URL(String(value ?? ""));
+    return url.protocol === "https:" && ["aglh-bucket.s3.amazonaws.com"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function expandedSearchTerms(query: string) {
   const words = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 3);
   const extras: Record<string, string[]> = {
@@ -634,6 +643,16 @@ candidatesRouter.get("/:id/documents/:documentId/download", asyncHandler(async (
     const buffer = Buffer.from(await response.arrayBuffer());
     res.setHeader("content-type", response.headers.get("content-type") || document.mime_type || "application/pdf");
     res.setHeader("content-disposition", downloadContentDisposition(document.file_name, "cv-buscojobs.pdf"));
+    return res.send(buffer);
+  }
+
+  const externalUrl = isHttpUrl(document.file_url) ? document.file_url : document.source_path;
+  if (document.source_type === "aglh" && isAllowedExternalDocumentUrl(externalUrl)) {
+    const response = await fetch(externalUrl);
+    if (!response.ok) return res.status(502).json({ error: "AGLH no devolvio el CV solicitado." });
+    const buffer = Buffer.from(await response.arrayBuffer());
+    res.setHeader("content-type", response.headers.get("content-type") || document.mime_type || "application/pdf");
+    res.setHeader("content-disposition", downloadContentDisposition(document.file_name, "cv-aglh.pdf"));
     return res.send(buffer);
   }
 

@@ -13,6 +13,7 @@ export type InterpretedTalentQuery = {
   seniority?: string | null;
   industries: string[];
   mustHave: string[];
+  requiredGroups: string[][];
 };
 
 export type TalentCandidateResult = {

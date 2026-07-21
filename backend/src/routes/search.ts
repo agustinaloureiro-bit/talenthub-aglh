@@ -68,7 +68,11 @@ function expandedSearchTerms(query: string) {
     marketing: ["mercadeo", "comunicacion", "comunicación", "redes sociales", "contenido", "publicidad"],
     tecnologia: ["tecnología", "sistemas", "software", "informatica", "informática", "it", "soporte tecnico", "soporte técnico"],
     mantenimiento: ["mecanica", "mecánica", "electromecanica", "electromecánica", "tecnico", "técnico"],
-    compras: ["abastecimiento", "procurement", "proveedores", "negociacion", "negociación"]
+    compras: ["abastecimiento", "procurement", "proveedores", "negociacion", "negociación"],
+    chofer: ["conductor", "driver", "libreta profesional"],
+    conductor: ["chofer", "driver", "libreta profesional"],
+    ambulanciero: ["chofer de ambulancia", "conductor de ambulancia", "ambulancia", "traslado de pacientes"],
+    ambulancia: ["chofer de ambulancia", "conductor de ambulancia", "ambulanciero", "emergencia movil", "emergencia médica", "traslado de pacientes"]
   };
   return [...new Set([normalizedQuery, ...words, ...words.flatMap((word) => extras[word] ?? [])].map(normalizeSearchText))]
     .filter(Boolean);

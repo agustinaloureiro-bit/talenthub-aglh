@@ -4,6 +4,32 @@ import { API_URL, api, authHeaders, currentUser, login, logout, type User } from
 
 type Page = "dashboard" | "finder" | "candidates" | "candidate" | "ai" | "integrations" | "settings";
 
+const TALENT_FINDER_STATE_KEY = "talenthub:finder-state:v1";
+
+type TalentFinderSnapshot = {
+  query: string;
+  seniority: string;
+  activeOnly: boolean;
+  refreshSources: boolean;
+  results: any[];
+  totalResults: number;
+  currentPage: number;
+  searchStatus: string;
+  hasSearched: boolean;
+  interpretedTerms: string[];
+  scrollY?: number;
+};
+
+function readTalentFinderSnapshot(): TalentFinderSnapshot {
+  const empty: TalentFinderSnapshot = { query: "", seniority: "", activeOnly: true, refreshSources: false, results: [], totalResults: 0, currentPage: 1, searchStatus: "", hasSearched: false, interpretedTerms: [] };
+  try {
+    const stored = window.sessionStorage.getItem(TALENT_FINDER_STATE_KEY);
+    return stored ? { ...empty, ...JSON.parse(stored) } : empty;
+  } catch {
+    return empty;
+  }
+}
+
 type Candidate = {
   id: string;
   fullName: string;
@@ -78,11 +104,13 @@ export function App() {
   const [user, setUser] = useState<User | null>(currentUser());
   const [page, setPage] = useState<Page>("dashboard");
   const [candidateId, setCandidateId] = useState<string | null>(null);
+  const [candidateReturnPage, setCandidateReturnPage] = useState<Page>("candidates");
 
   if (!user) return <Login onLogin={setUser} />;
 
   const openCandidate = (id: string) => {
     setCandidateId(id);
+    setCandidateReturnPage(page === "candidate" ? candidateReturnPage : page);
     setPage("candidate");
   };
 
@@ -107,7 +135,7 @@ export function App() {
       <main className="ml-56 flex min-h-screen flex-1 flex-col">
         <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6">
           <div className="flex items-center gap-3">
-            {page === "candidate" && <button className="btn-ghost" onClick={() => setPage("candidates")}><ChevronLeft size={16} /> Candidatos</button>}
+            {page === "candidate" && <button className="btn-ghost" onClick={() => setPage(candidateReturnPage)}><ChevronLeft size={16} /> {candidateReturnPage === "finder" ? "Volver a resultados" : candidateReturnPage === "ai" ? "Volver a AGLH AI" : "Candidatos"}</button>}
             <h1 className="text-lg font-bold">{titleFor(page)}</h1>
           </div>
           <div className="flex items-center gap-3 text-sm">
@@ -338,18 +366,36 @@ function CandidateForm({ onSaved }: { onSaved: () => void }) {
 }
 
 function TalentFinder({ onView }: { onView: (id: string) => void }) {
-  const [query, setQuery] = useState("");
-  const [seniority, setSeniority] = useState("");
-  const [activeOnly, setActiveOnly] = useState(true);
-  const [refreshSources, setRefreshSources] = useState(false);
-  const [results, setResults] = useState<any[]>([]);
-  const [totalResults, setTotalResults] = useState(0);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [searchStatus, setSearchStatus] = useState("");
+  const [snapshot] = useState(readTalentFinderSnapshot);
+  const [query, setQuery] = useState(snapshot.query);
+  const [seniority, setSeniority] = useState(snapshot.seniority);
+  const [activeOnly, setActiveOnly] = useState(snapshot.activeOnly);
+  const [refreshSources, setRefreshSources] = useState(snapshot.refreshSources);
+  const [results, setResults] = useState<any[]>(snapshot.results);
+  const [totalResults, setTotalResults] = useState(snapshot.totalResults);
+  const [currentPage, setCurrentPage] = useState(snapshot.currentPage);
+  const [searchStatus, setSearchStatus] = useState(snapshot.searchStatus);
   const [loading, setLoading] = useState(false);
-  const [hasSearched, setHasSearched] = useState(false);
-  const [interpretedTerms, setInterpretedTerms] = useState<string[]>([]);
+  const [hasSearched, setHasSearched] = useState(snapshot.hasSearched);
+  const [interpretedTerms, setInterpretedTerms] = useState<string[]>(snapshot.interpretedTerms);
   const [previewCandidate, setPreviewCandidate] = useState<Candidate | null>(null);
+
+  useEffect(() => {
+    const previous = readTalentFinderSnapshot();
+    window.sessionStorage.setItem(TALENT_FINDER_STATE_KEY, JSON.stringify({ query, seniority, activeOnly, refreshSources, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms, scrollY: previous.scrollY ?? 0 }));
+  }, [query, seniority, activeOnly, refreshSources, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms]);
+
+  useEffect(() => {
+    if (!snapshot.scrollY) return;
+    const timer = window.setTimeout(() => window.scrollTo({ top: snapshot.scrollY, behavior: "auto" }), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  function openCandidateFromResults(id: string) {
+    const current = readTalentFinderSnapshot();
+    window.sessionStorage.setItem(TALENT_FINDER_STATE_KEY, JSON.stringify({ ...current, scrollY: window.scrollY }));
+    onView(id);
+  }
   async function run(page = 1, append = false) {
     if (!query.trim()) return;
     setLoading(true);
@@ -394,10 +440,10 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
       {hasSearched && <div className="mb-3 text-sm text-slate-500">Mostrando {results.length} de {totalResults} candidatos relacionados · ordenados por compatibilidad</div>}
       <div className="grid gap-3">{!hasSearched && <Empty text="Escribí lo que necesitás para calcular la compatibilidad sobre los CVs." />}{hasSearched && !loading && results.length === 0 && <Empty text="La búsqueda no encontró candidatos con evidencia suficiente en los CVs disponibles." />}{results.map((c) => {
         const candidate = { ...c, sourceCount: c.sourceCount ?? 0, documentCount: c.documentCount ?? 0, primaryDocumentName: c.primaryDocumentName ?? null, email: c.email ?? [], phone: c.phone ?? [], languages: [], strengths: [], weaknesses: [], status: "active" } as Candidate;
-        return <CandidateRow key={c.id} candidate={candidate} onView={onView} onPreview={candidate.primaryDocumentId ? () => setPreviewCandidate(candidate) : undefined} reason={c.matchReason} matchScore={c.score} />;
+        return <CandidateRow key={c.id} candidate={candidate} onView={openCandidateFromResults} onPreview={candidate.primaryDocumentId ? () => setPreviewCandidate(candidate) : undefined} reason={c.matchReason} matchScore={c.score} />;
       })}</div>
       {results.length < totalResults && <div className="mt-4 flex justify-center"><button className="btn-ghost" onClick={() => run(currentPage + 1, true)} disabled={loading}>{loading ? "Cargando..." : `Cargar 50 más (${totalResults - results.length} restantes)`}</button></div>}
-      {previewCandidate && <CvPreviewModal candidate={previewCandidate} onClose={() => setPreviewCandidate(null)} onView={() => { setPreviewCandidate(null); onView(previewCandidate.id); }} />}
+      {previewCandidate && <CvPreviewModal candidate={previewCandidate} onClose={() => setPreviewCandidate(null)} onView={() => { setPreviewCandidate(null); openCandidateFromResults(previewCandidate.id); }} />}
     </PagePad>
   );
 }
@@ -422,7 +468,6 @@ function CandidateProfile({ id, canEdit }: { id: string; canEdit: boolean }) {
     <PagePad>
       <section className="card mb-4 p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="flex min-w-0 gap-4"><Avatar name={c.fullName} /><div className="min-w-0"><h2 className="break-words text-2xl font-extrabold">{c.fullName}</h2><p className="text-slate-500">{c.currentRole || "Sin rol actual"} · {[c.city, c.country].filter(Boolean).join(", ") || "Sin ubicación"}</p><TagList tags={c.tags} />{primaryDocument && <p className="mt-2 flex items-center gap-2 text-sm text-slate-500"><FileText size={15} /> {shortText(primaryDocument.file_name, 120)}</p>}</div></div>
           <div className="inline-flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800"><CheckCircle2 size={16} /> {primaryDocument ? "CV disponible" : "Sin CV"}</div>
         </div>
       </section>
@@ -957,7 +1002,10 @@ async function fetchDocumentBlob(candidateId: string, document: CandidateDocumen
   const response = await fetch(`${API_URL}/candidates/${candidateId}/documents/${document.id}/download`, {
     headers: authHeaders()
   });
-  if (!response.ok) throw new Error("No se pudo descargar el documento.");
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new Error(payload?.error || "No se pudo descargar el documento.");
+  }
   const blob = await response.blob();
   const disposition = response.headers.get("content-disposition") ?? "";
   const match = disposition.match(/filename="?([^"]+)"?/i);

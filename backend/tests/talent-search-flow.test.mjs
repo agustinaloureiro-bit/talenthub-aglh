@@ -15,6 +15,54 @@ test("interpreta abogado con ingles como rol e idioma", () => {
   assert.ok(interpreted.mustHave.includes("ingles"));
 });
 
+test("interpreta chofer de ambulancia como un rol especializado con requisitos obligatorios", () => {
+  const interpreted = interpretTalentQuery("Necesito un chofer de ambulancia");
+
+  assert.deepEqual(interpreted.roles, ["chofer de ambulancia"]);
+  assert.equal(interpreted.requiredGroups.length, 2);
+});
+
+test("chofer de ambulancia excluye operarios y conductores sin experiencia sanitaria", () => {
+  const interpreted = interpretTalentQuery("Necesito un chofer de ambulancia");
+  const ranked = rerankCandidates([
+    {
+      id: "ambulancia",
+      fullName: "Carlos Ejemplo",
+      currentRole: "Conductor de ambulancia",
+      tags: ["emergencia movil", "traslado de pacientes"],
+      qualityScore: 60,
+      documentCount: 1,
+      documentSnippet: "Chofer de ambulancia con experiencia en traslado de pacientes.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "fabrica",
+      fullName: "Pedro Ejemplo",
+      currentRole: "Operario de fabrica",
+      tags: ["produccion"],
+      qualityScore: 100,
+      documentCount: 1,
+      documentSnippet: "Operario de fabrica y manejo de maquinaria.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "reparto",
+      fullName: "Mario Ejemplo",
+      currentRole: "Chofer de reparto",
+      tags: ["logistica"],
+      qualityScore: 90,
+      documentCount: 1,
+      documentSnippet: "Conductor de reparto y entrega de mercaderia.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.deepEqual(ranked.map((candidate) => candidate.id), ["ambulancia"]);
+});
+
 test("interpreta una necesidad conceptual aunque no nombre la competencia", () => {
   const interpreted = interpretTalentQuery("Busco una persona organizada para coordinar un equipo y tratar con clientes");
 
@@ -229,7 +277,7 @@ test("el porcentaje de match no depende de la calidad general del perfil", () =>
   ], interpreted);
 
   assert.equal(ranked[0].id, "match-completo");
-  assert.ok(ranked[0].score > ranked[1].score);
+  assert.equal(ranked.length, 1);
 });
 
 test("una mención secundaria en el CV no empata con un área principal alineada", () => {
