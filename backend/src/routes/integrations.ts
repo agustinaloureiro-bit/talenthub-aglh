@@ -31,7 +31,8 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-20.5";
+const SYNC_ENGINE_VERSION = "2026-07-21.1";
+const CANDIDATE_IMPORT_CONCURRENCY = 5;
 const DEFAULT_GMAIL_QUERY = "has:attachment (filename:pdf OR filename:doc OR filename:docx OR filename:rtf OR filename:txt) newer_than:3650d";
 const MAX_STORED_CV_BYTES = 8 * 1024 * 1024;
 
@@ -3355,7 +3356,9 @@ async function syncIntegration(integrationId: string) {
     }
   }
   const rowsToImport = scraperResult?.rows ?? rowsFromConfig(config);
-  let status = integration.rows[0].status === "connected" && hasConfig ? "warning" : "error";
+  let status = scraperResult
+    ? "warning"
+    : integration.rows[0].status === "connected" && hasConfig ? "warning" : "error";
   let message = status === "warning"
     ? "Credenciales guardadas. Para traer historico ahora, pega un exportado JSON o CSV en Datos historicos y volve a sincronizar."
     : "La integracion necesita estado Conectado y al menos una credencial, sesion o exportado guardado.";
@@ -3364,6 +3367,7 @@ async function syncIntegration(integrationId: string) {
   let errors = 0;
 
   if (rowsToImport.length > 0) {
+    const candidatesToImport: CandidateImport[] = [];
     for (const row of rowsToImport) {
       try {
         const candidate = scraperResult && isAgentCandidate(row)
@@ -3375,10 +3379,7 @@ async function syncIntegration(integrationId: string) {
           errors += 1;
           continue;
         }
-        const result = await importCandidate(integrationId, candidate, isUsableCandidate);
-        if (result === "new") newRecords += 1;
-        if (result === "updated") updatedRecords += 1;
-        if (result === "skipped") errors += 1;
+        candidatesToImport.push(candidate);
       } catch (error: any) {
         errors += 1;
         console.error(`candidate import failed for ${integrationId}`, {
@@ -3387,6 +3388,30 @@ async function syncIntegration(integrationId: string) {
         });
       }
     }
+
+    const queues = Array.from({ length: Math.min(CANDIDATE_IMPORT_CONCURRENCY, Math.max(1, candidatesToImport.length)) }, () => [] as CandidateImport[]);
+    for (const candidate of candidatesToImport) {
+      const identity = cleanText(candidate.email[0] ?? candidate.phone[0] ?? candidate.fullName).toLowerCase();
+      let hash = 0;
+      for (let index = 0; index < identity.length; index += 1) hash = ((hash << 5) - hash + identity.charCodeAt(index)) | 0;
+      queues[Math.abs(hash) % queues.length].push(candidate);
+    }
+    await Promise.all(queues.map(async (queue) => {
+      for (const candidate of queue) {
+        try {
+          const result = await importCandidate(integrationId, candidate, isUsableCandidate);
+          if (result === "new") newRecords += 1;
+          if (result === "updated") updatedRecords += 1;
+          if (result === "skipped") errors += 1;
+        } catch (error: any) {
+          errors += 1;
+          console.error(`candidate import failed for ${integrationId}`, {
+            sourceId: cleanText(candidate.sourceId).slice(0, 120),
+            error: cleanText(error?.message).slice(0, 240)
+          });
+        }
+      }
+    }));
     const savedRecords = newRecords + updatedRecords;
     status = savedRecords > 0 ? (errors > 0 ? "warning" : "success") : (errors > 0 ? "error" : "warning");
     message = scraperResult?.message

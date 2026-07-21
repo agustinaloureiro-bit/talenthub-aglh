@@ -47,3 +47,17 @@ test("no confunde una oferta con una persona", async () => {
     cv_url: "https://files.aglh.com.uy/oferta.pdf"
   }), null);
 });
+
+test("reconoce el campo talent_cv de la API oficial AGLH", async () => {
+  const { aglhCandidateFromTalent } = await import("../dist/services/aglhClient.js");
+  const candidate = aglhCandidateFromTalent({
+    _id: "talent-789",
+    first_name: "Lucia",
+    last_name: "Fernandez",
+    talent_cv: "https://files.aglh.com.uy/lucia-fernandez.pdf"
+  });
+
+  assert.ok(candidate);
+  assert.equal(candidate.sourceId, "aglh:talent-789");
+  assert.equal(candidate.documents[0].fileUrl, "https://files.aglh.com.uy/lucia-fernandez.pdf");
+});

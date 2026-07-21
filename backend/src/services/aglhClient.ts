@@ -3,7 +3,9 @@ import type { AgentSyncResult, CandidateDocumentImport, CandidateImport } from "
 const AGLH_AUTH_API = "https://prod-aglh-auth-service.herokuapp.com/api/v1/auth";
 const AGLH_TALENT_API = "https://prod-aglh-backend.herokuapp.com/api/v1/execute/talent";
 const AGLH_PROFILE_BASE = "https://aglh.com.uy";
-const DEFAULT_PAGES_PER_SYNC = 20;
+const DEFAULT_PAGES_PER_SYNC = 60;
+const DEFAULT_PAGE_CONCURRENCY = 6;
+const DEFAULT_CV_DOWNLOADS_PER_SYNC = 8;
 const MAX_CV_BYTES = 8 * 1024 * 1024;
 
 type JsonObject = Record<string, unknown>;
@@ -82,7 +84,7 @@ function urlFrom(value: unknown) {
 
 function cvDocumentFromTalent(talent: JsonObject): CandidateDocumentImport | null {
   const cvValues = deepValuesForKeys(talent, [
-    "cv", "cv_url", "cv_file", "cv_path", "curriculum", "curriculum_url", "curriculum_vitae",
+    "cv", "cv_url", "cv_file", "cv_path", "talent_cv", "talent_cv_url", "curriculum", "curriculum_url", "curriculum_vitae",
     "resume", "resume_url", "document", "document_url"
   ]);
   for (const value of cvValues) {
@@ -198,6 +200,19 @@ async function jsonRequest(url: string, init: RequestInit = {}) {
   return payload;
 }
 
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, worker: (item: T) => Promise<R>) {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const run = async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await worker(items[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, run));
+  return results;
+}
+
 export async function loginAglh(config: JsonObject) {
   const email = text(config.username ?? config.email ?? config.user).toLowerCase();
   const password = text(config.password);
@@ -257,6 +272,8 @@ export async function syncAglh(config: JsonObject): Promise<AgentSyncResult> {
 
   const startPage = Math.max(1, Number(config.aglhNextPage ?? 1) || 1);
   const maxPages = Math.min(100, Math.max(1, Number(config.maxPagesPerSync ?? DEFAULT_PAGES_PER_SYNC) || DEFAULT_PAGES_PER_SYNC));
+  const pageConcurrency = Math.min(10, Math.max(1, Number(config.aglhPageConcurrency ?? DEFAULT_PAGE_CONCURRENCY) || DEFAULT_PAGE_CONCURRENCY));
+  const cvDownloads = Math.min(30, Math.max(0, Number(config.aglhCvDownloadsPerSync ?? DEFAULT_CV_DOWNLOADS_PER_SYNC) || 0));
   const candidates = new Map<string, CandidateImport>();
   let total = 0;
   let pagesRead = 0;
@@ -264,14 +281,31 @@ export async function syncAglh(config: JsonObject): Promise<AgentSyncResult> {
   let lastPageSize = 0;
 
   try {
-    for (let page = startPage; page < startPage + maxPages; page += 1) {
+    const readPage = async (page: number) => {
       const payload = await jsonRequest(`${AGLH_TALENT_API}/getTalentsPaginated`, {
         method: "POST",
         headers: { Authorization: `bearer ${session.token}` },
         body: JSON.stringify({ page })
       });
-      total = totalFromPayload(payload) || total;
-      const rows = talentRows(payload);
+      return { page, total: totalFromPayload(payload), rows: talentRows(payload) };
+    };
+
+    const first = await readPage(startPage);
+    total = first.total || total;
+    const pageSize = first.rows.length;
+    const totalPages = total > 0 && pageSize > 0 ? Math.ceil(total / pageSize) : 0;
+    const lastRequestedPage = totalPages > 0
+      ? Math.min(startPage + maxPages - 1, totalPages)
+      : startPage + maxPages - 1;
+    const remainingPages = Array.from(
+      { length: Math.max(0, lastRequestedPage - startPage) },
+      (_, index) => startPage + index + 1
+    );
+    const pageResults = [first, ...await mapWithConcurrency(remainingPages, pageConcurrency, readPage)];
+
+    for (const result of pageResults) {
+      total = result.total || total;
+      const rows = result.rows;
       lastPageSize = rows.length;
       pagesRead += 1;
       for (const row of rows) {
@@ -279,13 +313,18 @@ export async function syncAglh(config: JsonObject): Promise<AgentSyncResult> {
         if (!candidate) continue;
         candidates.set(candidate.sourceId || candidate.fullName, candidate);
       }
-      nextPage = page + 1;
-      if (!rows.length || (total > 0 && page * Math.max(1, rows.length) >= total)) {
-        nextPage = 1;
-        break;
-      }
     }
-    await Promise.all([...candidates.values()].slice(0, 30).map((candidate) => attachAglhCvData(candidate, session.token)));
+
+    const reachedEnd = pageResults.some((result) => result.rows.length === 0)
+      || (totalPages > 0 && lastRequestedPage >= totalPages);
+    nextPage = reachedEnd ? 1 : lastRequestedPage + 1;
+    if (cvDownloads > 0) {
+      await mapWithConcurrency(
+        [...candidates.values()].slice(0, cvDownloads),
+        Math.min(4, cvDownloads),
+        (candidate) => attachAglhCvData(candidate, session.token)
+      );
+    }
   } catch (error: any) {
     const message = `AGLH inició sesión pero no pudo leer talentos: ${text(error?.message) || "error desconocido"}`;
     return {
