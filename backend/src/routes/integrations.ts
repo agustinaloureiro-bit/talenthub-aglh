@@ -11,6 +11,7 @@ import { importCandidate } from "../services/candidateIngestion.js";
 import { analyzeCvText } from "../services/cvAnalysis.js";
 import { selectCandidateEmails } from "../services/candidateIdentity.js";
 import { loginAglh, syncAglh } from "../services/aglhClient.js";
+import { syncYoiners } from "../services/yoinersClient.js";
 import {
   buscojobsAuthFromConfig,
   downloadBuscojobsCv,
@@ -31,7 +32,7 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-21.3";
+const SYNC_ENGINE_VERSION = "2026-07-21.4";
 const CANDIDATE_IMPORT_CONCURRENCY = 10;
 const DEFAULT_GMAIL_QUERY = "has:attachment (filename:pdf OR filename:doc OR filename:docx OR filename:rtf OR filename:txt) newer_than:3650d";
 const MAX_STORED_CV_BYTES = 8 * 1024 * 1024;
@@ -405,6 +406,20 @@ function prepareConfigForSave(integrationId: string, config?: Record<string, unk
       next.sessionStatus = "credentials_saved";
       next.sessionLastError = null;
       next.lastAgentMessage = "Credenciales AGLH guardadas. Al sincronizar, TalentHub inicia sesión en la API oficial y trae perfiles con CV.";
+    }
+    return next;
+  }
+  if (integrationId === "yoiners") {
+    const hasCredentials = hasUsernamePassword(next);
+    const providedSession = ["yoinersAccessToken", "yoinersRefreshToken", "apiKey", "token", "accessToken"]
+      .some((key) => key in next && cleanText(next[key]).length > 0);
+    if (hasCredentials && !providedSession) {
+      for (const key of ["yoinersAccessToken", "yoinersRefreshToken", "yoinersUserId", "apiKey", "token", "accessToken", "sessionCookies", "browserStorageState"]) {
+        next[key] = null;
+      }
+      next.sessionStatus = "credentials_saved";
+      next.sessionLastError = null;
+      next.lastAgentMessage = "Credenciales Yoiners guardadas. Al sincronizar, TalentHub inicia sesión en la API de Yoiners y trae los talentos de la cuenta que tengan CV.";
     }
     return next;
   }
@@ -3084,7 +3099,7 @@ const AGENTS: Record<string, SourceConnector> = {
   yoiners: {
     id: "yoiners",
     name: "Yoiners",
-    sync: (config) => scrapeGenericWebSource("yoiners", "Yoiners", config)
+    sync: syncYoiners
   }
 };
 
