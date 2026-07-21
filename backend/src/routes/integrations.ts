@@ -28,11 +28,10 @@ const DEFAULT_INTEGRATIONS = [
   ["yoiners", "Yoiners"],
   ["buscojobs", "Buscojobs"],
   ["gmail", "Gmail"],
-  ["drive", "Google Drive"],
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-21.5";
+const SYNC_ENGINE_VERSION = "2026-07-21.6";
 const CANDIDATE_IMPORT_CONCURRENCY = 10;
 const DEFAULT_GMAIL_QUERY = "has:attachment (filename:pdf OR filename:doc OR filename:docx OR filename:rtf OR filename:txt) newer_than:3650d";
 const MAX_STORED_CV_BYTES = 8 * 1024 * 1024;
@@ -3086,11 +3085,6 @@ const AGENTS: Record<string, SourceConnector> = {
     name: "Buscojobs",
     sync: scrapeBuscojobs
   },
-  drive: {
-    id: "drive",
-    name: "Google Drive",
-    sync: scrapeDrive
-  },
   gmail: {
     id: "gmail",
     name: "Gmail",
@@ -3211,8 +3205,8 @@ integrationsRouter.get("/", asyncHandler(async (_req, res) => {
   await removeCookieCandidates();
   await markStaleSyncingIntegrations();
   const [integrations, logs, rejected] = await Promise.all([
-    q("SELECT * FROM integrations ORDER BY name"),
-    q("SELECT * FROM sync_logs ORDER BY started_at DESC LIMIT 20"),
+    q("SELECT * FROM integrations WHERE id <> 'drive' ORDER BY name"),
+    q("SELECT * FROM sync_logs WHERE integration_id <> 'drive' ORDER BY started_at DESC LIMIT 20"),
     q("SELECT source_type, extracted_name, reason, source_url, created_at FROM rejected_imports ORDER BY created_at DESC LIMIT 30")
   ]);
   res.json({
@@ -3224,6 +3218,7 @@ integrationsRouter.get("/", asyncHandler(async (_req, res) => {
 }));
 
 integrationsRouter.patch("/:id", requireRole("admin"), asyncHandler(async (req, res) => {
+  if (req.params.id === "drive") return res.status(404).json({ error: "Google Drive ya no forma parte de TalentHub." });
   const body = z.object({
     status: z.enum(["not_configured", "connected", "warning", "error", "soon"]).optional(),
     config: z.record(z.any()).optional()
@@ -3259,7 +3254,7 @@ integrationsRouter.patch("/:id", requireRole("admin"), asyncHandler(async (req, 
 integrationsPublicRouter.get("/google/callback", asyncHandler(async (req, res) => {
   const id = String(req.query.state ?? "");
   const code = cleanText(req.query.code);
-  if ((id !== "gmail" && id !== "drive") || !code) {
+  if (id !== "gmail" || !code) {
     return res.status(400).send("<h1>TalentHub</h1><p>No se pudo conectar Google: falta codigo o fuente.</p>");
   }
   const current = await q("SELECT config FROM integrations WHERE id=$1", [id]);
@@ -3289,12 +3284,12 @@ integrationsPublicRouter.get("/google/callback", asyncHandler(async (req, res) =
   res
     .status(200)
     .type("html")
-    .send(`<!doctype html><html><head><meta charset="utf-8"><title>TalentHub conectado</title></head><body style="font-family:system-ui;padding:32px"><h1>Google conectado</h1><p>${id === "gmail" ? "Gmail" : "Google Drive"} quedo conectado en TalentHub. Ya podes volver a la app y sincronizar.</p></body></html>`);
+    .send(`<!doctype html><html><head><meta charset="utf-8"><title>TalentHub conectado</title></head><body style="font-family:system-ui;padding:32px"><h1>Google conectado</h1><p>Gmail quedo conectado en TalentHub. Ya podes volver a la app y sincronizar.</p></body></html>`);
 }));
 
 integrationsRouter.post("/:id/google-oauth-url", requireRole("admin"), asyncHandler(async (req, res) => {
   const id = String(req.params.id);
-  if (id !== "gmail" && id !== "drive") return res.status(400).json({ error: "OAuth de Google solo aplica a Gmail o Drive." });
+  if (id !== "gmail") return res.status(400).json({ error: "OAuth de Google solo aplica a Gmail." });
   const body = z.object({
     clientId: z.string().min(1),
     clientSecret: z.string().optional(),
@@ -3316,7 +3311,7 @@ integrationsRouter.post("/:id/google-oauth-url", requireRole("admin"), asyncHand
 
 integrationsRouter.post("/:id/google-oauth-code", requireRole("admin"), asyncHandler(async (req, res) => {
   const id = String(req.params.id);
-  if (id !== "gmail" && id !== "drive") return res.status(400).json({ error: "OAuth de Google solo aplica a Gmail o Drive." });
+  if (id !== "gmail") return res.status(400).json({ error: "OAuth de Google solo aplica a Gmail." });
   const body = z.object({
     code: z.string().min(4),
     clientId: z.string().optional(),
@@ -3337,6 +3332,7 @@ integrationsRouter.post("/:id/google-oauth-code", requireRole("admin"), asyncHan
 }));
 
 async function syncIntegration(integrationId: string) {
+  if (integrationId === "drive") return null;
   const integration = await q("SELECT * FROM integrations WHERE id=$1", [integrationId]);
   if (!integration.rowCount) return null;
 
@@ -3489,6 +3485,7 @@ export async function syncConnectedIntegrations() {
     `SELECT id FROM integrations
      WHERE status NOT IN ('not_configured','soon')
        AND config <> '{}'::jsonb
+       AND id <> 'drive'
      ORDER BY name`
   );
   const results = await runSyncQueue(integrations.rows, 2, async (row) => {

@@ -3,14 +3,12 @@ import { z } from "zod";
 import { q, qWithTimeout } from "../db/pool.js";
 import { asyncHandler } from "../middleware/errors.js";
 import { RecruitmentIntelligenceEngine } from "../intelligence/intelligenceEngine.js";
-import { syncConnectedIntegrations } from "./integrations.js";
 import type { TalentSearchFilters } from "../intelligence/types.js";
 
 export const searchRouter = Router();
 
 const searchSchema = z.object({
   query: z.string().min(1),
-  refreshSources: z.boolean().optional().default(false),
   page: z.number().int().min(1).optional().default(1),
   pageSize: z.number().int().min(10).max(100).optional().default(50),
   filters: z.object({
@@ -115,7 +113,7 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
   }
   if (filters.source?.length) {
     params.push(filters.source);
-    candidateFilter += ` AND EXISTS (SELECT 1 FROM candidate_sources cs WHERE cs.candidate_id=c.id AND cs.source_type = ANY($${params.length}))`;
+    candidateFilter += ` AND EXISTS (SELECT 1 FROM candidate_sources cs WHERE cs.candidate_id=c.id AND cs.is_active=true AND cs.source_type = ANY($${params.length}))`;
   }
   if (filters.location) {
     params.push(`%${filters.location}%`);
@@ -127,41 +125,27 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
   const candidateText = "coalesce(c.full_name,'') || ' ' || coalesce(c.current_role,'') || ' ' || coalesce(c.ai_summary,'')";
   const documentText = "coalesce(d.raw_text,'') || ' ' || coalesce(d.file_name,'')";
   const { rows } = await qWithTimeout(
-    `WITH candidate_hits AS (
+    `WITH search_terms AS MATERIALIZED (
+       SELECT plainto_tsquery('spanish', $1) AS exact_query,
+         websearch_to_tsquery('spanish', $2) AS broad_query
+     ), candidate_hits AS (
        SELECT c.id,
-         greatest(
-           CASE
-             WHEN to_tsvector('spanish', ${candidateText}) @@ plainto_tsquery('spanish', $1)
-             THEN 1 + ts_rank_cd(to_tsvector('spanish', ${candidateText}), plainto_tsquery('spanish', $1))
-             ELSE 0
-           END,
-           0.02 + ts_rank_cd(to_tsvector('spanish', ${candidateText}), websearch_to_tsquery('spanish', $2))
-         ) AS rank
-       FROM candidates c
+         0.02 + ts_rank_cd(to_tsvector('spanish', ${candidateText}), search_terms.broad_query)
+           + CASE WHEN to_tsvector('spanish', ${candidateText}) @@ search_terms.exact_query THEN 1 ELSE 0 END AS rank
+       FROM candidates c CROSS JOIN search_terms
        WHERE ${candidateFilter}
-         AND (
-           to_tsvector('spanish', ${candidateText}) @@ plainto_tsquery('spanish', $1)
-           OR to_tsvector('spanish', ${candidateText}) @@ websearch_to_tsquery('spanish', $2)
-         )
+         AND to_tsvector('spanish', ${candidateText}) @@ search_terms.broad_query
 
        UNION ALL
 
        SELECT d.candidate_id AS id,
-         max(greatest(
-           CASE
-             WHEN to_tsvector('spanish', ${documentText}) @@ plainto_tsquery('spanish', $1)
-             THEN 1 + ts_rank_cd(to_tsvector('spanish', ${documentText}), plainto_tsquery('spanish', $1))
-             ELSE 0
-           END,
-           0.02 + ts_rank_cd(to_tsvector('spanish', ${documentText}), websearch_to_tsquery('spanish', $2))
-         )) AS rank
+         max(0.02 + ts_rank_cd(to_tsvector('spanish', ${documentText}), search_terms.broad_query)
+           + CASE WHEN to_tsvector('spanish', ${documentText}) @@ search_terms.exact_query THEN 1 ELSE 0 END) AS rank
        FROM documents d
        JOIN candidates c ON c.id=d.candidate_id
+       CROSS JOIN search_terms
        WHERE ${candidateFilter}
-         AND (
-           to_tsvector('spanish', ${documentText}) @@ plainto_tsquery('spanish', $1)
-           OR to_tsvector('spanish', ${documentText}) @@ websearch_to_tsquery('spanish', $2)
-         )
+         AND to_tsvector('spanish', ${documentText}) @@ search_terms.broad_query
        GROUP BY d.candidate_id
      ), matched AS (
        SELECT id, max(rank) AS rank
@@ -196,21 +180,18 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
        SELECT d.id, d.file_name, d.mime_type, d.source_type, d.raw_text
        FROM documents d
        WHERE d.candidate_id = c.id
-       ORDER BY
-         (to_tsvector('spanish', ${documentText}) @@ websearch_to_tsquery('spanish', $2)) DESC,
-         d.is_primary_cv DESC,
-         d.created_at DESC
+       ORDER BY d.is_primary_cv DESC, d.created_at DESC
        LIMIT 1
      ) primary_doc ON true
      LEFT JOIN LATERAL (
        SELECT count(DISTINCT source_type)::int AS source_count,
          array_agg(DISTINCT source_type ORDER BY source_type) AS source_types
        FROM candidate_sources cs
-       WHERE cs.candidate_id = c.id
+       WHERE cs.candidate_id = c.id AND cs.is_active=true
      ) src ON true
      ORDER BY top_matches.rank DESC, c.quality_score DESC, c.updated_at DESC`,
     params,
-    15_000
+    9_000
   );
   return rows.map((row) => ({
     id: row.id,
@@ -246,7 +227,6 @@ export async function searchTalent(query: string, filters: TalentSearchFilters =
 
 searchRouter.post("/talent", asyncHandler(async (req, res) => {
   const body = searchSchema.parse(req.body);
-  const syncResults = body.refreshSources ? await syncConnectedIntegrations() : [];
   await q("INSERT INTO saved_searches (user_id, query, filters) VALUES ($1,$2,$3)", [req.user!.id, body.query, JSON.stringify(body.filters)]);
   let result;
   try {
@@ -268,12 +248,6 @@ searchRouter.post("/talent", asyncHandler(async (req, res) => {
       page: body.page,
       pageSize: body.pageSize,
       hasMore: offset + pageData.length < result.data.length
-    },
-    sync: {
-      ran: body.refreshSources,
-      sources: syncResults.length,
-      imported: syncResults.reduce((sum: number, row: any) => sum + Number(row.new_records ?? 0) + Number(row.updated_records ?? 0), 0),
-      errors: syncResults.reduce((sum: number, row: any) => sum + Number(row.errors ?? 0), 0)
     }
   });
 }));

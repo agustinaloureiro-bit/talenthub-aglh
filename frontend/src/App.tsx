@@ -14,7 +14,6 @@ type TalentFinderSnapshot = {
   contact: string;
   minScore: number;
   activeOnly: boolean;
-  refreshSources: boolean;
   results: any[];
   totalResults: number;
   currentPage: number;
@@ -25,10 +24,13 @@ type TalentFinderSnapshot = {
 };
 
 function readTalentFinderSnapshot(): TalentFinderSnapshot {
-  const empty: TalentFinderSnapshot = { query: "", seniority: "", source: "", location: "", contact: "", minScore: 0, activeOnly: true, refreshSources: false, results: [], totalResults: 0, currentPage: 1, searchStatus: "", hasSearched: false, interpretedTerms: [] };
+  const empty: TalentFinderSnapshot = { query: "", seniority: "", source: "", location: "", contact: "", minScore: 0, activeOnly: true, results: [], totalResults: 0, currentPage: 1, searchStatus: "", hasSearched: false, interpretedTerms: [] };
   try {
     const stored = window.sessionStorage.getItem(TALENT_FINDER_STATE_KEY);
-    return stored ? { ...empty, ...JSON.parse(stored) } : empty;
+    if (!stored) return empty;
+    const snapshot = { ...empty, ...JSON.parse(stored) };
+    if (snapshot.source === "drive") snapshot.source = "";
+    return snapshot;
   } catch {
     return empty;
   }
@@ -233,7 +235,7 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
         <select className="field" value={seniority} onChange={(e) => setSeniority(e.target.value)}><option value="">Todo seniority</option><option>Junior</option><option>Semi-Senior</option><option>Senior</option><option>Lead</option><option>Manager</option></select>
       </div>
       <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-[170px_190px_170px_190px_auto_auto]">
-        <select className="field" value={source} onChange={(e) => setSource(e.target.value)}><option value="">Todas las fuentes</option><option value="gmail">Gmail</option><option value="drive">Google Drive</option><option value="buscojobs">Buscojobs</option><option value="yoiners">Yoiners</option><option value="aglh">AGLH</option></select>
+        <select className="field" value={source} onChange={(e) => setSource(e.target.value)}><option value="">Todas las fuentes</option><option value="gmail">Gmail</option><option value="buscojobs">Buscojobs</option><option value="yoiners">Yoiners</option><option value="aglh">AGLH</option></select>
         <select className="field" value={contact} onChange={(e) => setContact(e.target.value)}><option value="">Cualquier contacto</option><option value="phone">Con teléfono</option><option value="email">Con email</option><option value="both">Con teléfono y email</option></select>
         <select className="field" value={document} onChange={(e) => setDocument(e.target.value)}><option value="">Cualquier CV</option><option value="pdf">CV en PDF</option><option value="word">CV en Word</option></select>
         <select className="field" value={status} onChange={(e) => setStatus(e.target.value)}><option value="active">Base confiable</option><option value="needs_review">Requieren revisión</option></select>
@@ -305,7 +307,6 @@ function CandidateImportPanel({ onImported }: { onImported: () => void }) {
             <option value="manual">Manual / planilla</option>
             <option value="buscojobs_export">Buscojobs export</option>
             <option value="gmail_export">Gmail / emails</option>
-            <option value="drive_export">Drive / CVs</option>
             <option value="yoiners_export">Yoiners export</option>
             <option value="aglh_export">AGLH export</option>
           </select>
@@ -369,7 +370,6 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
   const [contact, setContact] = useState(snapshot.contact);
   const [minScore, setMinScore] = useState(snapshot.minScore);
   const [activeOnly, setActiveOnly] = useState(snapshot.activeOnly);
-  const [refreshSources, setRefreshSources] = useState(snapshot.refreshSources);
   const [results, setResults] = useState<any[]>(snapshot.results);
   const [totalResults, setTotalResults] = useState(snapshot.totalResults);
   const [currentPage, setCurrentPage] = useState(snapshot.currentPage);
@@ -381,8 +381,8 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
 
   useEffect(() => {
     const previous = readTalentFinderSnapshot();
-    window.sessionStorage.setItem(TALENT_FINDER_STATE_KEY, JSON.stringify({ query, seniority, source, location, contact, minScore, activeOnly, refreshSources, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms, scrollY: previous.scrollY ?? 0 }));
-  }, [query, seniority, source, location, contact, minScore, activeOnly, refreshSources, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms]);
+    window.sessionStorage.setItem(TALENT_FINDER_STATE_KEY, JSON.stringify({ query, seniority, source, location, contact, minScore, activeOnly, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms, scrollY: previous.scrollY ?? 0 }));
+  }, [query, seniority, source, location, contact, minScore, activeOnly, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms]);
 
   useEffect(() => {
     if (!snapshot.scrollY) return;
@@ -404,9 +404,9 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
       setTotalResults(0);
       setInterpretedTerms([]);
     }
-    setSearchStatus(refreshSources ? "Actualizando fuentes conectadas y buscando..." : "Buscando...");
+    setSearchStatus("Buscando en los candidatos ya procesados...");
     try {
-      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean }; sync?: { ran: boolean; sources: number; imported: number; errors: number } }>("/search/talent", { method: "POST", timeoutMs: 20_000, body: JSON.stringify({ query, refreshSources: page === 1 && refreshSources, page, pageSize: 50, filters: { seniority: seniority || undefined, source: source ? [source] : undefined, location: location || undefined, contact: contact || undefined, minScore: minScore || undefined, activeOnly } }) });
+      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean } }>("/search/talent", { method: "POST", timeoutMs: 12_000, body: JSON.stringify({ query, page, pageSize: 50, filters: { seniority: seniority || undefined, source: source ? [source] : undefined, location: location || undefined, contact: contact || undefined, minScore: minScore || undefined, activeOnly } }) });
       setResults((previous) => append
         ? [...new Map([...previous, ...response.data].map((candidate) => [candidate.id, candidate])).values()]
         : response.data);
@@ -418,7 +418,7 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
         ...(response.query?.languages ?? []),
         ...(response.query?.industries ?? [])
       ])]);
-      setSearchStatus(response.sync?.ran ? `Fuentes consultadas: ${response.sync.sources}. Importados/actualizados: ${response.sync.imported}. Errores u omitidos: ${response.sync.errors}.` : "");
+      setSearchStatus("");
     } catch (err: any) {
       setSearchStatus(err.message || "No se pudo completar la busqueda.");
     } finally {
@@ -431,7 +431,7 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
         <label className="label">¿Qué perfil necesitás?</label>
         <textarea className="field min-h-28" placeholder="Ejemplo: auxiliar administrativo con experiencia en facturación y atención al cliente" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") run(1, false); }} />
         <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-          <select className="field" value={source} onChange={(e) => setSource(e.target.value)}><option value="">Todas las fuentes</option><option value="gmail">Gmail</option><option value="drive">Google Drive</option><option value="buscojobs">Buscojobs</option><option value="yoiners">Yoiners</option><option value="aglh">AGLH</option></select>
+          <select className="field" value={source} onChange={(e) => setSource(e.target.value)}><option value="">Todas las fuentes</option><option value="gmail">Gmail</option><option value="buscojobs">Buscojobs</option><option value="yoiners">Yoiners</option><option value="aglh">AGLH</option></select>
           <input className="field" placeholder="Ciudad o país" value={location} onChange={(e) => setLocation(e.target.value)} />
           <select className="field" value={seniority} onChange={(e) => setSeniority(e.target.value)}><option value="">Todo seniority</option><option>Junior</option><option>Semi-Senior</option><option>Senior</option><option>Lead</option><option>Manager</option></select>
           <select className="field" value={contact} onChange={(e) => setContact(e.target.value)}><option value="">Cualquier contacto</option><option value="phone">Con teléfono</option><option value="email">Con email</option><option value="both">Con teléfono y email</option></select>
@@ -439,7 +439,6 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)} /> Solo activos</label>
-          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={refreshSources} onChange={(e) => setRefreshSources(e.target.checked)} /> Sincronizar antes de buscar</label>
           <button className="btn-primary ml-auto" onClick={() => run(1, false)} disabled={!query.trim() || loading}><Search size={16} /> {loading ? "Buscando..." : "Buscar candidatos"}</button>
         </div>
       </section>
@@ -667,10 +666,9 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
   "yoiners": { "baseUrl": "", "loginUrl": "", "username": "", "password": "", "searchUrls": "" },
   "aglh": { "baseUrl": "", "loginUrl": "", "username": "", "password": "", "searchUrls": "" },
   "gmail": { "clientId": "", "clientSecret": "", "refreshToken": "", "sessionCookies": "", "searchUrls": "" },
-  "drive": { "clientId": "", "clientSecret": "", "refreshToken": "", "sessionCookies": "", "searchUrls": "" },
   "buscojobs": { "username": "", "password": "" }
 }`;
-  const sources = data.data ?? [];
+  const sources = (data.data ?? []).filter((item: any) => item.id !== "drive");
   const readyCount = sources.filter((item: any) => item.status === "connected" && !String(item.config?.sessionStatus ?? "").startsWith("requires_")).length;
   const errorCount = sources.filter((item: any) => item.status === "error" || String(item.config?.sessionStatus ?? "").startsWith("requires_")).length;
   const importedCount = sources.reduce((sum: number, item: any) => sum + Number(item.total_imported ?? 0), 0);
@@ -745,8 +743,8 @@ function integrationNextStep(integration: any) {
   if (integration.status === "connected" && !status.startsWith("requires_") && !message.toLowerCase().includes("fallo")) {
     return { kind: "ok", title: "Lista para buscar", body: "Esta fuente esta conectada. Si hay candidatos disponibles, Sincronizar los importa a Candidatos y Talent Finder.", action: "Configurar" };
   }
-  if (id === "gmail" || id === "drive") {
-    return { kind: "warn", title: "Falta conectar Google", body: id === "gmail" ? "Para el historico grande, no exportes todo el mail: en Gmail etiqueta o filtra correos con CV, exporta esa etiqueta en Google Takeout como .zip y subila aca. Luego el sincronizador trae solo lo nuevo." : "Abri Configurar y usa el bloque OAuth. Con eso TalentHub guarda un refresh token y no tenes que repetir el login cada vez.", action: "Conectar Google" };
+  if (id === "gmail") {
+    return { kind: "warn", title: "Falta conectar Google", body: "Para el historico grande, no exportes todo el mail: en Gmail etiqueta o filtra correos con CV, exporta esa etiqueta en Google Takeout como .zip y subila aca. Luego el sincronizador trae solo lo nuevo.", action: "Conectar Google" };
   }
   if (id === "buscojobs") {
     return { kind: "warn", title: "Falta detectar el endpoint real de postulantes", body: "Abri Configurar y deja guardado usuario/contrasena o un export historico. Si la API de postulantes cambia, el log va a mostrar exactamente donde fallo.", action: "Configurar Buscojobs" };
@@ -830,7 +828,7 @@ function IntegrationConfigPanelV2({ integration, onSaved }: { integration: any; 
     const text = await file.text();
     setForm((current) => ({ ...current, historicalData: text }));
   }
-  const isGoogle = integration.id === "gmail" || integration.id === "drive";
+  const isGoogle = integration.id === "gmail";
   const isAglh = integration.id === "aglh";
   const isYoiners = integration.id === "yoiners";
   const isWebAgent = integration.id === "buscojobs";
