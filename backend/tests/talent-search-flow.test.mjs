@@ -57,11 +57,40 @@ test("chofer de ambulancia excluye operarios y conductores sin experiencia sanit
       documentSnippet: "Conductor de reparto y entrega de mercaderia.",
       score: 0,
       matchReason: ""
+    },
+    {
+      id: "menciones-dispersas",
+      fullName: "Gaston Ejemplo",
+      currentRole: "Gastronomia",
+      tags: ["chofer", "salud"],
+      qualityScore: 95,
+      documentCount: 1,
+      documentSnippet: `Chofer de reparto y tareas de cocina. ${"experiencia general ".repeat(12)} Colaboracion ocasional con una emergencia medica.`,
+      score: 0,
+      matchReason: ""
     }
   ], interpreted);
 
   assert.deepEqual(ranked.map((candidate) => candidate.id), ["ambulancia"]);
   assert.ok(ranked[0].score >= 95);
+});
+
+test("acepta experiencia explicita en transporte de pacientes aunque el rol figure como chofer", () => {
+  const interpreted = interpretTalentQuery("Necesito un chofer de ambulancia");
+  const ranked = rerankCandidates([{
+    id: "transporte-pacientes",
+    fullName: "Mario Paciente",
+    currentRole: "Chofer",
+    tags: ["chofer", "salud"],
+    qualityScore: 70,
+    documentCount: 1,
+    documentSnippet: "Chofer con curso de preparacion enfocado al transporte de pacientes y apoyo al personal asistencial.",
+    score: 0,
+    matchReason: ""
+  }], interpreted);
+
+  assert.equal(ranked.length, 1);
+  assert.equal(ranked[0].id, "transporte-pacientes");
 });
 
 test("interpreta una necesidad conceptual aunque no nombre la competencia", () => {

@@ -111,6 +111,30 @@ function conceptMatchesText(text: string, interpreted: InterpretedTalentQuery, c
   return includesAny(text, [concept]);
 }
 
+function isAmbulanceDriverQuery(interpreted: InterpretedTalentQuery) {
+  return interpreted.roles.some((role) => ["chofer de ambulancia", "conductor de ambulancia", "ambulanciero"]
+    .includes(normalizeSearchValue(role)));
+}
+
+function hasAmbulanceDriverEvidence(candidate: TalentCandidateResult) {
+  const role = normalizeSearchValue(candidate.currentRole ?? "");
+  if (/\b(?:chofer|conductor)\s+de\s+ambulancia\b|\bambulanciero\b/.test(role)) return true;
+
+  const evidence = normalizeSearchValue([
+    candidate.summary ?? "",
+    candidate.documentSnippet ?? ""
+  ].join(" "));
+  if (/\b(?:chofer|conductor)\s+de\s+ambulancia\b|\bambulanciero\b/.test(evidence)) return true;
+
+  const driver = "(?:chofer|conductor|driver|manejo|conduccion)";
+  const medicalTransport = "(?:ambulancia|emergencia (?:movil|medica)|traslado de pacientes|transporte de pacientes)";
+  const nearby = new RegExp(`\\b${driver}\\b.{0,100}\\b${medicalTransport}\\b|\\b${medicalTransport}\\b.{0,100}\\b${driver}\\b`);
+  if (nearby.test(evidence)) return true;
+
+  return includesAny(role, ["chofer", "conductor"])
+    && /\b(?:traslado|transporte) de pacientes\b|\bambulancia\b|\bemergencia (?:movil|medica)\b/.test(evidence);
+}
+
 function coverage(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   const haystack = candidateHaystack(candidate);
   const concepts = requestedConcepts(interpreted);
@@ -120,6 +144,7 @@ function coverage(candidate: TalentCandidateResult, interpreted: InterpretedTale
 
 function satisfiesRequiredGroups(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   if (!interpreted.requiredGroups.length) return true;
+  if (isAmbulanceDriverQuery(interpreted)) return hasAmbulanceDriverEvidence(candidate);
   const haystack = candidateHaystack(candidate);
   return interpreted.requiredGroups.every((group) => includesAny(haystack, group));
 }
@@ -166,19 +191,23 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
         + (hasContact ? 5 : 0)
         + (interpreted.seniority && seniorityMatch ? 5 : 0)
       )));
-      const score = interpreted.roles.length > 0 && !primaryRoleMatches(candidate, interpreted)
-        ? Math.min(80, rawScore)
-        : rawScore;
+      const primaryAligned = primaryRoleMatches(candidate, interpreted);
+      const exactSpecializedRole = isAmbulanceDriverQuery(interpreted) && primaryAligned;
+      const score = exactSpecializedRole
+        ? Math.max(98, rawScore)
+        : interpreted.roles.length > 0 && !primaryAligned
+          ? Math.min(80, rawScore)
+          : rawScore;
       return {
         ...candidate,
         score,
         matchReason: explainCandidateMatch({ ...candidate, score }, interpreted),
         matchCoverage: conceptCoverage,
-        primaryRoleAligned: primaryRoleMatches(candidate, interpreted)
+        primaryRoleAligned: primaryAligned
       };
     })
-    .sort((a, b) => (b.matchCoverage?.ratio ?? 0) - (a.matchCoverage?.ratio ?? 0)
-      || Number(b.primaryRoleAligned) - Number(a.primaryRoleAligned)
+    .sort((a, b) => Number(b.primaryRoleAligned) - Number(a.primaryRoleAligned)
+      || (b.matchCoverage?.ratio ?? 0) - (a.matchCoverage?.ratio ?? 0)
       || b.score - a.score
       || b.qualityScore - a.qualityScore)
     .map(({ matchCoverage, primaryRoleAligned, ...candidate }) => candidate);

@@ -4,7 +4,7 @@ import { API_URL, api, authHeaders, currentUser, login, logout, type User } from
 
 type Page = "dashboard" | "finder" | "candidates" | "candidate" | "ai" | "integrations" | "settings";
 
-const TALENT_FINDER_STATE_KEY = "talenthub:finder-state:v1";
+const TALENT_FINDER_STATE_KEY = "talenthub:finder-state:v2";
 
 type TalentFinderSnapshot = {
   query: string;
