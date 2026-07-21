@@ -197,7 +197,7 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
       const score = exactSpecializedRole
         ? Math.max(98, rawScore)
         : interpreted.roles.length > 0 && !primaryAligned
-          ? Math.min(80, rawScore)
+          ? Math.min(69, rawScore)
           : rawScore;
       return {
         ...candidate,

@@ -396,8 +396,27 @@ test("una mención secundaria en el CV no empata con un área principal alineada
 
   assert.equal(ranked[0].id, "principal");
   assert.equal(ranked[0].score, 100);
-  assert.ok(ranked[1].score < 100);
+  assert.ok(ranked[1].score < 70);
   assert.match(ranked[1].matchReason, /no como perfil principal/i);
+});
+
+test("el filtro de 70 por ciento excluye roles mencionados solo de forma secundaria", async () => {
+  const engine = new RecruitmentIntelligenceEngine(async () => [{
+    id: "mencion-secundaria",
+    fullName: "Valeria Legal",
+    currentRole: "Abogada",
+    tags: ["administracion", "facturacion"],
+    email: ["valeria@example.com"],
+    qualityScore: 100,
+    documentCount: 1,
+    documentSnippet: "Asesoría legal para clientes del área administrativa y de facturación.",
+    score: 0,
+    matchReason: ""
+  }]);
+
+  const result = await engine.search("auxiliar administrativo con facturacion", { minScore: 70 });
+
+  assert.deepEqual(result.data, []);
 });
 
 test("ventas como rol principal queda antes que una mención secundaria de gastronomía", () => {
