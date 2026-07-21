@@ -22,7 +22,14 @@ const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const release = "2026-07-20.6";
 
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      frameSrc: ["'self'", "blob:"],
+      imgSrc: ["'self'", "data:", "blob:"]
+    }
+  }
+}));
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(express.json({ limit: "2mb" }));
 app.use((pinoHttp as any)());

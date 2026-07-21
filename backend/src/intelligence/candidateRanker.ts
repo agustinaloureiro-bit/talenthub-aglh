@@ -14,7 +14,7 @@ export function isCredibleCandidateName(value: string) {
   const words = name.split(" ").filter(Boolean);
   if (words.length < 2 || words.length > 8) return false;
   if (!words.every((word) => /^[\p{L}'-]+$/u.test(word))) return false;
-  return !/(preparaci[oó]n|entrega de|[oó]rdenes|experiencia en|responsable de|tareas de|funciones|perfil profesional|objetivo laboral|curr[ií]culum|curriculum vitae|postulaci[oó]n|futuras vacantes)/i.test(name);
+  return !/(sin t[ií]tulo|sin nombre|preparaci[oó]n|entrega de|[oó]rdenes|experiencia en|responsable de|tareas de|funciones|perfil profesional|objetivo laboral|curr[ií]culum|curriculum vitae|postulaci[oó]n|futuras vacantes)/i.test(name);
 }
 
 const EQUIVALENT_TERMS: Record<string, string[]> = {
@@ -104,10 +104,17 @@ function requestedConcepts(interpreted: InterpretedTalentQuery) {
   return [...byNormalized.values()];
 }
 
+function conceptMatchesText(text: string, interpreted: InterpretedTalentQuery, concept: string) {
+  const isSpecializedRole = interpreted.requiredGroups.length > 1
+    && interpreted.roles.some((role) => normalizeSearchValue(role) === normalizeSearchValue(concept));
+  if (isSpecializedRole) return interpreted.requiredGroups.every((group) => includesAny(text, group));
+  return includesAny(text, [concept]);
+}
+
 function coverage(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   const haystack = candidateHaystack(candidate);
   const concepts = requestedConcepts(interpreted);
-  const matchedConcepts = concepts.filter((concept) => includesAny(haystack, [concept]));
+  const matchedConcepts = concepts.filter((concept) => conceptMatchesText(haystack, interpreted, concept));
   return { required: concepts.length, matched: matchedConcepts.length, ratio: concepts.length ? matchedConcepts.length / concepts.length : 1, concepts, matchedConcepts };
 }
 
@@ -122,7 +129,7 @@ export function explainCandidateMatch(candidate: TalentCandidateResult, interpre
   const profileText = candidateProfileText(candidate);
   const resultCoverage = coverage(candidate, interpreted);
   const evidenceText = candidate.documentSnippet ?? "";
-  const evidenceConcepts = resultCoverage.concepts.filter((concept) => includesAny(evidenceText, [concept]));
+  const evidenceConcepts = resultCoverage.concepts.filter((concept) => conceptMatchesText(evidenceText, interpreted, concept));
   const reasons: string[] = [];
   if (interpreted.roles.length && primaryRoleMatches(candidate, interpreted)) reasons.push("área principal alineada");
   else if (interpreted.roles.length && includesAny(evidenceText, interpreted.roles)) reasons.push("el área aparece en el CV, pero no como perfil principal");
@@ -142,7 +149,7 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
     .map((candidate) => {
       const conceptCoverage = coverage(candidate, interpreted);
       const documentText = candidate.documentSnippet ?? "";
-      const documentMatches = conceptCoverage.concepts.filter((concept) => includesAny(documentText, [concept])).length;
+      const documentMatches = conceptCoverage.concepts.filter((concept) => conceptMatchesText(documentText, interpreted, concept)).length;
       const documentRatio = conceptCoverage.required ? documentMatches / conceptCoverage.required : 0;
       const profileText = candidateProfileText(candidate);
       const profileMatches = conceptCoverage.concepts.filter((concept) => conceptMatchesProfile(candidate, interpreted, concept)).length;
@@ -160,7 +167,7 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
         + (interpreted.seniority && seniorityMatch ? 5 : 0)
       )));
       const score = interpreted.roles.length > 0 && !primaryRoleMatches(candidate, interpreted)
-        ? Math.min(89, rawScore)
+        ? Math.min(80, rawScore)
         : rawScore;
       return {
         ...candidate,

@@ -61,6 +61,7 @@ test("chofer de ambulancia excluye operarios y conductores sin experiencia sanit
   ], interpreted);
 
   assert.deepEqual(ranked.map((candidate) => candidate.id), ["ambulancia"]);
+  assert.ok(ranked[0].score >= 95);
 });
 
 test("interpreta una necesidad conceptual aunque no nombre la competencia", () => {
@@ -104,6 +105,7 @@ test("no corta el ranking en veinte candidatos", async () => {
 
 test("excluye frases del CV usadas por error como nombre", () => {
   assert.equal(isCredibleCandidateName("la preparación y entrega de órdenes"), false);
+  assert.equal(isCredibleCandidateName("Sin Título"), false);
   assert.equal(isCredibleCandidateName("Gimena Gonzalez"), true);
 });
 
