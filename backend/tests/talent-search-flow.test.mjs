@@ -149,6 +149,43 @@ test("no corta el ranking en veinte candidatos", async () => {
   assert.equal(result.data.length, 65);
 });
 
+test("aplica filtros operativos y un minimo de compatibilidad", async () => {
+  let receivedFilters = null;
+  const engine = new RecruitmentIntelligenceEngine(async (_query, filters) => {
+    receivedFilters = filters;
+    return [
+      {
+        id: "fuerte",
+        fullName: "Laura Administrativa",
+        currentRole: "Auxiliar administrativo",
+        tags: ["facturacion"],
+        qualityScore: 50,
+        documentCount: 1,
+        documentSnippet: "Auxiliar administrativo con experiencia en facturacion.",
+        score: 0,
+        matchReason: ""
+      },
+      {
+        id: "debil",
+        fullName: "Mario General",
+        currentRole: "Administrativo",
+        tags: [],
+        qualityScore: 50,
+        documentCount: 1,
+        documentSnippet: "Tareas generales de oficina.",
+        score: 0,
+        matchReason: ""
+      }
+    ];
+  });
+
+  const filters = { source: ["gmail"], location: "Montevideo", contact: "both", minScore: 80, activeOnly: true };
+  const result = await engine.search("auxiliar administrativo con facturacion", filters);
+
+  assert.deepEqual(receivedFilters, filters);
+  assert.deepEqual(result.data.map((candidate) => candidate.id), ["fuerte"]);
+});
+
 test("excluye frases del CV usadas por error como nombre", () => {
   assert.equal(isCredibleCandidateName("la preparación y entrega de órdenes"), false);
   assert.equal(isCredibleCandidateName("Sin Título"), false);

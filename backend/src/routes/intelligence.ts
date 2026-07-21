@@ -11,6 +11,9 @@ const searchSchema = z.object({
   filters: z.object({
     source: z.array(z.string()).optional(),
     seniority: z.string().optional(),
+    location: z.string().trim().max(100).optional(),
+    contact: z.enum(["email", "phone", "both"]).optional(),
+    minScore: z.number().min(0).max(100).optional(),
     activeOnly: z.boolean().optional()
   }).default({})
 });

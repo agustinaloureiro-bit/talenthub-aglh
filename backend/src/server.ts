@@ -10,11 +10,9 @@ import { requireAuth } from "./middleware/auth.js";
 import { errorHandler } from "./middleware/errors.js";
 import { authRouter } from "./routes/auth.js";
 import { candidatesRouter } from "./routes/candidates.js";
-import { dashboardRouter } from "./routes/dashboard.js";
 import { integrationsPublicRouter, integrationsRouter } from "./routes/integrations.js";
 import { settingsRouter } from "./routes/settings.js";
 import { searchRouter } from "./routes/search.js";
-import { chatRouter } from "./routes/chat.js";
 import { usersRouter } from "./routes/users.js";
 import { intelligenceRouter } from "./routes/intelligence.js";
 
@@ -42,13 +40,11 @@ app.get("/health", (_req, res) => res.json({
 }));
 app.use("/api/auth", authRouter);
 app.use("/api/integrations", integrationsPublicRouter);
-app.use("/api/dashboard", requireAuth, dashboardRouter);
 app.use("/api/candidates", requireAuth, candidatesRouter);
 app.use("/api/search", requireAuth, searchRouter);
 app.use("/api/intelligence", requireAuth, intelligenceRouter);
 app.use("/api/integrations", requireAuth, integrationsRouter);
 app.use("/api/settings", requireAuth, settingsRouter);
-app.use("/api/chat", requireAuth, chatRouter);
 app.use("/api/users", requireAuth, usersRouter);
 
 if (process.env.SERVE_STATIC === "true") {

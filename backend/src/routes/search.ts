@@ -16,6 +16,9 @@ const searchSchema = z.object({
   filters: z.object({
     source: z.array(z.string()).optional(),
     seniority: z.string().optional(),
+    location: z.string().trim().max(100).optional(),
+    contact: z.enum(["email", "phone", "both"]).optional(),
+    minScore: z.number().min(0).max(100).optional(),
     activeOnly: z.boolean().optional()
   }).default({})
 });
@@ -114,6 +117,13 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     params.push(filters.source);
     candidateFilter += ` AND EXISTS (SELECT 1 FROM candidate_sources cs WHERE cs.candidate_id=c.id AND cs.source_type = ANY($${params.length}))`;
   }
+  if (filters.location) {
+    params.push(`%${filters.location}%`);
+    candidateFilter += ` AND (coalesce(c.city,'') ILIKE $${params.length} OR coalesce(c.country,'') ILIKE $${params.length})`;
+  }
+  if (filters.contact === "email") candidateFilter += " AND cardinality(coalesce(c.email, '{}'::text[])) > 0";
+  if (filters.contact === "phone") candidateFilter += " AND cardinality(coalesce(c.phone, '{}'::text[])) > 0";
+  if (filters.contact === "both") candidateFilter += " AND cardinality(coalesce(c.email, '{}'::text[])) > 0 AND cardinality(coalesce(c.phone, '{}'::text[])) > 0";
   const candidateText = "coalesce(c.full_name,'') || ' ' || coalesce(c.current_role,'') || ' ' || coalesce(c.ai_summary,'')";
   const documentText = "coalesce(d.raw_text,'') || ' ' || coalesce(d.file_name,'')";
   const { rows } = await qWithTimeout(

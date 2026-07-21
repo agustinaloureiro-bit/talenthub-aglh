@@ -1,14 +1,18 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { AlertCircle, Bot, Briefcase, CheckCircle2, ChevronLeft, Database, Download, ExternalLink, Eye, FileText, GraduationCap, Languages, LayoutDashboard, LogOut, Mail, MapPin, Phone, Plug, Plus, Save, Search, Send, Settings, UserRound, Users, X } from "lucide-react";
+import { AlertCircle, Briefcase, CheckCircle2, ChevronLeft, Database, Download, ExternalLink, Eye, FileText, GraduationCap, Languages, LogOut, Mail, MapPin, Phone, Plug, Plus, RotateCcw, Save, Search, Settings, UserRound, Users, X } from "lucide-react";
 import { API_URL, api, authHeaders, currentUser, login, logout, type User } from "./lib/api";
 
-type Page = "dashboard" | "finder" | "candidates" | "candidate" | "ai" | "integrations" | "settings";
+type Page = "finder" | "candidates" | "candidate" | "integrations" | "settings";
 
 const TALENT_FINDER_STATE_KEY = "talenthub:finder-state:v2";
 
 type TalentFinderSnapshot = {
   query: string;
   seniority: string;
+  source: string;
+  location: string;
+  contact: string;
+  minScore: number;
   activeOnly: boolean;
   refreshSources: boolean;
   results: any[];
@@ -21,7 +25,7 @@ type TalentFinderSnapshot = {
 };
 
 function readTalentFinderSnapshot(): TalentFinderSnapshot {
-  const empty: TalentFinderSnapshot = { query: "", seniority: "", activeOnly: true, refreshSources: false, results: [], totalResults: 0, currentPage: 1, searchStatus: "", hasSearched: false, interpretedTerms: [] };
+  const empty: TalentFinderSnapshot = { query: "", seniority: "", source: "", location: "", contact: "", minScore: 0, activeOnly: true, refreshSources: false, results: [], totalResults: 0, currentPage: 1, searchStatus: "", hasSearched: false, interpretedTerms: [] };
   try {
     const stored = window.sessionStorage.getItem(TALENT_FINDER_STATE_KEY);
     return stored ? { ...empty, ...JSON.parse(stored) } : empty;
@@ -92,17 +96,15 @@ type CvAnalysis = {
 };
 
 const nav = [
-  ["dashboard", LayoutDashboard, "Dashboard"],
   ["finder", Search, "Talent Finder"],
   ["candidates", Users, "Candidatos"],
-  ["ai", Bot, "AGLH AI"],
   ["integrations", Plug, "Integraciones"],
   ["settings", Settings, "Configuración"]
 ] as const;
 
 export function App() {
   const [user, setUser] = useState<User | null>(currentUser());
-  const [page, setPage] = useState<Page>("dashboard");
+  const [page, setPage] = useState<Page>("finder");
   const [candidateId, setCandidateId] = useState<string | null>(null);
   const [candidateReturnPage, setCandidateReturnPage] = useState<Page>("candidates");
 
@@ -135,7 +137,7 @@ export function App() {
       <main className="ml-56 flex min-h-screen flex-1 flex-col">
         <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6">
           <div className="flex items-center gap-3">
-            {page === "candidate" && <button className="btn-ghost" onClick={() => setPage(candidateReturnPage)}><ChevronLeft size={16} /> {candidateReturnPage === "finder" ? "Volver a resultados" : candidateReturnPage === "ai" ? "Volver a AGLH AI" : "Candidatos"}</button>}
+            {page === "candidate" && <button className="btn-ghost" onClick={() => setPage(candidateReturnPage)}><ChevronLeft size={16} /> {candidateReturnPage === "finder" ? "Volver a resultados" : "Candidatos"}</button>}
             <h1 className="text-lg font-bold">{titleFor(page)}</h1>
           </div>
           <div className="flex items-center gap-3 text-sm">
@@ -143,11 +145,9 @@ export function App() {
             <button className="btn-ghost" onClick={() => { logout(); setUser(null); }}><LogOut size={16} /></button>
           </div>
         </header>
-        {page === "dashboard" && <Dashboard />}
         {page === "finder" && <TalentFinder onView={openCandidate} />}
         {page === "candidates" && <Candidates onView={openCandidate} />}
         {page === "candidate" && candidateId && <CandidateProfile id={candidateId} canEdit={user.role !== "viewer"} />}
-        {page === "ai" && <Chat onView={openCandidate} />}
         {page === "integrations" && <Integrations canEdit={user.role === "admin"} />}
         {page === "settings" && <SettingsPage canEdit={user.role === "admin"} />}
       </main>
@@ -156,7 +156,7 @@ export function App() {
 }
 
 function titleFor(page: Page) {
-  return ({ dashboard: "Dashboard", finder: "Talent Finder", candidates: "Candidatos", candidate: "Ficha de candidato", ai: "AGLH AI", integrations: "Integraciones", settings: "Configuración" } as Record<Page, string>)[page];
+  return ({ finder: "Talent Finder", candidates: "Candidatos", candidate: "Ficha de candidato", integrations: "Integraciones", settings: "Configuración" } as Record<Page, string>)[page];
 }
 
 function Login({ onLogin }: { onLogin: (user: User) => void }) {
@@ -188,31 +188,14 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
   );
 }
 
-function Dashboard() {
-  const [data, setData] = useState<any>(null);
-  const [error, setError] = useState("");
-  useEffect(() => { api<any>("/dashboard").then(setData).catch((e) => setError(e.message)); }, []);
-  if (error) return <PagePad><ErrorBox message={error} /></PagePad>;
-  if (!data) return <PagePad><Skeleton /></PagePad>;
-  const metrics = [
-    ["Total candidatos", data.metrics.totalCandidates],
-    ["Nuevos esta semana", data.metrics.newThisWeek],
-    ["Procesos activos", data.metrics.activeProcesses],
-    ["Fuentes conectadas", data.metrics.connectedSources]
-  ];
-  return (
-    <PagePad>
-      <div className="mb-6 grid gap-4 md:grid-cols-4">{metrics.map(([label, value]) => <div className="card p-5" key={label}><div className="text-sm text-slate-500">{label}</div><div className="mt-2 text-3xl font-extrabold">{value}</div></div>)}</div>
-      <Table title="Sincronizaciones recientes" rows={data.syncLogs} empty="Todavía no hay sincronizaciones registradas." columns={["source", "status", "new_records", "updated_records", "errors"]} />
-    </PagePad>
-  );
-}
-
 function Candidates({ onView }: { onView: (id: string) => void }) {
   const [items, setItems] = useState<Candidate[]>([]);
   const [search, setSearch] = useState("");
   const [source, setSource] = useState("");
   const [contact, setContact] = useState("");
+  const [location, setLocation] = useState("");
+  const [seniority, setSeniority] = useState("");
+  const [document, setDocument] = useState("");
   const [status, setStatus] = useState("active");
   const [page, setPage] = useState(0);
   const [showForm, setShowForm] = useState(false);
@@ -220,11 +203,11 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [meta, setMeta] = useState<{ total: number; databaseTotal: number; returned: number; limit: number; offset: number } | null>(null);
-  const load = async (nextPage = page) => {
+  const load = async (nextPage = page, filters = { search, source, contact, location, seniority, document, status }) => {
     setLoading(true);
     setError("");
     try {
-      const query = new URLSearchParams({ search, source, contact, status, limit: "50", offset: String(nextPage * 50) });
+      const query = new URLSearchParams({ ...filters, limit: "50", offset: String(nextPage * 50) });
       const response = await api<{ data: Candidate[]; meta?: { total: number; databaseTotal: number; returned: number; limit: number; offset: number } }>(`/candidates?${query}`);
       setItems(response.data);
       setMeta(response.meta ?? { total: response.data.length, databaseTotal: response.data.length, returned: response.data.length, limit: 50, offset: nextPage * 50 });
@@ -237,15 +220,27 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
     }
   };
   useEffect(() => { load(); }, []);
+  function resetFilters() {
+    setSearch(""); setSource(""); setContact(""); setLocation(""); setSeniority(""); setDocument(""); setStatus("active");
+    load(0, { search: "", source: "", contact: "", location: "", seniority: "", document: "", status: "active" });
+  }
   return (
     <PagePad>
-      <div className="mb-4 grid gap-2 lg:grid-cols-[minmax(260px,1fr)_170px_190px_190px_auto]">
+      <section className="card mb-4 p-4">
+      <div className="grid gap-2 lg:grid-cols-[minmax(280px,1fr)_180px_180px]">
         <input className="field" placeholder="Buscar por nombre, experiencia, rol o contacto" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && load(0)} />
+        <input className="field" placeholder="Ciudad o país" value={location} onChange={(e) => setLocation(e.target.value)} onKeyDown={(e) => e.key === "Enter" && load(0)} />
+        <select className="field" value={seniority} onChange={(e) => setSeniority(e.target.value)}><option value="">Todo seniority</option><option>Junior</option><option>Semi-Senior</option><option>Senior</option><option>Lead</option><option>Manager</option></select>
+      </div>
+      <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-[170px_190px_170px_190px_auto_auto]">
         <select className="field" value={source} onChange={(e) => setSource(e.target.value)}><option value="">Todas las fuentes</option><option value="gmail">Gmail</option><option value="drive">Google Drive</option><option value="buscojobs">Buscojobs</option><option value="yoiners">Yoiners</option><option value="aglh">AGLH</option></select>
         <select className="field" value={contact} onChange={(e) => setContact(e.target.value)}><option value="">Cualquier contacto</option><option value="phone">Con teléfono</option><option value="email">Con email</option><option value="both">Con teléfono y email</option></select>
+        <select className="field" value={document} onChange={(e) => setDocument(e.target.value)}><option value="">Cualquier CV</option><option value="pdf">CV en PDF</option><option value="word">CV en Word</option></select>
         <select className="field" value={status} onChange={(e) => setStatus(e.target.value)}><option value="active">Base confiable</option><option value="needs_review">Requieren revisión</option></select>
-        <button className="btn-ghost" onClick={() => load(0)} disabled={loading}><Search size={16} /> {loading ? "Cargando..." : "Aplicar"}</button>
+        <button className="btn-primary" onClick={() => load(0)} disabled={loading}><Search size={16} /> {loading ? "Buscando..." : "Aplicar filtros"}</button>
+        <button className="btn-ghost" onClick={resetFilters} disabled={loading}><RotateCcw size={16} /> Limpiar</button>
       </div>
+      </section>
       <div className="mb-4 flex flex-wrap gap-2">
         <button className="btn-ghost" onClick={() => setShowImport(!showImport)}><Database size={16} /> Importar candidatos</button>
         <button className="btn-primary" onClick={() => setShowForm(!showForm)}><Plus size={16} /> Nuevo candidato</button>
@@ -369,6 +364,10 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
   const [snapshot] = useState(readTalentFinderSnapshot);
   const [query, setQuery] = useState(snapshot.query);
   const [seniority, setSeniority] = useState(snapshot.seniority);
+  const [source, setSource] = useState(snapshot.source);
+  const [location, setLocation] = useState(snapshot.location);
+  const [contact, setContact] = useState(snapshot.contact);
+  const [minScore, setMinScore] = useState(snapshot.minScore);
   const [activeOnly, setActiveOnly] = useState(snapshot.activeOnly);
   const [refreshSources, setRefreshSources] = useState(snapshot.refreshSources);
   const [results, setResults] = useState<any[]>(snapshot.results);
@@ -382,8 +381,8 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
 
   useEffect(() => {
     const previous = readTalentFinderSnapshot();
-    window.sessionStorage.setItem(TALENT_FINDER_STATE_KEY, JSON.stringify({ query, seniority, activeOnly, refreshSources, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms, scrollY: previous.scrollY ?? 0 }));
-  }, [query, seniority, activeOnly, refreshSources, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms]);
+    window.sessionStorage.setItem(TALENT_FINDER_STATE_KEY, JSON.stringify({ query, seniority, source, location, contact, minScore, activeOnly, refreshSources, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms, scrollY: previous.scrollY ?? 0 }));
+  }, [query, seniority, source, location, contact, minScore, activeOnly, refreshSources, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms]);
 
   useEffect(() => {
     if (!snapshot.scrollY) return;
@@ -407,7 +406,7 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
     }
     setSearchStatus(refreshSources ? "Actualizando fuentes conectadas y buscando..." : "Buscando...");
     try {
-      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean }; sync?: { ran: boolean; sources: number; imported: number; errors: number } }>("/search/talent", { method: "POST", timeoutMs: 20_000, body: JSON.stringify({ query, refreshSources: page === 1 && refreshSources, page, pageSize: 50, filters: { seniority: seniority || undefined, activeOnly } }) });
+      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean }; sync?: { ran: boolean; sources: number; imported: number; errors: number } }>("/search/talent", { method: "POST", timeoutMs: 20_000, body: JSON.stringify({ query, refreshSources: page === 1 && refreshSources, page, pageSize: 50, filters: { seniority: seniority || undefined, source: source ? [source] : undefined, location: location || undefined, contact: contact || undefined, minScore: minScore || undefined, activeOnly } }) });
       setResults((previous) => append
         ? [...new Map([...previous, ...response.data].map((candidate) => [candidate.id, candidate])).values()]
         : response.data);
@@ -428,13 +427,22 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
   }
   return (
     <PagePad>
-      <textarea className="field min-h-36" placeholder="Pegá o escribí la descripción del cargo..." value={query} onChange={(e) => setQuery(e.target.value)} />
-      <div className="my-3 flex flex-wrap items-center gap-3">
-        <select className="field max-w-48" value={seniority} onChange={(e) => setSeniority(e.target.value)}><option value="">Todo seniority</option><option>Junior</option><option>Semi-Senior</option><option>Senior</option><option>Lead</option><option>Manager</option></select>
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)} /> Solo activos</label>
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={refreshSources} onChange={(e) => setRefreshSources(e.target.checked)} /> Sincronizar antes de buscar</label>
-        <button className="btn-primary" onClick={() => run(1, false)} disabled={!query.trim() || loading}><Search size={16} /> {loading ? "Buscando..." : "Buscar candidatos"}</button>
-      </div>
+      <section className="card mb-4 p-4">
+        <label className="label">¿Qué perfil necesitás?</label>
+        <textarea className="field min-h-28" placeholder="Ejemplo: auxiliar administrativo con experiencia en facturación y atención al cliente" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") run(1, false); }} />
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+          <select className="field" value={source} onChange={(e) => setSource(e.target.value)}><option value="">Todas las fuentes</option><option value="gmail">Gmail</option><option value="drive">Google Drive</option><option value="buscojobs">Buscojobs</option><option value="yoiners">Yoiners</option><option value="aglh">AGLH</option></select>
+          <input className="field" placeholder="Ciudad o país" value={location} onChange={(e) => setLocation(e.target.value)} />
+          <select className="field" value={seniority} onChange={(e) => setSeniority(e.target.value)}><option value="">Todo seniority</option><option>Junior</option><option>Semi-Senior</option><option>Senior</option><option>Lead</option><option>Manager</option></select>
+          <select className="field" value={contact} onChange={(e) => setContact(e.target.value)}><option value="">Cualquier contacto</option><option value="phone">Con teléfono</option><option value="email">Con email</option><option value="both">Con teléfono y email</option></select>
+          <select className="field" value={minScore} onChange={(e) => setMinScore(Number(e.target.value))}><option value="0">Toda coincidencia</option><option value="60">60% o más</option><option value="70">70% o más</option><option value="80">80% o más</option><option value="90">90% o más</option></select>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)} /> Solo activos</label>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={refreshSources} onChange={(e) => setRefreshSources(e.target.checked)} /> Sincronizar antes de buscar</label>
+          <button className="btn-primary ml-auto" onClick={() => run(1, false)} disabled={!query.trim() || loading}><Search size={16} /> {loading ? "Buscando..." : "Buscar candidatos"}</button>
+        </div>
+      </section>
       {searchStatus && <div className="mb-3 rounded-md border border-slate-200 bg-white p-3 text-sm text-slate-600">{searchStatus}</div>}
       {hasSearched && interpretedTerms.length > 0 && <div className="mb-3 flex flex-wrap items-center gap-2 border-y border-slate-200 bg-white px-3 py-3 text-sm"><span className="font-semibold text-slate-600">La búsqueda entendió:</span>{interpretedTerms.map((term) => <span key={term} className="rounded-full bg-teal/10 px-2 py-1 text-xs font-semibold text-teal">{term}</span>)}</div>}
       {hasSearched && <div className="mb-3 text-sm text-slate-500">Mostrando {results.length} de {totalResults} candidatos relacionados · ordenados por compatibilidad</div>}
@@ -500,28 +508,6 @@ function ChildForm({ kind, id, onSaved }: any) {
     onSaved();
   }
   return <form onSubmit={save} className="card grid gap-3 p-4 md:grid-cols-2">{shapes[kind].map((f) => <Input key={f} label={f} value={form[f] ?? ""} onChange={(v) => setForm({ ...form, [f]: v })} required={["company", "position", "institution", "type", "fileName", "processName", "client", "stage"].includes(f)} />)}<button className="btn-primary md:col-span-2">Guardar</button></form>;
-}
-
-function Chat({ onView }: { onView: (id: string) => void }) {
-  const [sessions, setSessions] = useState<any[]>([]);
-  const [session, setSession] = useState<string | null>(null);
-  const [messages, setMessages] = useState<any[]>([]);
-  const [input, setInput] = useState("");
-  const [candidates, setCandidates] = useState<any[]>([]);
-  const loadSessions = () => api<{ data: any[] }>("/chat/sessions").then((r) => { setSessions(r.data); if (!session && r.data[0]) setSession(r.data[0].id); });
-  useEffect(() => { loadSessions(); }, []);
-  useEffect(() => { if (session) api<{ data: any[] }>(`/chat/sessions/${session}/messages`).then((r) => setMessages(r.data)); }, [session]);
-  async function newSession() { const r = await api<{ data: any }>("/chat/sessions", { method: "POST", body: JSON.stringify({ title: "Nueva conversación" }) }); setSession(r.data.id); loadSessions(); }
-  async function send() {
-    if (!session || !input.trim()) return;
-    const text = input; setInput("");
-    const r = await api<any>(`/chat/sessions/${session}/messages`, { method: "POST", body: JSON.stringify({ content: text }) });
-    setCandidates(r.candidates ?? []);
-    const m = await api<{ data: any[] }>(`/chat/sessions/${session}/messages`);
-    setMessages(m.data);
-    loadSessions();
-  }
-  return <div className="flex flex-1 overflow-hidden"><aside className="w-72 border-r border-slate-200 bg-white p-4"><button className="btn-primary mb-4 w-full" onClick={newSession}><Plus size={16} /> Nueva conversación</button>{sessions.map((s) => <button key={s.id} onClick={() => setSession(s.id)} className={`mb-1 block w-full rounded-md px-3 py-2 text-left text-sm ${session === s.id ? "bg-teal/10 text-teal" : "hover:bg-slate-50"}`}>{s.title}</button>)}</aside><section className="flex flex-1 flex-col"><div className="flex-1 space-y-3 overflow-auto p-6">{messages.length === 0 && <Empty text="Abrí una conversación y consultá sobre candidatos reales." />}{messages.map((m) => <div key={m.id} className={`max-w-2xl rounded-lg p-3 text-sm ${m.role === "user" ? "ml-auto bg-teal text-white" : "bg-white border border-slate-200"}`}>{m.content}</div>)}{candidates.map((c) => <CandidateRow key={c.id} candidate={{ ...c, qualityScore: c.qualityScore ?? 0, sourceCount: c.sourceCount ?? 0, email: c.email ?? [], phone: c.phone ?? [], languages: [], strengths: [], weaknesses: [], status: "active" }} onView={onView} reason={c.matchReason} matchScore={c.score} />)}</div><div className="border-t border-slate-200 bg-white p-4"><div className="flex gap-2"><textarea className="field min-h-12" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} /><button className="btn-primary" onClick={send}><Send size={16} /></button></div></div></section></div>;
 }
 
 function Integrations({ canEdit }: { canEdit: boolean }) {

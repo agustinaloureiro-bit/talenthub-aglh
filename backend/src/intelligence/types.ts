@@ -1,6 +1,9 @@
 export type TalentSearchFilters = {
   source?: string[];
   seniority?: string;
+  location?: string;
+  contact?: "email" | "phone" | "both";
+  minScore?: number;
   activeOnly?: boolean;
 };
 

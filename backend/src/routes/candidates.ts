@@ -473,6 +473,9 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
   const search = String(req.query.search ?? "");
   const source = String(req.query.source ?? "").trim();
   const contact = String(req.query.contact ?? "").trim();
+  const location = String(req.query.location ?? "").trim();
+  const seniority = String(req.query.seniority ?? "").trim();
+  const document = String(req.query.document ?? "").trim();
   const status = String(req.query.status ?? "active") === "needs_review" ? "needs_review" : "active";
   const limit = Math.max(10, Math.min(100, Number(req.query.limit ?? 50) || 50));
   const offset = Math.max(0, Number(req.query.offset ?? 0) || 0);
@@ -511,9 +514,19 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
     params.push(source);
     where += ` AND EXISTS (SELECT 1 FROM candidate_sources source_filter WHERE source_filter.candidate_id=candidates.id AND source_filter.source_type=$${params.length})`;
   }
+  if (location) {
+    params.push(`%${location}%`);
+    where += ` AND (coalesce(city,'') ILIKE $${params.length} OR coalesce(country,'') ILIKE $${params.length})`;
+  }
+  if (seniority) {
+    params.push(seniority);
+    where += ` AND coalesce(ai_seniority,'') ILIKE $${params.length}`;
+  }
   if (contact === "email") where += " AND cardinality(coalesce(email, '{}'::text[])) > 0";
   if (contact === "phone") where += " AND cardinality(coalesce(phone, '{}'::text[])) > 0";
   if (contact === "both") where += " AND cardinality(coalesce(email, '{}'::text[])) > 0 AND cardinality(coalesce(phone, '{}'::text[])) > 0";
+  if (document === "pdf") where += " AND EXISTS (SELECT 1 FROM documents format_doc WHERE format_doc.candidate_id=candidates.id AND (format_doc.mime_type ILIKE '%pdf%' OR format_doc.file_name ILIKE '%.pdf'))";
+  if (document === "word") where += " AND EXISTS (SELECT 1 FROM documents format_doc WHERE format_doc.candidate_id=candidates.id AND (format_doc.mime_type ILIKE '%word%' OR format_doc.file_name ILIKE '%.doc' OR format_doc.file_name ILIKE '%.docx'))";
 
   const rowParams = [...params, limit, offset];
   const [{ rows }, filteredTotal, databaseTotal] = await Promise.all([

@@ -17,7 +17,8 @@ export class RecruitmentIntelligenceEngine {
     ].filter(Boolean);
     const retrievalQuery = [...new Set(understoodConcepts.length ? understoodConcepts : [interpreted.normalizedQuery])].join(" ");
     const candidates = await this.fallbackSearch(retrievalQuery, filters);
-    const ranked = rerankCandidates(candidates, interpreted);
+    const ranked = rerankCandidates(candidates, interpreted)
+      .filter((candidate) => candidate.score >= (filters.minScore ?? 0));
 
     return {
       query: interpreted,
