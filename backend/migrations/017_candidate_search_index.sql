@@ -1,9 +1,4 @@
-CREATE INDEX IF NOT EXISTS candidates_search_vector_idx
-  ON candidates USING gin (
-    to_tsvector(
-      'spanish'::regconfig,
-      coalesce(full_name, '') || ' ' ||
-      coalesce(current_role, '') || ' ' ||
-      coalesce(ai_summary, '')
-    )
-  );
+-- Candidate metadata is bounded before document hydration in the search query.
+-- The existing documents_search_vector_idx remains the durable full-text index.
+-- This migration is metadata-only because PostgreSQL rejects the proposed
+-- expression index: the text-search expression is not immutable.
