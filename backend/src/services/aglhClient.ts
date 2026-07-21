@@ -6,6 +6,8 @@ const AGLH_PROFILE_BASE = "https://aglh.com.uy";
 const DEFAULT_PAGES_PER_SYNC = 60;
 const DEFAULT_PAGE_CONCURRENCY = 6;
 const DEFAULT_CV_DOWNLOADS_PER_SYNC = 8;
+const DEFAULT_INCREMENTAL_PAGES = 3;
+const AGLH_HEAD_IDS_LIMIT = 200;
 const MAX_CV_BYTES = 8 * 1024 * 1024;
 
 type JsonObject = Record<string, unknown>;
@@ -21,6 +23,10 @@ function object(value: unknown): JsonObject | null {
 
 function unique(values: string[]) {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function stringList(value: unknown) {
+  return Array.isArray(value) ? unique(value.map(text)) : [];
 }
 
 function normalizedKey(value: string) {
@@ -161,6 +167,28 @@ export function aglhCandidateFromTalent(input: unknown): CandidateImport | null 
   };
 }
 
+export function selectAglhIncrementalCandidates(candidates: CandidateImport[], knownHeadIds: string[]) {
+  const known = new Set(knownHeadIds);
+  const rows: CandidateImport[] = [];
+  let overlapFound = false;
+  for (const candidate of candidates) {
+    const sourceId = text(candidate.sourceId);
+    if (sourceId && known.has(sourceId)) {
+      overlapFound = true;
+      break;
+    }
+    rows.push(candidate);
+  }
+  return {
+    rows,
+    overlapFound,
+    headIds: unique([
+      ...candidates.map((candidate) => text(candidate.sourceId)),
+      ...knownHeadIds
+    ]).slice(0, AGLH_HEAD_IDS_LIMIT)
+  };
+}
+
 function talentRows(payload: unknown): JsonObject[] {
   if (Array.isArray(payload)) return payload.filter((item): item is JsonObject => Boolean(object(item)));
   const root = object(payload);
@@ -270,8 +298,13 @@ export async function syncAglh(config: JsonObject): Promise<AgentSyncResult> {
     };
   }
 
-  const startPage = Math.max(1, Number(config.aglhNextPage ?? 1) || 1);
-  const maxPages = Math.min(100, Math.max(1, Number(config.maxPagesPerSync ?? DEFAULT_PAGES_PER_SYNC) || DEFAULT_PAGES_PER_SYNC));
+  const historicalComplete = Boolean(text(config.aglhBackfillCompleteAt));
+  const knownHeadIds = stringList(config.aglhHeadSourceIds);
+  const incrementalMode = historicalComplete && Math.max(1, Number(config.aglhNextPage ?? 1) || 1) === 1;
+  const startPage = incrementalMode ? 1 : Math.max(1, Number(config.aglhNextPage ?? 1) || 1);
+  const configuredPages = incrementalMode ? config.aglhIncrementalPages : config.maxPagesPerSync;
+  const defaultPages = incrementalMode ? DEFAULT_INCREMENTAL_PAGES : DEFAULT_PAGES_PER_SYNC;
+  const maxPages = Math.min(100, Math.max(1, Number(configuredPages ?? defaultPages) || defaultPages));
   const pageConcurrency = Math.min(10, Math.max(1, Number(config.aglhPageConcurrency ?? DEFAULT_PAGE_CONCURRENCY) || DEFAULT_PAGE_CONCURRENCY));
   const cvDownloads = Math.min(30, Math.max(0, Number(config.aglhCvDownloadsPerSync ?? DEFAULT_CV_DOWNLOADS_PER_SYNC) || 0));
   const candidates = new Map<string, CandidateImport>();
@@ -279,6 +312,8 @@ export async function syncAglh(config: JsonObject): Promise<AgentSyncResult> {
   let pagesRead = 0;
   let nextPage = startPage;
   let lastPageSize = 0;
+  let headSourceIds = knownHeadIds;
+  let incrementalOverlapFound = false;
 
   try {
     const readPage = async (page: number) => {
@@ -303,6 +338,7 @@ export async function syncAglh(config: JsonObject): Promise<AgentSyncResult> {
     );
     const pageResults = [first, ...await mapWithConcurrency(remainingPages, pageConcurrency, readPage)];
 
+    const pageCandidates: CandidateImport[] = [];
     for (const result of pageResults) {
       total = result.total || total;
       const rows = result.rows;
@@ -311,13 +347,25 @@ export async function syncAglh(config: JsonObject): Promise<AgentSyncResult> {
       for (const row of rows) {
         const candidate = aglhCandidateFromTalent(row);
         if (!candidate) continue;
-        candidates.set(candidate.sourceId || candidate.fullName, candidate);
+        pageCandidates.push(candidate);
+      }
+    }
+
+    if (incrementalMode) {
+      const selected = selectAglhIncrementalCandidates(pageCandidates, knownHeadIds);
+      incrementalOverlapFound = selected.overlapFound;
+      headSourceIds = selected.headIds;
+      for (const candidate of selected.rows) candidates.set(candidate.sourceId || candidate.fullName, candidate);
+    } else {
+      for (const candidate of pageCandidates) candidates.set(candidate.sourceId || candidate.fullName, candidate);
+      if (startPage === 1) {
+        headSourceIds = unique(pageCandidates.map((candidate) => text(candidate.sourceId))).slice(0, AGLH_HEAD_IDS_LIMIT);
       }
     }
 
     const reachedEnd = pageResults.some((result) => result.rows.length === 0)
       || (totalPages > 0 && lastRequestedPage >= totalPages);
-    nextPage = reachedEnd ? 1 : lastRequestedPage + 1;
+    nextPage = incrementalMode || reachedEnd ? 1 : lastRequestedPage + 1;
     if (cvDownloads > 0) {
       await mapWithConcurrency(
         [...candidates.values()].slice(0, cvDownloads),
@@ -348,11 +396,15 @@ export async function syncAglh(config: JsonObject): Promise<AgentSyncResult> {
       aglhRole: session.role || null,
       aglhNextPage: nextPage,
       aglhTotalAvailable: total,
-      ...(complete ? { aglhBackfillCompleteAt: new Date().toISOString() } : {}),
+      aglhHeadSourceIds: headSourceIds,
+      ...(incrementalMode ? { aglhLastIncrementalSyncAt: new Date().toISOString() } : {}),
+      ...(complete && !historicalComplete ? { aglhBackfillCompleteAt: new Date().toISOString() } : {}),
       sessionStatus: "connected",
       sessionRefreshedAt: new Date().toISOString(),
       sessionLastError: null
     },
-    message: `AGLH: sesión renovada, ${pagesRead} páginas revisadas, ${candidates.size} perfiles reales con CV detectados${total ? ` de ${total} talentos disponibles` : ""}.${complete ? " Recorrido completo." : ` La próxima sincronización continúa en la página ${nextPage}.`}`
+    message: incrementalMode
+      ? `AGLH incremental: ${pagesRead} páginas recientes revisadas, ${candidates.size} perfiles nuevos con CV detectados${incrementalOverlapFound ? ". Se alcanzó el último punto guardado." : ". Punto de control actualizado."}`
+      : `AGLH histórico: sesión renovada, ${pagesRead} páginas revisadas, ${candidates.size} perfiles reales con CV detectados${total ? ` de ${total} talentos disponibles` : ""}.${complete ? " Recorrido completo; las próximas sincronizaciones procesarán solo perfiles nuevos." : ` La próxima sincronización continúa en la página ${nextPage}.`}`
   };
 }
