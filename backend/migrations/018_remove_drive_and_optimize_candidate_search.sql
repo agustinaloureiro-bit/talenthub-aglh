@@ -5,11 +5,6 @@ DELETE FROM agent_runs WHERE agent_id = 'drive';
 DELETE FROM agent_candidate_cache WHERE agent_id = 'drive';
 DELETE FROM integrations WHERE id = 'drive';
 
-CREATE INDEX IF NOT EXISTS candidates_search_vector_idx
-  ON candidates USING gin (
-    to_tsvector('spanish'::regconfig, coalesce(full_name, '') || ' ' || coalesce(current_role, '') || ' ' || coalesce(ai_summary, ''))
-  );
-
 CREATE INDEX IF NOT EXISTS candidate_sources_active_source_candidate_idx
   ON candidate_sources(source_type, candidate_id)
   WHERE is_active = true;
