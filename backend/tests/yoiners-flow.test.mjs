@@ -108,8 +108,11 @@ test("usa la vista oficial de empresa aunque la vista Yoiner devuelva cero talen
     requests.push({ url: target, init });
     if (target.endsWith("/auth/login")) {
       return new Response(JSON.stringify({
-        data: { token: "company-access", refresh_token: "company-refresh", user_id: "team-user", role: "COMPANY_TEAM", company_id: "company-1" }
+        data: { token: "company-access", refresh_token: "company-refresh", user_id: "team-user" }
       }), { status: 200 });
+    }
+    if (target.includes("/company/getCompanyByTeamUser/team-user")) {
+      return new Response(JSON.stringify({ data: { _id: "team-record", company_id: "company-1" } }), { status: 200 });
     }
     if (target.includes("/company/getTalentsByFiltersCompany/company-1")) {
       const body = JSON.parse(init.body);
@@ -135,6 +138,7 @@ test("usa la vista oficial de empresa aunque la vista Yoiner devuelva cero talen
     assert.equal(result.configUpdate.yoinersCompanyId, "company-1");
     assert.ok(requests.some((request) => request.url.includes("/company/getTalentsByFiltersCompany/company-1")));
     assert.ok(requests.some((request) => request.url.includes("/company/getSharedTalents/company-1")));
+    assert.ok(requests.some((request) => request.url.includes("/company/getCompanyByTeamUser/team-user")));
   } finally {
     globalThis.fetch = originalFetch;
   }

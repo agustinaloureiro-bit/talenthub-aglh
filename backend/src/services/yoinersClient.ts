@@ -347,6 +347,33 @@ async function authorizedRequest(path: string, token: string, init: RequestInit 
   });
 }
 
+function companyIdFromPayload(payload: unknown) {
+  const explicit = firstDeepText(payload, ["company_id", "companyId", "user_company_id", "userCompanyId"]);
+  if (explicit) return explicit;
+  const root = object(payload) ?? {};
+  const data = object(root.data) ?? root;
+  const company = object(data.company) ?? object(data.company_user) ?? object(data.companyUser);
+  return text(company?._id ?? company?.id ?? data._id ?? data.id);
+}
+
+async function resolveAccountContext(session: ResolvedSession): Promise<ResolvedSession> {
+  if (session.companyId || session.role === "COMPANY" || session.role === "COMPANY_TEAM") return session;
+  const discoveries = [
+    { path: `/company/getCompanyByTeamUser/${encodeURIComponent(session.userId)}`, role: "COMPANY_TEAM" },
+    { path: `/company/${encodeURIComponent(session.userId)}`, role: "COMPANY" }
+  ];
+  for (const discovery of discoveries) {
+    try {
+      const payload = await authorizedRequest(discovery.path, session.token);
+      const companyId = companyIdFromPayload(payload);
+      if (companyId) return { ...session, companyId, role: discovery.role };
+    } catch {
+      // Account discovery differs by role; a rejected alternative is expected.
+    }
+  }
+  return session;
+}
+
 function updatedAt(candidate: CandidateImport) {
   return firstDeepText(candidate.raw, ["updated_at", "updatedat", "modified_at", "modifiedat", "created_at", "createdat", "date"]);
 }
@@ -486,7 +513,7 @@ async function fetchTalentPayloads(session: Awaited<ReturnType<typeof resolveSes
 export async function syncYoiners(config: JsonObject): Promise<AgentSyncResult> {
   let session;
   try {
-    session = await resolveSession(config);
+    session = await resolveAccountContext(await resolveSession(config));
   } catch (error: any) {
     const detail = text(error?.message) || "error desconocido";
     const captcha = /captcha|recaptcha/i.test(detail);
@@ -518,6 +545,7 @@ export async function syncYoiners(config: JsonObject): Promise<AgentSyncResult> 
         yoinersRefreshToken: session.refreshToken,
         yoinersUserId: session.userId
       }) ?? await loginYoiners(config);
+      session = await resolveAccountContext(session);
       result = await fetchTalentPayloads(session);
     }
     const byId = new Map<string, CandidateImport>();
