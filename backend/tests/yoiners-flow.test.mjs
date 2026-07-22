@@ -144,6 +144,35 @@ test("usa la vista oficial de empresa aunque la vista Yoiner devuelva cero talen
   }
 });
 
+test("completa una sesion antigua con el rol y la empresa desde auth me", async () => {
+  const { syncYoiners } = await import("../dist/services/yoinersClient.js");
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    requests.push(target);
+    if (target.endsWith("/auth/me")) {
+      return new Response(JSON.stringify({ data: { user_id: "team-user", role: "COMPANY_TEAM", company_id: "company-1" } }), { status: 200 });
+    }
+    if (target.includes("/company/getTalentsByFiltersCompany/company-1")) {
+      return new Response(JSON.stringify({ data: [{
+        _id: "legacy-session-talent", first_name: "Ana", last_name: "Pereira", talent_cv: "https://files.yoiners.com/ana.pdf"
+      }] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  };
+
+  try {
+    const result = await syncYoiners({ yoinersAccessToken: "saved-token", yoinersUserId: "team-user" });
+    assert.deepEqual(result.rows.map((candidate) => candidate.sourceId), ["yoiners:legacy-session-talent"]);
+    assert.equal(result.configUpdate.yoinersRole, "COMPANY_TEAM");
+    assert.equal(result.configUpdate.yoinersCompanyId, "company-1");
+    assert.ok(requests.some((target) => target.endsWith("/auth/me")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("usa el punto de control Yoiners y no reimporta perfiles ya vistos", async () => {
   const { selectYoinersIncrementalCandidates } = await import("../dist/services/yoinersClient.js");
   const candidates = [

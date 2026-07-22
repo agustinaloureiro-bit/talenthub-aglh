@@ -356,8 +356,20 @@ function companyIdFromPayload(payload: unknown) {
   return text(company?._id ?? company?.id ?? data._id ?? data.id);
 }
 
-async function resolveAccountContext(session: ResolvedSession): Promise<ResolvedSession> {
+async function resolveAccountContext(session: ResolvedSession, config: JsonObject): Promise<ResolvedSession> {
   if (session.companyId || session.role === "COMPANY" || session.role === "COMPANY_TEAM") return session;
+  try {
+    const currentUser = sessionFromPayload(await authorizedRequest("/auth/me", session.token));
+    session = {
+      ...session,
+      userId: currentUser.userId || session.userId,
+      role: currentUser.role || session.role,
+      companyId: currentUser.companyId || session.companyId
+    };
+    if (session.companyId || session.role === "COMPANY" || session.role === "COMPANY_TEAM") return session;
+  } catch {
+    // Old sessions can predate /auth/me; account endpoints and credentials remain available.
+  }
   const discoveries = [
     { path: `/company/getCompanyByTeamUser/${encodeURIComponent(session.userId)}`, role: "COMPANY_TEAM" },
     { path: `/company/${encodeURIComponent(session.userId)}`, role: "COMPANY" }
@@ -369,6 +381,18 @@ async function resolveAccountContext(session: ResolvedSession): Promise<Resolved
       if (companyId) return { ...session, companyId, role: discovery.role };
     } catch {
       // Account discovery differs by role; a rejected alternative is expected.
+    }
+  }
+  if (text(config.username ?? config.email ?? config.user) && text(config.password)) {
+    try {
+      const fresh = await loginYoiners(config);
+      return {
+        ...fresh,
+        role: fresh.role || session.role,
+        companyId: fresh.companyId || session.companyId
+      };
+    } catch {
+      // Keep the still-valid saved session if a new login requires CAPTCHA.
     }
   }
   return session;
@@ -513,7 +537,7 @@ async function fetchTalentPayloads(session: Awaited<ReturnType<typeof resolveSes
 export async function syncYoiners(config: JsonObject): Promise<AgentSyncResult> {
   let session;
   try {
-    session = await resolveAccountContext(await resolveSession(config));
+    session = await resolveAccountContext(await resolveSession(config), config);
   } catch (error: any) {
     const detail = text(error?.message) || "error desconocido";
     const captcha = /captcha|recaptcha/i.test(detail);
@@ -545,7 +569,7 @@ export async function syncYoiners(config: JsonObject): Promise<AgentSyncResult> 
         yoinersRefreshToken: session.refreshToken,
         yoinersUserId: session.userId
       }) ?? await loginYoiners(config);
-      session = await resolveAccountContext(session);
+      session = await resolveAccountContext(session, config);
       result = await fetchTalentPayloads(session);
     }
     const byId = new Map<string, CandidateImport>();
