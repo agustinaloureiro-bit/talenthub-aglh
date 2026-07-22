@@ -173,6 +173,77 @@ test("completa una sesion antigua con el rol y la empresa desde auth me", async 
   }
 });
 
+test("sincroniza todos los talentos visibles para una cuenta auditora", async () => {
+  const { syncYoiners } = await import("../dist/services/yoinersClient.js");
+  const originalFetch = globalThis.fetch;
+  const requestedPages = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    if (target.endsWith("/auth/me")) {
+      return new Response(JSON.stringify({ data: { user_id: "auditor-1", role: "AUDITOR", permissions: [] } }), { status: 200 });
+    }
+    if (target.endsWith("/auditor/getAuditsByFilters")) {
+      const body = JSON.parse(init.body);
+      requestedPages.push(body.page);
+      const audits = body.page === 1
+        ? [
+            { id: 1, talent: { user_id: "talent-1", first_name: "Ana", last_name: "Pereira", talent_cv: "https://files.yoiners.com/ana.pdf" } },
+            { id: 2, talent: { user_id: "talent-1", first_name: "Ana", last_name: "Pereira", talent_cv: "https://files.yoiners.com/ana.pdf" } }
+          ]
+        : [{ id: 3, talent: { user_id: "talent-2", first_name: "Luis", last_name: "Gómez", talent_cv: "https://files.yoiners.com/luis.pdf" } }];
+      return new Response(JSON.stringify({ audits, hits: { totalDocs: 3, totalPages: 2, page: body.page } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  };
+
+  try {
+    const result = await syncYoiners({
+      yoinersAccessToken: "auditor-token",
+      yoinersUserId: "auditor-1",
+      yoinersRole: "AUDITOR"
+    });
+    assert.deepEqual(requestedPages, [1, 2]);
+    assert.deepEqual(result.rows.map((candidate) => candidate.sourceId), ["yoiners:talent-1", "yoiners:talent-2"]);
+    assert.equal(result.configUpdate.yoinersTotalVisible, 2);
+    assert.equal(result.configUpdate.yoinersCursorVersion, "auditor-audits-v1");
+    assert.equal(result.configUpdate.sessionStatus, "connected");
+    assert.match(result.message, /2 perfiles reales con CV/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("descarta el punto de control antiguo al habilitar la vista auditora", async () => {
+  const { syncYoiners } = await import("../dist/services/yoinersClient.js");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    if (target.endsWith("/auth/me")) {
+      return new Response(JSON.stringify({ data: { user_id: "auditor-1", role: "AUDITOR" } }), { status: 200 });
+    }
+    if (target.endsWith("/auditor/getAuditsByFilters")) {
+      return new Response(JSON.stringify({
+        audits: [{ id: 1, talent: { user_id: "talent-1", first_name: "Ana", last_name: "Pereira", talent_cv: "https://files.yoiners.com/ana.pdf" } }],
+        hits: { totalDocs: 1, totalPages: 1, page: JSON.parse(init.body).page }
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  };
+
+  try {
+    const result = await syncYoiners({
+      yoinersAccessToken: "auditor-token",
+      yoinersUserId: "auditor-1",
+      yoinersRole: "AUDITOR",
+      yoinersLastSyncAt: "2026-07-22T00:00:00.000Z",
+      yoinersHeadSourceIds: ["yoiners:talent-1"]
+    });
+    assert.deepEqual(result.rows.map((candidate) => candidate.sourceId), ["yoiners:talent-1"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("usa el punto de control Yoiners y no reimporta perfiles ya vistos", async () => {
   const { selectYoinersIncrementalCandidates } = await import("../dist/services/yoinersClient.js");
   const candidates = [

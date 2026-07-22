@@ -434,6 +434,17 @@ function paginationFromPayload(payload: unknown) {
   };
 }
 
+function auditedTalentRows(payload: unknown) {
+  const root = object(payload) ?? {};
+  const data = object(root.data) ?? root;
+  const audits = Array.isArray(data.audits) ? data.audits : [];
+  return audits.flatMap((audit): JsonObject[] => {
+    const row = object(audit);
+    const talent = object(row?.talent);
+    return talent ? [talent] : [];
+  });
+}
+
 type ResolvedSession = Awaited<ReturnType<typeof resolveSession>>;
 
 async function fetchFilteredTalents(
@@ -476,12 +487,38 @@ async function fetchFilteredTalents(
   return payloads;
 }
 
+async function fetchAuditedTalents(session: ResolvedSession) {
+  const payloads: unknown[] = [];
+  const maxPages = 500;
+  for (let page = 1; page <= maxPages; page += 1) {
+    const payload = await authorizedRequest("/auditor/getAuditsByFilters", session.token, {
+      method: "POST",
+      body: JSON.stringify({ auditor_user_id: session.userId, page, limit: 100 })
+    });
+    const talents = auditedTalentRows(payload);
+    if (!talents.length) break;
+    payloads.push(talents);
+    const pagination = paginationFromPayload(payload);
+    if (pagination.totalPages != null && page >= pagination.totalPages) break;
+  }
+  return payloads;
+}
+
 async function fetchTalentPayloads(session: Awaited<ReturnType<typeof resolveSession>>) {
   const payloads: unknown[] = [];
   const failures: string[] = [];
   let authorizationFailures = 0;
 
   const role = session.role.toUpperCase();
+  if (role === "AUDITOR") {
+    try {
+      const auditedPayloads = await fetchAuditedTalents(session);
+      if (auditedPayloads.length) return { payloads: auditedPayloads, failures };
+    } catch (error: any) {
+      if (Number(error?.status) === 401 || Number(error?.status) === 403) authorizationFailures += 1;
+      failures.push(`talentos auditados: ${text(error?.message) || "error"}`);
+    }
+  }
   const companyAccount = role === "COMPANY" || role === "COMPANY_TEAM" || Boolean(session.companyId);
   const companyTarget = session.companyId || session.userId;
   const filteredViews = companyAccount
@@ -583,9 +620,12 @@ export async function syncYoiners(config: JsonObject): Promise<AgentSyncResult> 
       }
     }
     const candidates = [...byId.values()];
-    const previousHeads = list(config.yoinersHeadSourceIds);
-    const incremental = selectYoinersIncrementalCandidates(candidates, previousHeads, text(config.yoinersLastSyncAt));
-    const firstSync = !text(config.yoinersLastSyncAt) && previousHeads.length === 0;
+    const cursorVersion = session.role.toUpperCase() === "AUDITOR" ? "auditor-audits-v1" : "talent-views-v1";
+    const cursorCompatible = text(config.yoinersCursorVersion) === cursorVersion;
+    const previousHeads = cursorCompatible ? list(config.yoinersHeadSourceIds) : [];
+    const previousSyncAt = cursorCompatible ? text(config.yoinersLastSyncAt) : "";
+    const incremental = selectYoinersIncrementalCandidates(candidates, previousHeads, previousSyncAt);
+    const firstSync = !cursorCompatible || (!previousSyncAt && previousHeads.length === 0);
     const rows = firstSync ? candidates : incremental.rows;
     const now = new Date().toISOString();
     return {
@@ -596,6 +636,7 @@ export async function syncYoiners(config: JsonObject): Promise<AgentSyncResult> 
         yoinersUserId: session.userId,
         yoinersRole: session.role || null,
         yoinersCompanyId: session.companyId || null,
+        yoinersCursorVersion: cursorVersion,
         yoinersHeadSourceIds: incremental.headIds,
         yoinersLastSyncAt: now,
         yoinersTotalVisible: sourceRows,
