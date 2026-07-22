@@ -621,7 +621,10 @@ candidatesRouter.get("/:id", asyncHandler(async (req, res) => {
   const primaryDocument = documents.rows.find((document: any) => document.is_primary_cv && document.raw_text)
     ?? documents.rows.find((document: any) => document.raw_text);
   const cvAnalysis = analyzeCvText(primaryDocument?.raw_text ?? "");
-  res.json({ data: mapCandidate(rows[0]), work: work.rows, education: education.rows, documents: documents.rows, processes: processes.rows, sources: sources.rows, cvAnalysis });
+  const candidate = mapCandidate(rows[0]);
+  if (cvAnalysis.city) candidate.city = cvAnalysis.city;
+  if (cvAnalysis.country) candidate.country = cvAnalysis.country;
+  res.json({ data: candidate, work: work.rows, education: education.rows, documents: documents.rows, processes: processes.rows, sources: sources.rows, cvAnalysis });
 }));
 
 candidatesRouter.get("/:id/documents/:documentId/download", asyncHandler(async (req, res) => {

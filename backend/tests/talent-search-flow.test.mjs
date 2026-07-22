@@ -201,6 +201,18 @@ test("un puesto basico en Ciudad de la Costa incluye perfiles operativos cercano
       documentSnippet: "Experiencia como cajera en una empresa con sucursal en Canelones.",
       score: 0,
       matchReason: ""
+    },
+    {
+      id: "maldonado-mal-guardado",
+      fullName: "Ignacio Ubicacion",
+      currentRole: "Atención al cliente",
+      city: "Canelones",
+      tags: ["supermercado"],
+      qualityScore: 90,
+      documentCount: 1,
+      documentSnippet: "Datos Personales Batalla del Cerrito 985, Maldonado, Maldonado, Uruguay Web & Redes Experiencia laboral en supermercado. Estudios Básicos Escuela 236, Toledo, Canelones, Uruguay.",
+      score: 0,
+      matchReason: ""
     }
   ], interpreted);
 

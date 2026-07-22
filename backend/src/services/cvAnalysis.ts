@@ -60,6 +60,8 @@ const LANGUAGE_RULES: EvidenceRule[] = [
 ];
 
 const URUGUAY_LOCATIONS = [
+  "Ciudad de la Costa", "San Jose de Carrasco", "Barra de Carrasco", "Shangri La", "Shangrila",
+  "Solymar", "Lagomar", "El Pinar",
   "Montevideo", "Canelones", "Maldonado", "San Jose", "Colonia", "Florida", "Rocha", "Paysandu",
   "Salto", "Rivera", "Tacuarembo", "Durazno", "Soriano", "Lavalleja", "Artigas", "Cerro Largo",
   "Flores", "Rio Negro", "Treinta y Tres", "Las Piedras", "Ciudad de la Costa", "Pando"
@@ -71,6 +73,28 @@ function normalize(value: string) {
 
 function unique(values: string[]) {
   return [...new Set(values.filter(Boolean))];
+}
+
+function earliestKnownLocation(value: string) {
+  const normalized = normalize(value);
+  return URUGUAY_LOCATIONS
+    .map((location) => ({ location, index: normalized.search(new RegExp(`\\b${normalize(location).replace(/\s+/g, "\\s+")}\\b`, "i")) }))
+    .filter((match) => match.index >= 0)
+    .sort((left, right) => left.index - right.index || right.location.length - left.location.length)[0]?.location ?? null;
+}
+
+export function extractCvResidence(input: string) {
+  const compact = String(input ?? "").replace(/\u0000/g, " ").replace(/\s+/g, " ").trim();
+  if (!compact) return null;
+  const personalMarker = /\b(?:datos personales|informaci[oó]n personal|domicilio|direcci[oó]n|lugar de residencia|residencia\s*:|radicad[oa] en|vive en)\b/i.exec(compact);
+  if (!personalMarker || personalMarker.index == null) return null;
+  const afterMarker = compact.slice(personalMarker.index, personalMarker.index + 1_400);
+  const markerOffset = personalMarker[0].length + 20;
+  const stop = /\b(?:web\s*&\s*redes|conocimientos|experiencia laboral|trayectoria|estudios b[aá]sicos|educaci[oó]n|formaci[oó]n)\b/i.exec(afterMarker.slice(markerOffset));
+  const segment = stop?.index == null ? afterMarker : afterMarker.slice(0, markerOffset + stop.index);
+  const city = earliestKnownLocation(segment);
+  if (!city) return null;
+  return { city, country: /\buruguay\b/i.test(segment) ? "Uruguay" : null };
 }
 
 function cleanLine(value: string) {
@@ -173,8 +197,9 @@ export function analyzeCvText(input: string): CvAnalysis {
   const skills = unique(labelsFor(mainText, SKILL_RULES));
   const languages = extractLanguageEvidence(mainText);
   const years = extractYears(mainText);
-  const city = URUGUAY_LOCATIONS.find((location) => new RegExp(`\\b${normalize(location).replace(/\s+/g, "\\s+")}\\b`, "i").test(normalize(mainText))) ?? null;
-  const country = city || /\buruguay\b/i.test(mainText) ? "Uruguay" : null;
+  const residence = extractCvResidence(mainText);
+  const city = residence?.city ?? null;
+  const country = residence?.country ?? (/\buruguay\b/i.test(mainText) ? "Uruguay" : null);
   const experienceHighlights = sectionHighlights(text, /experiencia|trayectoria|antecedentes laborales/i, /educaci[oó]n|formaci[oó]n|estudios|idiomas|habilidades/i);
   const educationHighlights = sectionHighlights(text, /educaci[oó]n|formaci[oó]n|estudios/i, /experiencia|idiomas|habilidades|referencias/i);
   const safeExperience = experienceHighlights.length ? experienceHighlights : fallbackHighlights(mainText, /experiencia|trabaj[eéoa]|desempe[nñ]|responsable|cargo|puesto|empresa/i);

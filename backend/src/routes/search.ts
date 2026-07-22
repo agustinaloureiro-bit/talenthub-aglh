@@ -4,6 +4,7 @@ import { q, qWithTimeout } from "../db/pool.js";
 import { asyncHandler } from "../middleware/errors.js";
 import { RecruitmentIntelligenceEngine } from "../intelligence/intelligenceEngine.js";
 import type { TalentSearchFilters } from "../intelligence/types.js";
+import { extractCvResidence } from "../services/cvAnalysis.js";
 
 export const searchRouter = Router();
 
@@ -210,12 +211,14 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     params,
     9_000
   );
-  return rows.map((row) => ({
+  return rows.map((row) => {
+    const cvResidence = extractCvResidence(row.document_snippet ?? "");
+    return {
     id: row.id,
     fullName: row.full_name,
     currentRole: row.current_role,
-    city: row.city,
-    country: row.country,
+    city: cvResidence?.city ?? row.city,
+    country: cvResidence?.country ?? row.country,
     seniority: row.ai_seniority,
     years: row.ai_seniority_years,
     tags: row.ai_tags ?? [],
@@ -234,7 +237,8 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     latestSourceAt: row.latest_source_at ?? null,
     score: Math.min(100, Math.max(0, Math.round((Number(row.rank) * 60) + (row.quality_score * 0.4)))),
     matchReason: row.rank > 0 ? "Coincide por texto, rol, competencias o resumen registrado." : "Sin coincidencia semantica directa; ordenado por calidad del perfil."
-  }));
+    };
+  });
 }
 
 const intelligenceEngine = new RecruitmentIntelligenceEngine(findCandidates);

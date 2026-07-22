@@ -1,4 +1,5 @@
 import type { InterpretedTalentQuery, TalentCandidateResult } from "./types.js";
+import { extractCvResidence } from "../services/cvAnalysis.js";
 
 function normalizeSearchValue(value: string) {
   return value.toLowerCase()
@@ -167,7 +168,10 @@ function satisfiesRequiredGroups(candidate: TalentCandidateResult, interpreted: 
 
 function satisfiesLocation(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   if (!interpreted.locationGroups.length) return true;
-  const declaredLocation = [candidate.city ?? "", candidate.country ?? ""].join(" ").trim();
+  const cvResidence = extractCvResidence(candidate.documentSnippet ?? "");
+  const declaredLocation = cvResidence
+    ? [cvResidence.city, cvResidence.country].filter(Boolean).join(" ")
+    : [candidate.city ?? "", candidate.country ?? ""].join(" ").trim();
   const locationText = declaredLocation || [candidate.summary ?? "", candidate.documentSnippet ?? ""].join(" ");
   return interpreted.locationGroups.every((group) => includesAny(locationText, group));
 }

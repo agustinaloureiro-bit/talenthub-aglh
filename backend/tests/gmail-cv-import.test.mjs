@@ -828,6 +828,20 @@ Ingles avanzado.`);
   assert.doesNotMatch(analysis.summary ?? "", /Email|Telefono/i);
 });
 
+test("analisis de CV prioriza el domicilio sobre ciudades mencionadas en estudios", async () => {
+  const { analyzeCvText, extractCvResidence } = await import("../dist/services/cvAnalysis.js");
+  const text = `Datos Personales
+Batalla del Cerrito 985, Maldonado - Maldonado, Maldonado, Uruguay
+Web & Redes
+Experiencia laboral
+Guardia de seguridad en supermercado.
+Estudios Básicos
+Escuela 236, Toledo, Canelones, Uruguay.`;
+
+  assert.deepEqual(extractCvResidence(text), { city: "Maldonado", country: "Uruguay" });
+  assert.equal(analyzeCvText(text).city, "Maldonado");
+});
+
 test("rechaza cargos genericos como nombres de candidatos", async () => {
   const { isClearlyGenericCandidateName } = await import("../dist/routes/integrations.js");
 
