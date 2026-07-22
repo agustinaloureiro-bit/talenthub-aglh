@@ -83,7 +83,17 @@ test("sincroniza la API paginada vigente de Yoiners, guarda sesion e importa sol
     const talentRequest = requests.find((request) => request.url.includes("getTalentsByFilters"));
     assert.equal(talentRequest.init.headers.Authorization, "bearer access-1");
     assert.equal(talentRequest.init.method, "POST");
-    assert.equal(JSON.parse(talentRequest.init.body).limit, 100);
+    assert.deepEqual(JSON.parse(talentRequest.init.body), {
+      role: "YOINER",
+      yoiner_user_id: "user-1",
+      prefetch: true,
+      page: 1,
+      pageMine: 1,
+      pageTalents: 1,
+      pageOthers: 1,
+      pageFree: 1,
+      limit: 100
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -223,16 +223,14 @@ function candidateRows(payload: unknown): JsonObject[] {
   if (Array.isArray(payload)) return payload.filter((item): item is JsonObject => Boolean(object(item)));
   const root = object(payload);
   if (!root) return [];
+  const rows: JsonObject[] = [];
   for (const key of ["talents", "data", "results", "items", "rows", "docs"]) {
     const value = root[key];
-    if (Array.isArray(value)) return value.filter((item): item is JsonObject => Boolean(object(item)));
+    if (Array.isArray(value)) rows.push(...value.filter((item): item is JsonObject => Boolean(object(item))));
     const nested = object(value);
-    if (nested) {
-      const found = candidateRows(nested);
-      if (found.length) return found;
-    }
+    if (nested) rows.push(...candidateRows(nested));
   }
-  return [];
+  return rows;
 }
 
 async function jsonRequest(path: string, init: RequestInit = {}) {
@@ -338,28 +336,44 @@ function paginationFromPayload(payload: unknown) {
   const root = object(payload) ?? {};
   const data = object(root.data) ?? root;
   const hits = object(data.hits) ?? object(root.hits) ?? {};
+  const rawTotalPages = hits.totalPages ?? hits.total_pages ?? data.totalPages ?? data.total_pages ?? root.totalPages;
   return {
     page: Number(hits.page ?? data.page ?? root.page ?? 1),
-    totalPages: Number(hits.totalPages ?? hits.total_pages ?? data.totalPages ?? data.total_pages ?? root.totalPages ?? 1)
+    totalPages: rawTotalPages == null ? null : Number(rawTotalPages)
   };
 }
 
 async function fetchFilteredTalents(session: Awaited<ReturnType<typeof resolveSession>>) {
   const payloads: unknown[] = [];
+  const seenPages = new Set<string>();
   const maxPages = 500;
   for (let page = 1; page <= maxPages; page += 1) {
     const payload = await authorizedRequest(`/yoiner/getTalentsByFilters/${encodeURIComponent(session.userId)}`, session.token, {
       method: "POST",
       body: JSON.stringify({
+        role: session.role || "YOINER",
         yoiner_user_id: session.userId,
+        prefetch: true,
         page,
+        pageMine: page,
+        pageTalents: page,
+        pageOthers: page,
+        pageFree: page,
         limit: 100
       })
     });
+    const rows = candidateRows(payload);
+    if (!rows.length) break;
+    const fingerprint = rows
+      .map((row) => firstDeepText(row, ["talent_id", "talentid", "user_id", "userid", "id", "_id"]))
+      .filter(Boolean)
+      .sort()
+      .join("|");
+    if (fingerprint && seenPages.has(fingerprint)) break;
+    if (fingerprint) seenPages.add(fingerprint);
     payloads.push(payload);
     const pagination = paginationFromPayload(payload);
-    const rows = candidateRows(payload);
-    if (!rows.length || page >= pagination.totalPages) break;
+    if (pagination.totalPages != null && page >= pagination.totalPages) break;
   }
   return payloads;
 }
