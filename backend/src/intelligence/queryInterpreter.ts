@@ -52,7 +52,8 @@ const LOCATION_HINTS = [
   "montevideo", "canelones", "maldonado", "san jose", "colonia", "salto", "paysandu", "rivera",
   "pocitos", "cordon", "centro", "ciudad vieja", "carrasco", "malvin", "punta carretas", "la blanqueada",
   "tres cruces", "prado", "aguada", "goes", "buceo", "parque batlle", "union", "penarol", "colon",
-  "manga", "cerro", "la teja", "paso molino", "las piedras", "pando", "ciudad de la costa"
+  "manga", "cerro", "la teja", "paso molino", "las piedras", "pando", "ciudad de la costa",
+  "solymar", "lagomar", "el pinar", "shangrila", "shangri la", "san jose de carrasco", "barra de carrasco"
 ];
 
 const SKILL_HINTS = [
@@ -137,6 +138,28 @@ function requiredGroupsForQuery(query: string, roles: string[]) {
   return roles.map((role) => [role]);
 }
 
+const CIUDAD_DE_LA_COSTA_AREA = [
+  "ciudad de la costa", "solymar", "lagomar", "el pinar", "shangrila", "shangri la",
+  "san jose de carrasco", "barra de carrasco", "canelones"
+];
+
+function locationGroupsForQuery(locations: string[]) {
+  return locations.map((location) => normalizeHint(location) === "ciudad de la costa"
+    ? CIUDAD_DE_LA_COSTA_AREA
+    : [location]);
+}
+
+function basicProfileRequested(query: string) {
+  const normalized = normalizeHint(query);
+  return /\b(?:sin experiencia|no (?:necesita|necesitan|requiere|requieren) (?:tener )?experiencia|trabajo (?:basico|operativo)|perfil (?:basico|operativo)|puesto (?:basico|operativo))\b/.test(normalized)
+    || (/\bsupermercad/.test(normalized) && /\b(?:sin experiencia|no requiere|no necesitan)\b/.test(normalized));
+}
+
+function ignoredSensitiveCriteria(query: string) {
+  const normalized = normalizeHint(query);
+  return /\b(?:hombre|hombres|varon|varones|mujer|mujeres|sexo|genero)\b/.test(normalized) ? ["genero"] : [];
+}
+
 export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   const normalizedQuery = query.replace(/\s+/g, " ").trim();
   const roles = findHints(normalizedQuery, ROLE_HINTS);
@@ -146,8 +169,9 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   ])];
   const languages = LANGUAGE_PATTERNS.filter(([pattern]) => pattern.test(normalizedQuery)).map(([, language]) => language);
   const seniority = SENIORITY_PATTERNS.find(([pattern]) => pattern.test(normalizedQuery))?.[1] ?? null;
-  const industries = findHints(normalizedQuery, ["industria", "retail", "logistica", "logística", "manufactura", "tecnologia", "tecnología", "gastronomia", "gastronomía", "restaurante"]);
+  const industries = findHints(normalizedQuery, ["supermercado", "industria", "retail", "logistica", "logística", "manufactura", "tecnologia", "tecnología", "gastronomia", "gastronomía", "restaurante"]);
   const locations = findHints(normalizedQuery, LOCATION_HINTS);
+  const profileLevel = basicProfileRequested(normalizedQuery) ? "basic" : null;
 
   return {
     originalQuery: query,
@@ -158,6 +182,9 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
     seniority,
     industries,
     locations,
+    locationGroups: locationGroupsForQuery(locations),
+    profileLevel,
+    ignoredCriteria: ignoredSensitiveCriteria(normalizedQuery),
     mustHave: [...roles, ...skills, ...languages, ...locations],
     requiredGroups: requiredGroupsForQuery(normalizedQuery, roles)
   };

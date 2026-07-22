@@ -18,6 +18,9 @@ export type InterpretedTalentQuery = {
   seniority?: string | null;
   industries: string[];
   locations: string[];
+  locationGroups: string[][];
+  profileLevel?: "basic" | null;
+  ignoredCriteria: string[];
   mustHave: string[];
   requiredGroups: string[][];
 };

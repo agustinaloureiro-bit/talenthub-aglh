@@ -33,7 +33,7 @@ function normalizeSearchText(value: string) {
 
 function expandedSearchTerms(query: string) {
   const normalizedQuery = normalizeSearchText(query);
-  const ignoredWords = new Set(["busco", "buscar", "necesito", "persona", "alguien", "perfil", "candidato", "candidata", "con", "sin", "para", "experiencia", "experiencias", "tener", "tenga", "que", "una", "uno"]);
+  const ignoredWords = new Set(["busco", "buscar", "buscando", "estoy", "necesito", "persona", "alguien", "perfil", "candidato", "candidata", "con", "sin", "para", "experiencia", "experiencias", "tener", "tenga", "que", "una", "uno", "trabajar", "necesita", "necesitan", "requiere", "requieren", "especifica", "especifico", "preciso", "sean", "alrededores", "hombre", "hombres", "mujer", "mujeres"]);
   const words = normalizedQuery.split(/[^\p{L}\p{N}]+/u)
     .filter((word) => word.length >= 3 && !ignoredWords.has(word));
   const extras: Record<string, string[]> = {
@@ -77,9 +77,13 @@ function expandedSearchTerms(query: string) {
     chofer: ["conductor", "driver", "libreta profesional"],
     conductor: ["chofer", "driver", "libreta profesional"],
     ambulanciero: ["chofer de ambulancia", "conductor de ambulancia", "ambulancia", "traslado de pacientes"],
-    ambulancia: ["chofer de ambulancia", "conductor de ambulancia", "ambulanciero", "emergencia movil", "emergencia médica", "traslado de pacientes"]
+    ambulancia: ["chofer de ambulancia", "conductor de ambulancia", "ambulanciero", "emergencia movil", "emergencia médica", "traslado de pacientes"],
+    supermercado: ["retail", "cajero", "cajera", "repositor", "repositora", "operario", "operaria", "auxiliar", "deposito", "depósito", "stock", "atencion al cliente", "atención al cliente"]
   };
-  const terms = [...new Set([...words, ...words.flatMap((word) => extras[word] ?? [])].map(normalizeSearchText))]
+  const geographicTerms = normalizedQuery.includes("ciudad de la costa")
+    ? ["ciudad de la costa", "solymar", "lagomar", "el pinar", "shangrila", "san jose de carrasco", "barra de carrasco", "canelones"]
+    : [];
+  const terms = [...new Set([...words, ...words.flatMap((word) => extras[word] ?? []), ...geographicTerms].map(normalizeSearchText))]
     .filter(Boolean);
   return terms.length ? terms : [normalizedQuery];
 }
@@ -174,7 +178,7 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
       primary_doc.id AS primary_document_id,
       primary_doc.mime_type AS primary_document_mime_type,
       primary_doc.source_type AS primary_document_source_type,
-      left(coalesce(primary_doc.raw_text, ''), 1200) AS document_snippet,
+      left(coalesce(primary_doc.raw_text, ''), 3500) AS document_snippet,
       source_activity.latest_source_at,
       top_matches.rank
      FROM top_matches

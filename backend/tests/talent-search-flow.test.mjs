@@ -128,6 +128,88 @@ test("interpreta barrio y sistemas como criterios buscables", () => {
   assert.ok(interpreted.mustHave.includes("pocitos"));
 });
 
+test("interpreta supermercado sin experiencia como perfil operativo y expande Ciudad de la Costa", () => {
+  const interpreted = interpretTalentQuery("Estoy buscando hombres para trabajar en un supermercado. No necesitan tener experiencia específica. Deben ser de Ciudad de la Costa o alrededores.");
+
+  assert.ok(interpreted.industries.includes("supermercado"));
+  assert.ok(interpreted.locations.includes("ciudad de la costa"));
+  assert.equal(interpreted.profileLevel, "basic");
+  assert.ok(interpreted.locationGroups[0].includes("solymar"));
+  assert.ok(interpreted.locationGroups[0].includes("canelones"));
+  assert.deepEqual(interpreted.ignoredCriteria, ["genero"]);
+});
+
+test("un puesto basico en Ciudad de la Costa incluye perfiles operativos cercanos y excluye ubicaciones o profesiones incompatibles", () => {
+  const interpreted = interpretTalentQuery("Estoy buscando hombres para trabajar en un supermercado, no necesitan experiencia específica, de Ciudad de la Costa o alrededores");
+  const ranked = rerankCandidates([
+    {
+      id: "solymar",
+      fullName: "Camila Operativa",
+      currentRole: "Auxiliar de depósito",
+      city: "Solymar",
+      tags: ["stock", "logistica"],
+      qualityScore: 60,
+      documentCount: 1,
+      documentSnippet: "Experiencia operativa, reposición y atención al cliente.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "canelones",
+      fullName: "Pablo Produccion",
+      currentRole: "Operario de producción",
+      city: "Canelones",
+      tags: ["produccion"],
+      qualityScore: 55,
+      documentCount: 1,
+      documentSnippet: "Tareas generales y trabajo en equipo.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "pocitos",
+      fullName: "Martin Repositor",
+      currentRole: "Repositor",
+      city: "Pocitos",
+      tags: ["stock"],
+      qualityScore: 90,
+      documentCount: 1,
+      documentSnippet: "Reposición de mercadería.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "contador",
+      fullName: "Andres Profesional",
+      currentRole: "Contador público",
+      city: "Ciudad de la Costa",
+      tags: ["contabilidad"],
+      qualityScore: 95,
+      documentCount: 1,
+      documentSnippet: "Contador público recibido, experiencia en auditoría y finanzas.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.deepEqual(ranked.map((candidate) => candidate.id), ["solymar", "canelones"]);
+  assert.match(ranked[0].matchReason, /ubicación solicitada/i);
+});
+
+test("no usa el genero solicitado para recuperar ni ordenar candidatos", async () => {
+  let providerQuery = "";
+  const engine = new RecruitmentIntelligenceEngine(async (query) => {
+    providerQuery = query;
+    return [];
+  });
+
+  await engine.search("Busco hombres para supermercado en Ciudad de la Costa sin experiencia");
+
+  assert.doesNotMatch(providerQuery, /hombre|mujer|genero/i);
+  assert.match(providerQuery, /supermercado/i);
+  assert.match(providerQuery, /ciudad de la costa/i);
+});
+
 test("prioriza ubicación y sistema cuando se piden en lenguaje natural", () => {
   const interpreted = interpretTalentQuery("administrativa en Pocitos con SAP");
   const ranked = rerankCandidates([

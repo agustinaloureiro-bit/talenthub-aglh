@@ -22,11 +22,12 @@ type TalentFinderSnapshot = {
   searchStatus: string;
   hasSearched: boolean;
   interpretedTerms: string[];
+  ignoredCriteria: string[];
   scrollY?: number;
 };
 
 function readTalentFinderSnapshot(): TalentFinderSnapshot {
-  const empty: TalentFinderSnapshot = { query: "", seniority: "", source: "", location: "", contact: "", minScore: 0, activeOnly: true, recency: "", sort: "relevance", results: [], totalResults: 0, currentPage: 1, searchStatus: "", hasSearched: false, interpretedTerms: [] };
+  const empty: TalentFinderSnapshot = { query: "", seniority: "", source: "", location: "", contact: "", minScore: 0, activeOnly: true, recency: "", sort: "relevance", results: [], totalResults: 0, currentPage: 1, searchStatus: "", hasSearched: false, interpretedTerms: [], ignoredCriteria: [] };
   try {
     const stored = window.sessionStorage.getItem(TALENT_FINDER_STATE_KEY);
     if (!stored) return empty;
@@ -386,12 +387,13 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
   const [loading, setLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(snapshot.hasSearched);
   const [interpretedTerms, setInterpretedTerms] = useState<string[]>(snapshot.interpretedTerms);
+  const [ignoredCriteria, setIgnoredCriteria] = useState<string[]>(snapshot.ignoredCriteria);
   const [previewCandidate, setPreviewCandidate] = useState<Candidate | null>(null);
 
   useEffect(() => {
     const previous = readTalentFinderSnapshot();
-    window.sessionStorage.setItem(TALENT_FINDER_STATE_KEY, JSON.stringify({ query, seniority, source, location, contact, minScore, activeOnly, recency, sort, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms, scrollY: previous.scrollY ?? 0 }));
-  }, [query, seniority, source, location, contact, minScore, activeOnly, recency, sort, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms]);
+    window.sessionStorage.setItem(TALENT_FINDER_STATE_KEY, JSON.stringify({ query, seniority, source, location, contact, minScore, activeOnly, recency, sort, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms, ignoredCriteria, scrollY: previous.scrollY ?? 0 }));
+  }, [query, seniority, source, location, contact, minScore, activeOnly, recency, sort, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms, ignoredCriteria]);
 
   useEffect(() => {
     if (!snapshot.scrollY) return;
@@ -412,22 +414,26 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
       setResults([]);
       setTotalResults(0);
       setInterpretedTerms([]);
+      setIgnoredCriteria([]);
     }
     setSearchStatus("Buscando en los candidatos ya procesados...");
     try {
-      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[]; locations?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean } }>("/search/talent", { method: "POST", timeoutMs: 12_000, body: JSON.stringify({ query, page, pageSize: 50, filters: { seniority: seniority || undefined, source: source ? [source] : undefined, location: location || undefined, contact: contact || undefined, minScore: minScore || undefined, activeOnly, recency: recency || undefined, sort } }) });
+      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[]; locations?: string[]; ignoredCriteria?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean } }>("/search/talent", { method: "POST", timeoutMs: 12_000, body: JSON.stringify({ query, page, pageSize: 50, filters: { seniority: seniority || undefined, source: source ? [source] : undefined, location: location || undefined, contact: contact || undefined, minScore: minScore || undefined, activeOnly, recency: recency || undefined, sort } }) });
       setResults((previous) => append
         ? [...new Map([...previous, ...response.data].map((candidate) => [candidate.id, candidate])).values()]
         : response.data);
       setTotalResults(response.meta.total);
       setCurrentPage(response.meta.page);
-      if (page === 1) setInterpretedTerms([...new Set([
-        ...(response.query?.roles ?? []),
-        ...(response.query?.skills ?? []),
-        ...(response.query?.languages ?? []),
-        ...(response.query?.industries ?? []),
-        ...(response.query?.locations ?? [])
-      ])]);
+      if (page === 1) {
+        setInterpretedTerms([...new Set([
+          ...(response.query?.roles ?? []),
+          ...(response.query?.skills ?? []),
+          ...(response.query?.languages ?? []),
+          ...(response.query?.industries ?? []),
+          ...(response.query?.locations ?? [])
+        ])]);
+        setIgnoredCriteria(response.query?.ignoredCriteria ?? []);
+      }
       setSearchStatus("");
     } catch (err: any) {
       setSearchStatus(err.message || "No se pudo completar la busqueda.");
@@ -455,6 +461,7 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
         </div>
       </section>
       {searchStatus && <div className="mb-3 rounded-md border border-slate-200 bg-white p-3 text-sm text-slate-600">{searchStatus}</div>}
+      {hasSearched && ignoredCriteria.length > 0 && <div className="mb-3 rounded-md border border-slate-200 bg-white p-3 text-sm text-slate-600">Los criterios personales sensibles no se usan para filtrar candidatos. El ranking se basa en ubicación, experiencia y adecuación laboral.</div>}
       {hasSearched && interpretedTerms.length > 0 && <div className="mb-3 flex flex-wrap items-center gap-2 border-y border-slate-200 bg-white px-3 py-3 text-sm"><span className="font-semibold text-slate-600">La búsqueda entendió:</span>{interpretedTerms.map((term) => <span key={term} className="rounded-full bg-teal/10 px-2 py-1 text-xs font-semibold text-teal">{term}</span>)}</div>}
       {hasSearched && <div className="mb-3 text-sm text-slate-500">Mostrando {results.length} de {totalResults} candidatos relacionados · {sort === "recent" ? "ordenados por fecha del CV" : "ordenados por compatibilidad, priorizando actividad reciente entre perfiles similares"}</div>}
       <div className="grid gap-3">{!hasSearched && <Empty text="Escribí lo que necesitás para calcular la compatibilidad sobre los CVs." />}{hasSearched && !loading && results.length === 0 && <Empty text="La búsqueda no encontró candidatos con evidencia suficiente en los CVs disponibles." />}{results.map((c) => {

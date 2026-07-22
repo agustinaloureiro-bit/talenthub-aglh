@@ -32,7 +32,7 @@ export class RecruitmentIntelligenceEngine {
       query: interpreted,
       data: ranked,
       explanation: ranked.length
-        ? `Analice la busqueda, detecte ${interpreted.mustHave.length || "sin"} criterios fuertes y ordene los perfiles disponibles por compatibilidad.`
+        ? `Analice la busqueda, detecte ${interpreted.mustHave.length || "sin"} criterios laborales fuertes y ordene los perfiles disponibles por compatibilidad.${interpreted.ignoredCriteria.length ? " Los criterios personales sensibles no se utilizaron." : ""}`
         : "No encontre perfiles compatibles en el indice actual. Conviene sincronizar fuentes o cargar CVs.",
       mode: "intelligence_fallback"
     };

@@ -41,7 +41,9 @@ const EQUIVALENT_TERMS: Record<string, string[]> = {
   negociacion: ["negociacion", "cierre de ventas", "manejo de cuentas", "desarrollo de clientes"],
   "resolucion de problemas": ["resolver problemas", "analitico", "pensamiento critico", "toma de decisiones"],
   adaptabilidad: ["flexibilidad", "entorno dinamico", "trabajo bajo presion"],
-  "trabajo en equipo": ["colaboracion", "colaborativo", "equipos multidisciplinarios"]
+  "trabajo en equipo": ["colaboracion", "colaborativo", "equipos multidisciplinarios"],
+  supermercado: ["retail", "cajero", "cajera", "repositor", "repositora", "operario", "operaria", "auxiliar", "deposito", "stock", "atencion al cliente"],
+  "ciudad de la costa": ["solymar", "lagomar", "el pinar", "shangrila", "shangri la", "san jose de carrasco", "barra de carrasco", "canelones"]
 };
 
 function equivalentValues(value: string) {
@@ -163,6 +165,25 @@ function satisfiesRequiredGroups(candidate: TalentCandidateResult, interpreted: 
   return interpreted.requiredGroups.every((group) => includesAny(haystack, group));
 }
 
+function satisfiesLocation(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
+  if (!interpreted.locationGroups.length) return true;
+  const locationText = [candidate.city ?? "", candidate.country ?? "", candidate.summary ?? "", candidate.documentSnippet ?? ""].join(" ");
+  return interpreted.locationGroups.every((group) => includesAny(locationText, group));
+}
+
+const BASIC_WORK_PATTERN = /\b(?:operari[oa]|cajer[oa]|repositor[oa]|auxiliar|pe[oó]n|deposito|dep[oó]sito|stock|almac[eé]n|limpieza|atenci[oó]n al cliente|ventas|mozo|moza|cocina|producci[oó]n|log[ií]stica|supermercado|retail)\b/i;
+const PROFESSIONAL_ROLE_PATTERN = /\b(?:contador(?:a)?|abogad[oa]|ingenier[oa]|arquitect[oa]|m[eé]dic[oa]|psic[oó]log[oa]|licenciad[oa]|director(?:a)?|gerente|consultor(?:a) senior)\b/i;
+
+function basicProfileSuitability(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
+  if (interpreted.profileLevel !== "basic") return { allowed: true, bonus: 0 };
+  const role = candidate.currentRole ?? "";
+  const evidence = [role, (candidate.tags ?? []).join(" "), candidate.summary ?? "", candidate.documentSnippet ?? ""].join(" ");
+  const operationalEvidence = BASIC_WORK_PATTERN.test(evidence);
+  const clearlyProfessional = PROFESSIONAL_ROLE_PATTERN.test(role)
+    || (!operationalEvidence && /\b(?:contador(?:a)?|abogad[oa]|ingenier[oa]|arquitect[oa]|m[eé]dic[oa])\s+(?:p[uú]blic[oa]|recibid[oa]|titulad[oa])\b/i.test(evidence));
+  return { allowed: !clearlyProfessional || operationalEvidence, bonus: operationalEvidence ? 12 : 0 };
+}
+
 export function explainCandidateMatch(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   const haystack = candidateHaystack(candidate);
   const profileText = candidateProfileText(candidate);
@@ -186,6 +207,8 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
   return candidates
     .filter((candidate) => isCredibleCandidateName(candidate.fullName))
     .filter((candidate) => satisfiesRequiredGroups(candidate, interpreted))
+    .filter((candidate) => satisfiesLocation(candidate, interpreted))
+    .filter((candidate) => basicProfileSuitability(candidate, interpreted).allowed)
     .map((candidate) => {
       const conceptCoverage = coverage(candidate, interpreted);
       const documentText = candidate.documentSnippet ?? "";
@@ -206,6 +229,7 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
         + (hasContact ? 5 : 0)
         + (interpreted.seniority && seniorityMatch ? 5 : 0)
         + recencyBonus(candidate.latestSourceAt)
+        + basicProfileSuitability(candidate, interpreted).bonus
       )));
       const primaryAligned = primaryRoleMatches(candidate, interpreted);
       const exactSpecializedRole = isAmbulanceDriverQuery(interpreted) && primaryAligned;
