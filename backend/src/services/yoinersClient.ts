@@ -72,7 +72,7 @@ export function yoinersSessionFromConfig(config: JsonObject) {
     token: text(config.yoinersAccessToken ?? config.accessToken ?? config.apiKey ?? config.token ?? exported.usertoken),
     refreshToken: text(config.yoinersRefreshToken ?? config.refreshToken ?? exported.refreshtoken),
     userId: text(config.yoinersUserId ?? config.userId ?? exported.userid),
-    role: text(config.yoinersRole ?? config.role ?? exported.userrole),
+    role: text(config.yoinersRole ?? config.role ?? exported.userrole).toUpperCase(),
     companyId: text(config.yoinersCompanyId ?? config.companyId ?? exported.usercompanyid)
   };
 }
@@ -220,16 +220,48 @@ export function yoinersCandidateFromTalent(input: unknown): CandidateImport | nu
 }
 
 function candidateRows(payload: unknown): JsonObject[] {
-  if (Array.isArray(payload)) return payload.filter((item): item is JsonObject => Boolean(object(item)));
-  const root = object(payload);
-  if (!root) return [];
   const rows: JsonObject[] = [];
-  for (const key of ["talents", "data", "results", "items", "rows", "docs"]) {
-    const value = root[key];
-    if (Array.isArray(value)) rows.push(...value.filter((item): item is JsonObject => Boolean(object(item))));
-    const nested = object(value);
-    if (nested) rows.push(...candidateRows(nested));
-  }
+  const visited = new Set<unknown>();
+  const identities = new Set<string>();
+  const immediateValues = (value: JsonObject, keys: string[]) => {
+    const wanted = new Set(keys.map(normalizedKey));
+    const containers = [value, object(value.user), object(value.talent), object(value.profile)].filter(Boolean) as JsonObject[];
+    for (const container of containers) {
+      for (const [key, child] of Object.entries(container)) {
+        if (!wanted.has(normalizedKey(key))) continue;
+        const direct = text(child);
+        if (direct) return direct;
+      }
+    }
+    return "";
+  };
+  const looksLikeTalent = (value: JsonObject) => {
+    const firstName = immediateValues(value, ["first_name", "firstname", "nombre", "nombres"]);
+    const lastName = immediateValues(value, ["last_name", "lastname", "apellido", "apellidos"]);
+    const fullName = immediateValues(value, ["full_name", "fullname", "nombre_completo"]);
+    const id = immediateValues(value, ["talent_id", "talentid", "user_id", "userid", "id", "_id"]);
+    return Boolean(id && (fullName || (firstName && lastName)));
+  };
+  const collect = (value: unknown, depth = 0) => {
+    if (!value || depth > 8 || visited.has(value)) return;
+    if (typeof value === "object") visited.add(value);
+    if (Array.isArray(value)) {
+      value.forEach((item) => collect(item, depth + 1));
+      return;
+    }
+    const row = object(value);
+    if (!row) return;
+    if (looksLikeTalent(row)) {
+      const id = immediateValues(row, ["talent_id", "talentid", "user_id", "userid", "id", "_id"]);
+      if (!identities.has(id)) {
+        identities.add(id);
+        rows.push(row);
+      }
+      return;
+    }
+    Object.values(row).forEach((child) => collect(child, depth + 1));
+  };
+  collect(payload);
   return rows;
 }
 
@@ -253,11 +285,13 @@ function sessionFromPayload(payload: unknown) {
   const root = object(payload) ?? {};
   const data = object(root.data) ?? root;
   return {
-    token: text(data.token ?? data.access_token ?? data.accessToken),
-    refreshToken: text(data.refresh_token ?? data.refreshToken),
-    userId: text(data.user_id ?? data.userId ?? object(data.user)?.id ?? object(data.user)?._id),
-    role: text(data.role ?? object(data.user)?.role),
+    token: text(data.token ?? data.access_token ?? data.accessToken) || firstDeepText(data, ["token", "access_token", "accessToken"]),
+    refreshToken: text(data.refresh_token ?? data.refreshToken) || firstDeepText(data, ["refresh_token", "refreshToken"]),
+    userId: text(data.user_id ?? data.userId ?? object(data.user)?.id ?? object(data.user)?._id)
+      || firstDeepText(data, ["user_id", "userId"]),
+    role: (text(data.role ?? object(data.user)?.role) || firstDeepText(data, ["role", "user_role", "userRole"])).toUpperCase(),
     companyId: text(data.company_id ?? data.companyId ?? object(data.company)?.id ?? object(data.company)?._id)
+      || firstDeepText(data, ["company_id", "companyId", "user_company_id", "userCompanyId"])
   };
 }
 
@@ -285,7 +319,13 @@ async function refreshYoiners(config: JsonObject) {
   });
   const session = sessionFromPayload(payload);
   if (!session.token) return null;
-  return { ...session, refreshToken: session.refreshToken || refreshToken, userId: session.userId || userId };
+  return {
+    ...session,
+    refreshToken: session.refreshToken || refreshToken,
+    userId: session.userId || userId,
+    role: session.role || saved.role,
+    companyId: session.companyId || saved.companyId
+  };
 }
 
 async function resolveSession(config: JsonObject) {
@@ -343,15 +383,22 @@ function paginationFromPayload(payload: unknown) {
   };
 }
 
-async function fetchFilteredTalents(session: Awaited<ReturnType<typeof resolveSession>>) {
+type ResolvedSession = Awaited<ReturnType<typeof resolveSession>>;
+
+async function fetchFilteredTalents(
+  session: ResolvedSession,
+  path: string,
+  accountRole: string
+) {
   const payloads: unknown[] = [];
   const seenPages = new Set<string>();
   const maxPages = 500;
   for (let page = 1; page <= maxPages; page += 1) {
-    const payload = await authorizedRequest(`/yoiner/getTalentsByFilters/${encodeURIComponent(session.userId)}`, session.token, {
+    const payload = await authorizedRequest(path, session.token, {
       method: "POST",
       body: JSON.stringify({
-        role: session.role || "YOINER",
+        role: accountRole,
+        company_id: session.companyId || undefined,
         yoiner_user_id: session.userId,
         prefetch: true,
         page,
@@ -383,16 +430,35 @@ async function fetchTalentPayloads(session: Awaited<ReturnType<typeof resolveSes
   const failures: string[] = [];
   let authorizationFailures = 0;
 
-  try {
-    payloads.push(...await fetchFilteredTalents(session));
-  } catch (error: any) {
-    if (Number(error?.status) === 401 || Number(error?.status) === 403) authorizationFailures += 1;
-    failures.push(`talentos filtrados: ${text(error?.message) || "error"}`);
+  const role = session.role.toUpperCase();
+  const companyAccount = role === "COMPANY" || role === "COMPANY_TEAM" || Boolean(session.companyId);
+  const companyTarget = session.companyId || session.userId;
+  const filteredViews = companyAccount
+    ? [
+        { label: "talentos de empresa", path: `/company/getTalentsByFiltersCompany/${encodeURIComponent(companyTarget)}`, role: role || "COMPANY" },
+        { label: "talentos de yoiner", path: `/yoiner/getTalentsByFilters/${encodeURIComponent(session.userId)}`, role: "YOINER" }
+      ]
+    : [
+        { label: "talentos de yoiner", path: `/yoiner/getTalentsByFilters/${encodeURIComponent(session.userId)}`, role: role || "YOINER" },
+        { label: "talentos de empresa", path: `/company/getTalentsByFiltersCompany/${encodeURIComponent(companyTarget)}`, role: "COMPANY" }
+      ];
+
+  // Some older sessions do not contain the account role. An empty successful
+  // response is therefore not conclusive: try the other official account view.
+  for (const view of filteredViews) {
+    try {
+      const viewPayloads = await fetchFilteredTalents(session, view.path, view.role);
+      if (viewPayloads.length) payloads.push(...viewPayloads);
+    } catch (error: any) {
+      if (Number(error?.status) === 401 || Number(error?.status) === 403) authorizationFailures += 1;
+      failures.push(`${view.label}: ${text(error?.message) || "error"}`);
+    }
   }
 
   if (!payloads.length) {
     try {
-      payloads.push(await authorizedRequest(`/yoiner/getTalents/${encodeURIComponent(session.userId)}/false`, session.token));
+      const legacy = await authorizedRequest(`/yoiner/getTalents/${encodeURIComponent(session.userId)}/false`, session.token);
+      if (candidateRows(legacy).length) payloads.push(legacy);
     } catch (error: any) {
       if (Number(error?.status) === 401 || Number(error?.status) === 403) authorizationFailures += 1;
       failures.push(`talentos anteriores: ${text(error?.message) || "error"}`);
@@ -400,7 +466,11 @@ async function fetchTalentPayloads(session: Awaited<ReturnType<typeof resolveSes
   }
 
   try {
-    payloads.push(await authorizedRequest(`/yoiner/getYoinerSharedTalents/${encodeURIComponent(session.userId)}`, session.token));
+    const sharedPath = companyAccount
+      ? `/company/getSharedTalents/${encodeURIComponent(companyTarget)}`
+      : `/yoiner/getYoinerSharedTalents/${encodeURIComponent(session.userId)}`;
+    const shared = await authorizedRequest(sharedPath, session.token, companyAccount ? { method: "POST" } : {});
+    if (candidateRows(shared).length) payloads.push(shared);
   } catch (error: any) {
     failures.push(`talentos compartidos: ${text(error?.message) || "error"}`);
   }

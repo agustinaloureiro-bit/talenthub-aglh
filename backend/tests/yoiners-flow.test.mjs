@@ -99,6 +99,47 @@ test("sincroniza la API paginada vigente de Yoiners, guarda sesion e importa sol
   }
 });
 
+test("usa la vista oficial de empresa aunque la vista Yoiner devuelva cero talentos", async () => {
+  const { syncYoiners } = await import("../dist/services/yoinersClient.js");
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    requests.push({ url: target, init });
+    if (target.endsWith("/auth/login")) {
+      return new Response(JSON.stringify({
+        data: { token: "company-access", refresh_token: "company-refresh", user_id: "team-user", role: "COMPANY_TEAM", company_id: "company-1" }
+      }), { status: 200 });
+    }
+    if (target.includes("/company/getTalentsByFiltersCompany/company-1")) {
+      const body = JSON.parse(init.body);
+      assert.equal(body.role, "COMPANY_TEAM");
+      assert.equal(body.company_id, "company-1");
+      if (body.pageMine === 1) {
+        return new Response(JSON.stringify({ data: { hits: {
+          totalPages: 1,
+          mine: [
+            { _id: "company-talent", first_name: "María", last_name: "Gómez", talent_cv: "https://files.yoiners.com/maria.pdf" },
+            { _id: "company-talent-2", user: { first_name: "Sofía", last_name: "Silva" }, talent_cv: "https://files.yoiners.com/sofia.pdf" }
+          ]
+        } } }), { status: 200 });
+      }
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  };
+
+  try {
+    const result = await syncYoiners({ username: "company@example.com", password: "secret" });
+    assert.deepEqual(result.rows.map((candidate) => candidate.sourceId), ["yoiners:company-talent", "yoiners:company-talent-2"]);
+    assert.equal(result.configUpdate.yoinersRole, "COMPANY_TEAM");
+    assert.equal(result.configUpdate.yoinersCompanyId, "company-1");
+    assert.ok(requests.some((request) => request.url.includes("/company/getTalentsByFiltersCompany/company-1")));
+    assert.ok(requests.some((request) => request.url.includes("/company/getSharedTalents/company-1")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("usa el punto de control Yoiners y no reimporta perfiles ya vistos", async () => {
   const { selectYoinersIncrementalCandidates } = await import("../dist/services/yoinersClient.js");
   const candidates = [
@@ -134,10 +175,14 @@ test("renueva automaticamente una sesion Yoiners vencida", async () => {
     const result = await syncYoiners({
       yoinersAccessToken: "expired-token",
       yoinersRefreshToken: "saved-refresh",
-      yoinersUserId: "user-1"
+      yoinersUserId: "user-1",
+      yoinersRole: "COMPANY",
+      yoinersCompanyId: "company-1"
     });
     assert.equal(result.rows.length, 1);
     assert.equal(result.configUpdate.yoinersAccessToken, "fresh-token");
+    assert.equal(result.configUpdate.yoinersRole, "COMPANY");
+    assert.equal(result.configUpdate.yoinersCompanyId, "company-1");
     assert.ok(authorizationHeaders.includes("bearer fresh-token"));
   } finally {
     globalThis.fetch = originalFetch;
