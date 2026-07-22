@@ -55,7 +55,8 @@ function mapCandidate(row: any) {
     primaryDocumentName: row.primary_document_name ?? null,
     status: row.status,
     createdAt: row.created_at,
-    lastSeenAt: row.last_seen_at ?? row.updated_at
+    lastSeenAt: row.last_seen_at ?? row.updated_at,
+    latestSourceAt: row.latest_source_at ?? null
   };
 }
 
@@ -476,6 +477,8 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
   const location = String(req.query.location ?? "").trim();
   const seniority = String(req.query.seniority ?? "").trim();
   const document = String(req.query.document ?? "").trim();
+  const recency = String(req.query.recency ?? "").trim();
+  const sort = ["recent", "oldest", "name"].includes(String(req.query.sort)) ? String(req.query.sort) : "updated";
   const status = String(req.query.status ?? "active") === "needs_review" ? "needs_review" : "active";
   const limit = Math.max(10, Math.min(100, Number(req.query.limit ?? 50) || 50));
   const offset = Math.max(0, Number(req.query.offset ?? 0) || 0);
@@ -527,6 +530,20 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
   if (contact === "both") where += " AND cardinality(coalesce(email, '{}'::text[])) > 0 AND cardinality(coalesce(phone, '{}'::text[])) > 0";
   if (document === "pdf") where += " AND EXISTS (SELECT 1 FROM documents format_doc WHERE format_doc.candidate_id=candidates.id AND (format_doc.mime_type ILIKE '%pdf%' OR format_doc.file_name ILIKE '%.pdf'))";
   if (document === "word") where += " AND EXISTS (SELECT 1 FROM documents format_doc WHERE format_doc.candidate_id=candidates.id AND (format_doc.mime_type ILIKE '%word%' OR format_doc.file_name ILIKE '%.doc' OR format_doc.file_name ILIKE '%.docx'))";
+  const recencyDays: Record<string, number> = { "7d": 7, "30d": 30, "90d": 90, "365d": 365 };
+  if (recencyDays[recency]) {
+    const from = new Date(Date.now() - recencyDays[recency] * 86_400_000).toISOString();
+    params.push(from);
+    where += ` AND EXISTS (SELECT 1 FROM candidate_sources recent_source WHERE recent_source.candidate_id=candidates.id AND recent_source.is_active=true AND recent_source.source_created_at >= $${params.length}::timestamptz)`;
+  }
+
+  const orderBy = sort === "recent"
+    ? "latest_source_at DESC NULLS LAST, updated_at DESC"
+    : sort === "oldest"
+      ? "latest_source_at ASC NULLS LAST, updated_at DESC"
+      : sort === "name"
+        ? "full_name ASC, updated_at DESC"
+        : "updated_at DESC";
 
   const rowParams = [...params, limit, offset];
   const [{ rows }, filteredTotal, databaseTotal] = await Promise.all([
@@ -534,9 +551,10 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
       `SELECT candidates.*,
         (SELECT count(*)::int FROM documents d WHERE d.candidate_id = candidates.id) AS document_count,
         (SELECT d.file_name FROM documents d WHERE d.candidate_id = candidates.id ORDER BY d.is_primary_cv DESC, d.created_at DESC LIMIT 1) AS primary_document_name,
-        (SELECT array_agg(DISTINCT cs.source_type ORDER BY cs.source_type) FROM candidate_sources cs WHERE cs.candidate_id=candidates.id) AS source_types
+        (SELECT array_agg(DISTINCT cs.source_type ORDER BY cs.source_type) FROM candidate_sources cs WHERE cs.candidate_id=candidates.id) AS source_types,
+        (SELECT max(cs.source_created_at) FROM candidate_sources cs WHERE cs.candidate_id=candidates.id AND cs.is_active=true) AS latest_source_at
        FROM candidates ${where}
-       ORDER BY updated_at DESC
+       ORDER BY ${orderBy}
        LIMIT $${rowParams.length - 1} OFFSET $${rowParams.length}`,
       rowParams
     ),

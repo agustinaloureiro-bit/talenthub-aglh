@@ -18,8 +18,15 @@ export class RecruitmentIntelligenceEngine {
     ].filter(Boolean);
     const retrievalQuery = [...new Set(understoodConcepts.length ? understoodConcepts : [interpreted.normalizedQuery])].join(" ");
     const candidates = await this.fallbackSearch(retrievalQuery, filters);
-    const ranked = rerankCandidates(candidates, interpreted)
+    let ranked = rerankCandidates(candidates, interpreted)
       .filter((candidate) => candidate.score >= (filters.minScore ?? 0));
+    if (filters.sort === "recent") {
+      ranked = ranked.sort((a, b) => {
+        const left = a.latestSourceAt ? Date.parse(a.latestSourceAt) : 0;
+        const right = b.latestSourceAt ? Date.parse(b.latestSourceAt) : 0;
+        return right - left || b.score - a.score;
+      });
+    }
 
     return {
       query: interpreted,

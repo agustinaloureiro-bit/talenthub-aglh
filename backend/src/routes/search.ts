@@ -17,7 +17,9 @@ const searchSchema = z.object({
     location: z.string().trim().max(100).optional(),
     contact: z.enum(["email", "phone", "both"]).optional(),
     minScore: z.number().min(0).max(100).optional(),
-    activeOnly: z.boolean().optional()
+    activeOnly: z.boolean().optional(),
+    recency: z.enum(["7d", "30d", "90d", "365d"]).optional(),
+    sort: z.enum(["relevance", "recent"]).optional()
   }).default({})
 });
 
@@ -122,6 +124,11 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
   if (filters.contact === "email") candidateFilter += " AND cardinality(coalesce(c.email, '{}'::text[])) > 0";
   if (filters.contact === "phone") candidateFilter += " AND cardinality(coalesce(c.phone, '{}'::text[])) > 0";
   if (filters.contact === "both") candidateFilter += " AND cardinality(coalesce(c.email, '{}'::text[])) > 0 AND cardinality(coalesce(c.phone, '{}'::text[])) > 0";
+  const recencyDays = filters.recency ? { "7d": 7, "30d": 30, "90d": 90, "365d": 365 }[filters.recency] : null;
+  if (recencyDays) {
+    params.push(new Date(Date.now() - recencyDays * 86_400_000).toISOString());
+    candidateFilter += ` AND EXISTS (SELECT 1 FROM candidate_sources recent_source WHERE recent_source.candidate_id=c.id AND recent_source.is_active=true AND recent_source.source_created_at >= $${params.length}::timestamptz)`;
+  }
   const candidateText = "coalesce(c.full_name,'') || ' ' || coalesce(c.current_role,'') || ' ' || coalesce(c.city,'') || ' ' || coalesce(c.country,'') || ' ' || array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' || coalesce(c.ai_summary,'')";
   const documentText = "coalesce(d.raw_text,'') || ' ' || coalesce(d.file_name,'')";
   const { rows } = await qWithTimeout(
@@ -168,6 +175,7 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
       primary_doc.mime_type AS primary_document_mime_type,
       primary_doc.source_type AS primary_document_source_type,
       left(coalesce(primary_doc.raw_text, ''), 1200) AS document_snippet,
+      source_activity.latest_source_at,
       top_matches.rank
      FROM top_matches
      JOIN candidates c ON c.id=top_matches.id
@@ -189,6 +197,11 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
        FROM candidate_sources cs
        WHERE cs.candidate_id = c.id AND cs.is_active=true
      ) src ON true
+     LEFT JOIN LATERAL (
+       SELECT max(cs.source_created_at) AS latest_source_at
+       FROM candidate_sources cs
+       WHERE cs.candidate_id = c.id AND cs.is_active=true
+     ) source_activity ON true
      ORDER BY top_matches.rank DESC, c.quality_score DESC, c.updated_at DESC`,
     params,
     9_000
@@ -214,6 +227,7 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     primaryDocumentMimeType: row.primary_document_mime_type ?? null,
     primaryDocumentSourceType: row.primary_document_source_type ?? null,
     documentSnippet: row.document_snippet ?? null,
+    latestSourceAt: row.latest_source_at ?? null,
     score: Math.min(100, Math.max(0, Math.round((Number(row.rank) * 60) + (row.quality_score * 0.4)))),
     matchReason: row.rank > 0 ? "Coincide por texto, rol, competencias o resumen registrado." : "Sin coincidencia semantica directa; ordenado por calidad del perfil."
   }));

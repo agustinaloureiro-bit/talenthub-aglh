@@ -5,6 +5,8 @@ export type TalentSearchFilters = {
   contact?: "email" | "phone" | "both";
   minScore?: number;
   activeOnly?: boolean;
+  recency?: "7d" | "30d" | "90d" | "365d";
+  sort?: "relevance" | "recent";
 };
 
 export type InterpretedTalentQuery = {
@@ -40,6 +42,7 @@ export type TalentCandidateResult = {
   primaryDocumentMimeType?: string | null;
   primaryDocumentSourceType?: string | null;
   documentSnippet?: string | null;
+  latestSourceAt?: string | null;
   score: number;
   matchReason: string;
 };

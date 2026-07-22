@@ -492,3 +492,33 @@ test("ventas como rol principal queda antes que una mención secundaria de gastr
   assert.equal(ranked[0].id, "ventas-principal");
   assert.ok(ranked[0].score > ranked[1].score);
 });
+
+test("entre perfiles igual de compatibles prioriza el CV recibido recientemente", () => {
+  const interpreted = interpretTalentQuery("ingeniero de software");
+  const base = {
+    currentRole: "Ingeniero de software",
+    tags: ["ingenieria", "software"],
+    qualityScore: 80,
+    documentCount: 1,
+    documentSnippet: "Ingeniero de software con experiencia en desarrollo.",
+    score: 0,
+    matchReason: ""
+  };
+  const ranked = rerankCandidates([
+    { ...base, id: "antiguo", fullName: "Carlos Antiguo", latestSourceAt: "2022-01-01T00:00:00Z" },
+    { ...base, id: "reciente", fullName: "Lucía Reciente", latestSourceAt: new Date().toISOString() }
+  ], interpreted);
+
+  assert.equal(ranked[0].id, "reciente");
+  assert.ok(ranked[0].score > ranked[1].score);
+});
+
+test("permite ordenar los resultados compatibles por fecha del CV", async () => {
+  const engine = new RecruitmentIntelligenceEngine(async () => [
+    { id: "mejor", fullName: "Ana Ingeniería", currentRole: "Ingeniera", tags: ["ingenieria"], qualityScore: 90, documentCount: 1, documentSnippet: "Ingeniera con amplia experiencia.", latestSourceAt: "2024-01-01T00:00:00Z", score: 0, matchReason: "" },
+    { id: "nuevo", fullName: "Luis Ingeniería", currentRole: "Ingeniero", tags: ["ingenieria"], qualityScore: 60, documentCount: 1, documentSnippet: "Ingeniero junior.", latestSourceAt: "2026-07-20T00:00:00Z", score: 0, matchReason: "" }
+  ]);
+
+  const result = await engine.search("ingeniero", { sort: "recent" });
+  assert.equal(result.data[0].id, "nuevo");
+});

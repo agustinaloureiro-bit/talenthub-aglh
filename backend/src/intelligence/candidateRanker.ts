@@ -85,6 +85,17 @@ function candidateProfileText(candidate: TalentCandidateResult) {
   ].join(" ");
 }
 
+function recencyBonus(value?: string | null) {
+  const timestamp = value ? Date.parse(value) : NaN;
+  if (!Number.isFinite(timestamp)) return 0;
+  const ageDays = Math.max(0, (Date.now() - timestamp) / 86_400_000);
+  if (ageDays <= 7) return 10;
+  if (ageDays <= 30) return 7;
+  if (ageDays <= 90) return 4;
+  if (ageDays <= 365) return 2;
+  return 0;
+}
+
 function primaryRoleMatches(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   const requestedAreas = [...interpreted.roles, ...interpreted.skills, ...interpreted.industries];
   return requestedAreas.length === 0 || includesAny(candidate.currentRole ?? "", requestedAreas);
@@ -194,6 +205,7 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
         + ((candidate.documentCount ?? 0) > 0 ? 5 : 0)
         + (hasContact ? 5 : 0)
         + (interpreted.seniority && seniorityMatch ? 5 : 0)
+        + recencyBonus(candidate.latestSourceAt)
       )));
       const primaryAligned = primaryRoleMatches(candidate, interpreted);
       const exactSpecializedRole = isAmbulanceDriverQuery(interpreted) && primaryAligned;

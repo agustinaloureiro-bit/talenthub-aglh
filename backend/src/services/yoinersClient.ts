@@ -194,7 +194,8 @@ export function yoinersCandidateFromTalent(input: unknown): CandidateImport | nu
     formations.length ? `Formación: ${formations.slice(0, 5).join(", ")}.` : "",
     languages.length ? `Idiomas: ${languages.slice(0, 5).join(", ")}.` : ""
   ]).join(" ") || "Perfil registrado en Yoiners con CV disponible.";
-  const rawId = firstDeepText(talent, ["talent_id", "talentid", "user_id", "userid", "id", "_id"]);
+  const rawId = text(talent.user_id ?? talent.talent_id ?? talent.userId ?? talent.talentId ?? talent._id ?? talent.id)
+    || firstDeepText(talent, ["user_id", "userid", "talent_id", "talentid", "id", "_id"]);
   const sourceId = rawId ? `yoiners:${rawId}` : `yoiners:${fullName.toLowerCase().replace(/\s+/g, "-")}`;
 
   return {
@@ -214,6 +215,7 @@ export function yoinersCandidateFromTalent(input: unknown): CandidateImport | nu
     qualityScore: 0,
     sourceId,
     sourceUrl: rawId ? `${YOINERS_WEB_BASE}/yoiners/view-talent/cv/${encodeURIComponent(rawId)}` : null,
+    sourceCreatedAt: firstDeepText(talent, ["created_at", "createdat", "registration_date", "registered_at", "date"]) || null,
     documents: [document],
     raw: talent
   };
@@ -426,7 +428,7 @@ export function selectYoinersIncrementalCandidates(candidates: CandidateImport[]
 function paginationFromPayload(payload: unknown) {
   const root = object(payload) ?? {};
   const data = object(root.data) ?? root;
-  const hits = object(data.hits) ?? object(root.hits) ?? {};
+  const hits = object(data.hits) ?? object(root.hits) ?? object(data.talentsMeta) ?? object(root.talentsMeta) ?? {};
   const rawTotalPages = hits.totalPages ?? hits.total_pages ?? data.totalPages ?? data.total_pages ?? root.totalPages;
   return {
     page: Number(hits.page ?? data.page ?? root.page ?? 1),
@@ -450,7 +452,8 @@ type ResolvedSession = Awaited<ReturnType<typeof resolveSession>>;
 async function fetchFilteredTalents(
   session: ResolvedSession,
   path: string,
-  accountRole: string
+  accountRole: string,
+  scopeToUser = true
 ) {
   const payloads: unknown[] = [];
   const seenPages = new Set<string>();
@@ -461,7 +464,7 @@ async function fetchFilteredTalents(
       body: JSON.stringify({
         role: accountRole,
         company_id: session.companyId || undefined,
-        yoiner_user_id: session.userId,
+        yoiner_user_id: scopeToUser ? session.userId : undefined,
         prefetch: true,
         page,
         pageMine: page,
@@ -487,6 +490,61 @@ async function fetchFilteredTalents(
   return payloads;
 }
 
+async function mapConcurrent<T, R>(items: T[], concurrency: number, mapper: (item: T) => Promise<R>) {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+function talentUserId(talent: JsonObject) {
+  return text(talent.user_id ?? talent.userId ?? talent.talent_id ?? talent.talentId)
+    || firstDeepText(talent, ["user_id", "userid", "talent_id", "talentid"]);
+}
+
+function selectNewTalentSummaries(summaries: JsonObject[], config: JsonObject) {
+  const cursorCompatible = text(config.yoinersCursorVersion) === "auditor-catalog-v2";
+  if (!cursorCompatible) return summaries;
+  const known = new Set(list(config.yoinersHeadSourceIds));
+  const lastSync = Date.parse(text(config.yoinersLastSyncAt));
+  const selected: JsonObject[] = [];
+  for (const summary of summaries) {
+    const sourceId = talentUserId(summary) ? `yoiners:${talentUserId(summary)}` : "";
+    if (sourceId && known.has(sourceId)) break;
+    const changedAt = Date.parse(firstDeepText(summary, ["updated_at", "updatedat", "modified_at", "modifiedat", "created_at", "createdat", "date"]));
+    if (!Number.isFinite(lastSync) || !Number.isFinite(changedAt) || changedAt > lastSync) selected.push(summary);
+  }
+  return selected;
+}
+
+async function hydrateTalentSummaries(session: ResolvedSession, summaries: JsonObject[]) {
+  let failed = 0;
+  const rows = await mapConcurrent(summaries, 16, async (summary) => {
+    if (cvDocumentFromTalent(summary)) return summary;
+    const userId = talentUserId(summary);
+    if (!userId) {
+      failed += 1;
+      return null;
+    }
+    try {
+      const companySuffix = session.companyId ? encodeURIComponent(session.companyId) : "";
+      const detail = object(await authorizedRequest(`/talent/${encodeURIComponent(userId)}/${companySuffix}`, session.token));
+      return detail ? { ...summary, ...detail, created_at: detail.created_at ?? summary.created_at } : null;
+    } catch {
+      failed += 1;
+      return null;
+    }
+  });
+  return { rows: rows.filter((row): row is JsonObject => Boolean(row)), failed };
+}
+
 async function fetchAuditedTalents(session: ResolvedSession) {
   const payloads: unknown[] = [];
   const maxPages = 500;
@@ -504,13 +562,36 @@ async function fetchAuditedTalents(session: ResolvedSession) {
   return payloads;
 }
 
-async function fetchTalentPayloads(session: Awaited<ReturnType<typeof resolveSession>>) {
+async function fetchTalentPayloads(session: Awaited<ReturnType<typeof resolveSession>>, config: JsonObject) {
   const payloads: unknown[] = [];
   const failures: string[] = [];
   let authorizationFailures = 0;
 
   const role = session.role.toUpperCase();
   if (role === "AUDITOR") {
+    try {
+      const visiblePayloads = await fetchFilteredTalents(
+        session,
+        `/yoiner/getTalentsByFilters/${encodeURIComponent(session.userId)}`,
+        role,
+        false
+      );
+      const visible = visiblePayloads.flatMap(candidateRows);
+      if (visible.length) {
+        const summariesToHydrate = selectNewTalentSummaries(visible, config);
+        const hydrated = await hydrateTalentSummaries(session, summariesToHydrate);
+        if (hydrated.failed) failures.push(`${hydrated.failed} perfiles no pudieron abrirse en detalle`);
+        return {
+          payloads: [hydrated.rows],
+          failures,
+          visibleCount: visible.length,
+          complete: hydrated.failed === 0
+        };
+      }
+    } catch (error: any) {
+      if (Number(error?.status) === 401 || Number(error?.status) === 403) authorizationFailures += 1;
+      failures.push(`catálogo general: ${text(error?.message) || "error"}`);
+    }
     try {
       const auditedPayloads = await fetchAuditedTalents(session);
       if (auditedPayloads.length) return { payloads: auditedPayloads, failures };
@@ -598,7 +679,7 @@ export async function syncYoiners(config: JsonObject): Promise<AgentSyncResult> 
   try {
     let result;
     try {
-      result = await fetchTalentPayloads(session);
+      result = await fetchTalentPayloads(session, config);
     } catch (error: any) {
       if (Number(error?.status) !== 401) throw error;
       session = await refreshYoiners({
@@ -607,20 +688,20 @@ export async function syncYoiners(config: JsonObject): Promise<AgentSyncResult> 
         yoinersUserId: session.userId
       }) ?? await loginYoiners(config);
       session = await resolveAccountContext(session, config);
-      result = await fetchTalentPayloads(session);
+      result = await fetchTalentPayloads(session, config);
     }
     const byId = new Map<string, CandidateImport>();
-    let sourceRows = 0;
+    let sourceRows = Number(result.visibleCount ?? 0);
     for (const payload of result.payloads) {
       const rows = candidateRows(payload);
-      sourceRows += rows.length;
+      if (!result.visibleCount) sourceRows += rows.length;
       for (const row of rows) {
         const candidate = yoinersCandidateFromTalent(row);
         if (candidate) byId.set(candidate.sourceId || candidate.fullName, candidate);
       }
     }
     const candidates = [...byId.values()];
-    const cursorVersion = session.role.toUpperCase() === "AUDITOR" ? "auditor-audits-v1" : "talent-views-v1";
+    const cursorVersion = session.role.toUpperCase() === "AUDITOR" ? "auditor-catalog-v2" : "talent-views-v1";
     const cursorCompatible = text(config.yoinersCursorVersion) === cursorVersion;
     const previousHeads = cursorCompatible ? list(config.yoinersHeadSourceIds) : [];
     const previousSyncAt = cursorCompatible ? text(config.yoinersLastSyncAt) : "";
@@ -628,6 +709,7 @@ export async function syncYoiners(config: JsonObject): Promise<AgentSyncResult> 
     const firstSync = !cursorCompatible || (!previousSyncAt && previousHeads.length === 0);
     const rows = firstSync ? candidates : incremental.rows;
     const now = new Date().toISOString();
+    const catalogComplete = result.complete !== false;
     return {
       rows,
       configUpdate: {
@@ -636,15 +718,15 @@ export async function syncYoiners(config: JsonObject): Promise<AgentSyncResult> 
         yoinersUserId: session.userId,
         yoinersRole: session.role || null,
         yoinersCompanyId: session.companyId || null,
-        yoinersCursorVersion: cursorVersion,
-        yoinersHeadSourceIds: incremental.headIds,
-        yoinersLastSyncAt: now,
+        yoinersCursorVersion: catalogComplete ? cursorVersion : null,
+        yoinersHeadSourceIds: catalogComplete ? incremental.headIds : [],
+        yoinersLastSyncAt: catalogComplete ? now : previousSyncAt || null,
         yoinersTotalVisible: sourceRows,
         sessionStatus: "connected",
         sessionRefreshedAt: now,
         sessionLastError: null
       },
-      message: `Yoiners: sesión renovada, ${sourceRows} perfiles visibles revisados, ${candidates.length} perfiles reales con CV detectados, ${rows.length} perfiles nuevos o actualizados para importar.${result.failures.length ? ` Algunas vistas no estuvieron disponibles: ${result.failures.join(" | ")}` : ""}`
+      message: `Yoiners: sesión renovada, ${sourceRows} perfiles visibles revisados, ${candidates.length} perfiles reales con CV detectados, ${rows.length} perfiles nuevos o actualizados para importar.${catalogComplete ? "" : " El recorrido quedó incompleto y se reintentará en la próxima sincronización."}${result.failures.length ? ` Algunas vistas no estuvieron disponibles: ${result.failures.join(" | ")}` : ""}`
     };
   } catch (error: any) {
     const message = `Yoiners inició sesión pero no pudo leer los talentos de la cuenta: ${text(error?.message) || "error desconocido"}`;

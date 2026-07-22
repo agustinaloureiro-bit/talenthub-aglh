@@ -22,6 +22,40 @@ function cleanDbTextArray(values: string[] | undefined) {
     .filter((value): value is string => Boolean(value)));
 }
 
+const SOURCE_DATE_KEYS = new Set([
+  "sourcecreatedat", "submittedat", "applicationdate", "applicationcreatedat", "receivedat",
+  "receiveddate", "internaldate", "createdat", "created", "date", "fechapostulacion",
+  "fecharecepcion", "fechacreacion", "fecha"
+]);
+
+function sourceDateFrom(value: unknown, depth = 0): string | null {
+  if (!value || depth > 4) return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = sourceDateFrom(item, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (typeof value !== "object") return null;
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (!SOURCE_DATE_KEYS.has(key.toLowerCase().replace(/[^a-z0-9]/g, ""))) continue;
+    const raw = String(item ?? "").trim();
+    const numeric = /^\d{12,13}$/.test(raw) ? Number(raw) : NaN;
+    const parsed = Number.isFinite(numeric) ? new Date(numeric) : new Date(raw);
+    if (Number.isFinite(parsed.getTime()) && parsed.getTime() <= Date.now() + 86_400_000) return parsed.toISOString();
+  }
+  for (const item of Object.values(value as Record<string, unknown>)) {
+    const found = sourceDateFrom(item, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+function candidateSourceDate(candidate: CandidateImport) {
+  return sourceDateFrom({ sourceCreatedAt: candidate.sourceCreatedAt, raw: candidate.raw });
+}
+
 const ROLE_TAGS = new Set([
   "abogado",
   "administracion",
@@ -98,6 +132,7 @@ function sanitizeCandidate(candidate: CandidateImport): CandidateImport {
     summary: cleanDbText(candidate.summary),
     sourceId: cleanDbText(candidate.sourceId),
     sourceUrl: cleanDbText(candidate.sourceUrl),
+    sourceCreatedAt: cleanDbText(candidate.sourceCreatedAt),
     raw: scrubJsonForDb(candidate.raw ?? {}) as Record<string, unknown>,
     documents: candidate.documents?.map((document) => ({
       ...document,
@@ -128,6 +163,7 @@ export function documentContentHash(fileData: Buffer | null, rawText: string | n
 }
 
 async function saveSource(candidateId: string, sourceType: string, candidate: CandidateImport) {
+  const sourceCreatedAt = candidateSourceDate(candidate);
   const existing = await q<{ id: string }>(
     "SELECT id FROM candidate_sources WHERE candidate_id=$1 AND source_type=$2 AND coalesce(source_id,'')=coalesce($3,'') LIMIT 1",
     [candidateId, sourceType, candidate.sourceId]
@@ -135,13 +171,13 @@ async function saveSource(candidateId: string, sourceType: string, candidate: Ca
 
   if (existing.rows[0]) {
     await q(
-      "UPDATE candidate_sources SET source_url=coalesce($1,source_url), source_data=$2::jsonb, last_synced_at=now(), is_active=true WHERE id=$3",
-      [candidate.sourceUrl, JSON.stringify(candidate.raw), existing.rows[0].id]
+      "UPDATE candidate_sources SET source_url=coalesce($1,source_url), source_data=$2::jsonb, source_created_at=coalesce($3::timestamptz,source_created_at), last_synced_at=now(), is_active=true WHERE id=$4",
+      [candidate.sourceUrl, JSON.stringify(candidate.raw), sourceCreatedAt, existing.rows[0].id]
     );
   } else {
     await q(
-      "INSERT INTO candidate_sources (candidate_id, source_type, source_id, source_url, source_data) VALUES ($1,$2,$3,$4,$5::jsonb)",
-      [candidateId, sourceType, candidate.sourceId, candidate.sourceUrl, JSON.stringify(candidate.raw)]
+      "INSERT INTO candidate_sources (candidate_id, source_type, source_id, source_url, source_data, source_created_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6::timestamptz)",
+      [candidateId, sourceType, candidate.sourceId, candidate.sourceUrl, JSON.stringify(candidate.raw), sourceCreatedAt]
     );
   }
 

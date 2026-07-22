@@ -30,6 +30,7 @@ export type CandidateImport = {
   qualityScore: number;
   sourceId?: string | null;
   sourceUrl?: string | null;
+  sourceCreatedAt?: string | null;
   documents?: CandidateDocumentImport[];
   raw: Record<string, unknown>;
 };

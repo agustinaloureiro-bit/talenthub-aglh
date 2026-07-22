@@ -14,6 +14,8 @@ type TalentFinderSnapshot = {
   contact: string;
   minScore: number;
   activeOnly: boolean;
+  recency: string;
+  sort: string;
   results: any[];
   totalResults: number;
   currentPage: number;
@@ -24,7 +26,7 @@ type TalentFinderSnapshot = {
 };
 
 function readTalentFinderSnapshot(): TalentFinderSnapshot {
-  const empty: TalentFinderSnapshot = { query: "", seniority: "", source: "", location: "", contact: "", minScore: 0, activeOnly: true, results: [], totalResults: 0, currentPage: 1, searchStatus: "", hasSearched: false, interpretedTerms: [] };
+  const empty: TalentFinderSnapshot = { query: "", seniority: "", source: "", location: "", contact: "", minScore: 0, activeOnly: true, recency: "", sort: "relevance", results: [], totalResults: 0, currentPage: 1, searchStatus: "", hasSearched: false, interpretedTerms: [] };
   try {
     const stored = window.sessionStorage.getItem(TALENT_FINDER_STATE_KEY);
     if (!stored) return empty;
@@ -66,6 +68,7 @@ type Candidate = {
   status: string;
   createdAt?: string;
   lastSeenAt?: string;
+  latestSourceAt?: string;
 };
 
 type CandidateDocument = {
@@ -199,13 +202,15 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
   const [seniority, setSeniority] = useState("");
   const [document, setDocument] = useState("");
   const [status, setStatus] = useState("active");
+  const [recency, setRecency] = useState("");
+  const [sort, setSort] = useState("updated");
   const [page, setPage] = useState(0);
   const [showForm, setShowForm] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [meta, setMeta] = useState<{ total: number; databaseTotal: number; returned: number; limit: number; offset: number } | null>(null);
-  const load = async (nextPage = page, filters = { search, source, contact, location, seniority, document, status }) => {
+  const load = async (nextPage = page, filters = { search, source, contact, location, seniority, document, status, recency, sort }) => {
     setLoading(true);
     setError("");
     try {
@@ -223,8 +228,8 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
   };
   useEffect(() => { load(); }, []);
   function resetFilters() {
-    setSearch(""); setSource(""); setContact(""); setLocation(""); setSeniority(""); setDocument(""); setStatus("active");
-    load(0, { search: "", source: "", contact: "", location: "", seniority: "", document: "", status: "active" });
+    setSearch(""); setSource(""); setContact(""); setLocation(""); setSeniority(""); setDocument(""); setStatus("active"); setRecency(""); setSort("updated");
+    load(0, { search: "", source: "", contact: "", location: "", seniority: "", document: "", status: "active", recency: "", sort: "updated" });
   }
   return (
     <PagePad>
@@ -234,11 +239,13 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
         <input className="field" placeholder="Ciudad o país" value={location} onChange={(e) => setLocation(e.target.value)} onKeyDown={(e) => e.key === "Enter" && load(0)} />
         <select className="field" value={seniority} onChange={(e) => setSeniority(e.target.value)}><option value="">Todo seniority</option><option>Junior</option><option>Semi-Senior</option><option>Senior</option><option>Lead</option><option>Manager</option></select>
       </div>
-      <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-[170px_190px_170px_190px_auto_auto]">
+      <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-[150px_170px_150px_165px_170px_170px_auto_auto]">
         <select className="field" value={source} onChange={(e) => setSource(e.target.value)}><option value="">Todas las fuentes</option><option value="gmail">Gmail</option><option value="buscojobs">Buscojobs</option><option value="yoiners">Yoiners</option><option value="aglh">AGLH</option></select>
         <select className="field" value={contact} onChange={(e) => setContact(e.target.value)}><option value="">Cualquier contacto</option><option value="phone">Con teléfono</option><option value="email">Con email</option><option value="both">Con teléfono y email</option></select>
         <select className="field" value={document} onChange={(e) => setDocument(e.target.value)}><option value="">Cualquier CV</option><option value="pdf">CV en PDF</option><option value="word">CV en Word</option></select>
         <select className="field" value={status} onChange={(e) => setStatus(e.target.value)}><option value="active">Base confiable</option><option value="needs_review">Requieren revisión</option></select>
+        <select className="field" value={recency} onChange={(e) => setRecency(e.target.value)}><option value="">Cualquier fecha</option><option value="7d">Últimos 7 días</option><option value="30d">Últimos 30 días</option><option value="90d">Últimos 3 meses</option><option value="365d">Último año</option></select>
+        <select className="field" value={sort} onChange={(e) => setSort(e.target.value)}><option value="updated">Actualizados recientemente</option><option value="recent">CV más recientes</option><option value="oldest">CV más antiguos</option><option value="name">Nombre A-Z</option></select>
         <button className="btn-primary" onClick={() => load(0)} disabled={loading}><Search size={16} /> {loading ? "Buscando..." : "Aplicar filtros"}</button>
         <button className="btn-ghost" onClick={resetFilters} disabled={loading}><RotateCcw size={16} /> Limpiar</button>
       </div>
@@ -370,6 +377,8 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
   const [contact, setContact] = useState(snapshot.contact);
   const [minScore, setMinScore] = useState(snapshot.minScore);
   const [activeOnly, setActiveOnly] = useState(snapshot.activeOnly);
+  const [recency, setRecency] = useState(snapshot.recency);
+  const [sort, setSort] = useState(snapshot.sort);
   const [results, setResults] = useState<any[]>(snapshot.results);
   const [totalResults, setTotalResults] = useState(snapshot.totalResults);
   const [currentPage, setCurrentPage] = useState(snapshot.currentPage);
@@ -381,8 +390,8 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
 
   useEffect(() => {
     const previous = readTalentFinderSnapshot();
-    window.sessionStorage.setItem(TALENT_FINDER_STATE_KEY, JSON.stringify({ query, seniority, source, location, contact, minScore, activeOnly, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms, scrollY: previous.scrollY ?? 0 }));
-  }, [query, seniority, source, location, contact, minScore, activeOnly, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms]);
+    window.sessionStorage.setItem(TALENT_FINDER_STATE_KEY, JSON.stringify({ query, seniority, source, location, contact, minScore, activeOnly, recency, sort, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms, scrollY: previous.scrollY ?? 0 }));
+  }, [query, seniority, source, location, contact, minScore, activeOnly, recency, sort, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms]);
 
   useEffect(() => {
     if (!snapshot.scrollY) return;
@@ -406,7 +415,7 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
     }
     setSearchStatus("Buscando en los candidatos ya procesados...");
     try {
-      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[]; locations?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean } }>("/search/talent", { method: "POST", timeoutMs: 12_000, body: JSON.stringify({ query, page, pageSize: 50, filters: { seniority: seniority || undefined, source: source ? [source] : undefined, location: location || undefined, contact: contact || undefined, minScore: minScore || undefined, activeOnly } }) });
+      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[]; locations?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean } }>("/search/talent", { method: "POST", timeoutMs: 12_000, body: JSON.stringify({ query, page, pageSize: 50, filters: { seniority: seniority || undefined, source: source ? [source] : undefined, location: location || undefined, contact: contact || undefined, minScore: minScore || undefined, activeOnly, recency: recency || undefined, sort } }) });
       setResults((previous) => append
         ? [...new Map([...previous, ...response.data].map((candidate) => [candidate.id, candidate])).values()]
         : response.data);
@@ -431,12 +440,14 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
       <section className="card mb-4 p-4">
         <label className="label">¿Qué perfil necesitás?</label>
         <textarea className="field min-h-28" placeholder="Ejemplo: auxiliar administrativo con experiencia en facturación y atención al cliente" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") run(1, false); }} />
-        <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-7">
           <select className="field" value={source} onChange={(e) => setSource(e.target.value)}><option value="">Todas las fuentes</option><option value="gmail">Gmail</option><option value="buscojobs">Buscojobs</option><option value="yoiners">Yoiners</option><option value="aglh">AGLH</option></select>
           <input className="field" placeholder="Ciudad o país" value={location} onChange={(e) => setLocation(e.target.value)} />
           <select className="field" value={seniority} onChange={(e) => setSeniority(e.target.value)}><option value="">Todo seniority</option><option>Junior</option><option>Semi-Senior</option><option>Senior</option><option>Lead</option><option>Manager</option></select>
           <select className="field" value={contact} onChange={(e) => setContact(e.target.value)}><option value="">Cualquier contacto</option><option value="phone">Con teléfono</option><option value="email">Con email</option><option value="both">Con teléfono y email</option></select>
           <select className="field" value={minScore} onChange={(e) => setMinScore(Number(e.target.value))}><option value="0">Toda coincidencia</option><option value="60">60% o más</option><option value="70">70% o más</option><option value="80">80% o más</option><option value="90">90% o más</option></select>
+          <select className="field" value={recency} onChange={(e) => setRecency(e.target.value)}><option value="">Cualquier fecha</option><option value="7d">Últimos 7 días</option><option value="30d">Últimos 30 días</option><option value="90d">Últimos 3 meses</option><option value="365d">Último año</option></select>
+          <select className="field" value={sort} onChange={(e) => setSort(e.target.value)}><option value="relevance">Mayor compatibilidad</option><option value="recent">CV más recientes</option></select>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)} /> Solo activos</label>
@@ -445,7 +456,7 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
       </section>
       {searchStatus && <div className="mb-3 rounded-md border border-slate-200 bg-white p-3 text-sm text-slate-600">{searchStatus}</div>}
       {hasSearched && interpretedTerms.length > 0 && <div className="mb-3 flex flex-wrap items-center gap-2 border-y border-slate-200 bg-white px-3 py-3 text-sm"><span className="font-semibold text-slate-600">La búsqueda entendió:</span>{interpretedTerms.map((term) => <span key={term} className="rounded-full bg-teal/10 px-2 py-1 text-xs font-semibold text-teal">{term}</span>)}</div>}
-      {hasSearched && <div className="mb-3 text-sm text-slate-500">Mostrando {results.length} de {totalResults} candidatos relacionados · ordenados por compatibilidad</div>}
+      {hasSearched && <div className="mb-3 text-sm text-slate-500">Mostrando {results.length} de {totalResults} candidatos relacionados · {sort === "recent" ? "ordenados por fecha del CV" : "ordenados por compatibilidad, priorizando actividad reciente entre perfiles similares"}</div>}
       <div className="grid gap-3">{!hasSearched && <Empty text="Escribí lo que necesitás para calcular la compatibilidad sobre los CVs." />}{hasSearched && !loading && results.length === 0 && <Empty text="La búsqueda no encontró candidatos con evidencia suficiente en los CVs disponibles." />}{results.map((c) => {
         const candidate = { ...c, sourceCount: c.sourceCount ?? 0, documentCount: c.documentCount ?? 0, primaryDocumentName: c.primaryDocumentName ?? null, email: c.email ?? [], phone: c.phone ?? [], languages: [], strengths: [], weaknesses: [], status: "active" } as Candidate;
         return <CandidateRow key={c.id} candidate={candidate} onView={openCandidateFromResults} onPreview={candidate.primaryDocumentId ? () => setPreviewCandidate(candidate) : undefined} reason={c.matchReason} matchScore={c.score} />;
@@ -1172,8 +1183,8 @@ function CandidateRow({ candidate, onView, onPreview, reason, matchScore }: { ca
   const documents = Number(candidate.documentCount ?? 0);
   const whatsappUrl = candidate.phone?.[0] ? whatsappUrlForPhone(candidate.phone[0]) : null;
   const summary = cleanDisplayText(candidate.summary);
-  const updated = candidate.lastSeenAt ? new Date(candidate.lastSeenAt).toLocaleDateString("es-UY") : "";
-  return <div className="card flex flex-wrap items-start justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div>{candidate.status === "needs_review" && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">Revisar datos</span>}</div><div className="truncate text-sm text-slate-500">{role} · {location}{candidate.years ? ` · ${candidate.years} años declarados` : ""}</div>{summary && <p className="mt-2 max-w-3xl text-sm leading-5 text-slate-700">{shortText(summary, 260)}</p>}<div className="mt-2 flex flex-wrap items-center gap-2">{documents > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600"><FileText size={13} /> {documents} CV/doc</span>}{candidate.primaryDocumentName && <span className="max-w-sm truncate text-xs text-slate-500">{shortText(candidate.primaryDocumentName, 70)}</span>}{whatsappUrl && <a className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:underline" href={whatsappUrl} target="_blank" rel="noreferrer" title="Abrir conversación en WhatsApp"><MessageCircle size={13} /> {shortText(candidate.phone[0], 35)}</a>}{candidate.email?.[0] && <a className="max-w-xs truncate text-xs text-slate-500 hover:underline" href={`mailto:${candidate.email[0]}`}>{shortText(candidate.email[0], 45)}</a>}{updated && <span className="text-xs text-slate-400">Actualizado {updated}</span>}</div><div className="mt-2 flex flex-wrap gap-1">{(candidate.sourceTypes ?? []).map((source) => <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600" key={source}>{source}</span>)}</div><TagList tags={candidate.tags ?? []} />{reason && <p className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{shortText(reason, 240)}</p>}</div></div><div className="flex shrink-0 items-center gap-3">{typeof matchScore === "number" && <MatchScore score={matchScore} />}<div className="grid gap-2">{onPreview && documents > 0 && <button className="btn-primary justify-center" onClick={onPreview}><Eye size={16} /> Ver CV</button>}<button className="btn-ghost justify-center" onClick={() => onView(candidate.id)}>Ver ficha</button></div></div></div>;
+  const submitted = candidate.latestSourceAt ? new Date(candidate.latestSourceAt).toLocaleDateString("es-UY") : "";
+  return <div className="card flex flex-wrap items-start justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div>{candidate.status === "needs_review" && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">Revisar datos</span>}</div><div className="truncate text-sm text-slate-500">{role} · {location}{candidate.years ? ` · ${candidate.years} años declarados` : ""}</div>{summary && <p className="mt-2 max-w-3xl text-sm leading-5 text-slate-700">{shortText(summary, 260)}</p>}<div className="mt-2 flex flex-wrap items-center gap-2">{documents > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600"><FileText size={13} /> {documents} CV/doc</span>}{candidate.primaryDocumentName && <span className="max-w-sm truncate text-xs text-slate-500">{shortText(candidate.primaryDocumentName, 70)}</span>}{whatsappUrl && <a className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:underline" href={whatsappUrl} target="_blank" rel="noreferrer" title="Abrir conversación en WhatsApp"><MessageCircle size={13} /> {shortText(candidate.phone[0], 35)}</a>}{candidate.email?.[0] && <a className="max-w-xs truncate text-xs text-slate-500 hover:underline" href={`mailto:${candidate.email[0]}`}>{shortText(candidate.email[0], 45)}</a>}{submitted && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">CV recibido {submitted}</span>}</div><div className="mt-2 flex flex-wrap gap-1">{(candidate.sourceTypes ?? []).map((source) => <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600" key={source}>{source}</span>)}</div><TagList tags={candidate.tags ?? []} />{reason && <p className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{shortText(reason, 240)}</p>}</div></div><div className="flex shrink-0 items-center gap-3">{typeof matchScore === "number" && <MatchScore score={matchScore} />}<div className="grid gap-2">{onPreview && documents > 0 && <button className="btn-primary justify-center" onClick={onPreview}><Eye size={16} /> Ver CV</button>}<button className="btn-ghost justify-center" onClick={() => onView(candidate.id)}>Ver ficha</button></div></div></div>;
 }
 
 type InputProps = {
