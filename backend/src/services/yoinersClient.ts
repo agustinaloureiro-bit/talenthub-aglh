@@ -458,8 +458,7 @@ async function fetchFilteredTalents(
   const payloads: unknown[] = [];
   const seenPages = new Set<string>();
   const maxPages = 500;
-  for (let page = 1; page <= maxPages; page += 1) {
-    const payload = await authorizedRequest(path, session.token, {
+  const requestPage = (page: number) => authorizedRequest(path, session.token, {
       method: "POST",
       body: JSON.stringify({
         role: accountRole,
@@ -474,18 +473,37 @@ async function fetchFilteredTalents(
         limit: 100
       })
     });
+
+  const addPayload = (payload: unknown) => {
     const rows = candidateRows(payload);
-    if (!rows.length) break;
+    if (!rows.length) return false;
     const fingerprint = rows
       .map((row) => firstDeepText(row, ["talent_id", "talentid", "user_id", "userid", "id", "_id"]))
       .filter(Boolean)
       .sort()
       .join("|");
-    if (fingerprint && seenPages.has(fingerprint)) break;
+    if (fingerprint && seenPages.has(fingerprint)) return false;
     if (fingerprint) seenPages.add(fingerprint);
     payloads.push(payload);
-    const pagination = paginationFromPayload(payload);
-    if (pagination.totalPages != null && page >= pagination.totalPages) break;
+    return true;
+  };
+
+  const firstPayload = await requestPage(1);
+  if (!addPayload(firstPayload)) return payloads;
+  const firstPagination = paginationFromPayload(firstPayload);
+  if (firstPagination.totalPages != null && Number.isFinite(firstPagination.totalPages)) {
+    const pageNumbers = Array.from(
+      { length: Math.max(0, Math.min(maxPages, firstPagination.totalPages) - 1) },
+      (_, index) => index + 2
+    );
+    const remaining = await mapConcurrent(pageNumbers, 8, requestPage);
+    for (const payload of remaining) addPayload(payload);
+    return payloads;
+  }
+
+  for (let page = 2; page <= maxPages; page += 1) {
+    const payload = await requestPage(page);
+    if (!addPayload(payload)) break;
   }
   return payloads;
 }
