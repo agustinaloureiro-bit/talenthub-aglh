@@ -15,6 +15,7 @@ export type InterpretedTalentQuery = {
   languages: string[];
   seniority?: string | null;
   industries: string[];
+  locations: string[];
   mustHave: string[];
   requiredGroups: string[][];
 };

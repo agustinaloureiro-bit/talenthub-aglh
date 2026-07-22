@@ -48,6 +48,13 @@ const ROLE_HINTS = [
   "técnico"
 ];
 
+const LOCATION_HINTS = [
+  "montevideo", "canelones", "maldonado", "san jose", "colonia", "salto", "paysandu", "rivera",
+  "pocitos", "cordon", "centro", "ciudad vieja", "carrasco", "malvin", "punta carretas", "la blanqueada",
+  "tres cruces", "prado", "aguada", "goes", "buceo", "parque batlle", "union", "penarol", "colon",
+  "manga", "cerro", "la teja", "paso molino", "las piedras", "pando", "ciudad de la costa"
+];
+
 const SKILL_HINTS = [
   "mejora continua",
   "lean",
@@ -77,7 +84,20 @@ const SKILL_HINTS = [
   "cajero",
   "cajera",
   "mozo",
-  "moza"
+  "moza",
+  "memory",
+  "tango",
+  "gns",
+  "nodum",
+  "odoo",
+  "salesforce",
+  "dynamics",
+  "oracle",
+  "genexus",
+  "crm",
+  "erp",
+  "python",
+  "javascript"
 ];
 
 const CONCEPT_PATTERNS: Array<{ pattern: RegExp; skill: string }> = [
@@ -127,6 +147,7 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   const languages = LANGUAGE_PATTERNS.filter(([pattern]) => pattern.test(normalizedQuery)).map(([, language]) => language);
   const seniority = SENIORITY_PATTERNS.find(([pattern]) => pattern.test(normalizedQuery))?.[1] ?? null;
   const industries = findHints(normalizedQuery, ["industria", "retail", "logistica", "logística", "manufactura", "tecnologia", "tecnología", "gastronomia", "gastronomía", "restaurante"]);
+  const locations = findHints(normalizedQuery, LOCATION_HINTS);
 
   return {
     originalQuery: query,
@@ -136,7 +157,8 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
     languages,
     seniority,
     industries,
-    mustHave: [...roles, ...skills, ...languages],
+    locations,
+    mustHave: [...roles, ...skills, ...languages, ...locations],
     requiredGroups: requiredGroupsForQuery(normalizedQuery, roles)
   };
 }

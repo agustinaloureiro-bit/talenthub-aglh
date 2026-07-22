@@ -79,7 +79,9 @@ function candidateHaystack(candidate: TalentCandidateResult) {
 function candidateProfileText(candidate: TalentCandidateResult) {
   return [
     candidate.currentRole ?? "",
-    (candidate.tags ?? []).join(" ")
+    (candidate.tags ?? []).join(" "),
+    candidate.city ?? "",
+    candidate.country ?? ""
   ].join(" ");
 }
 
@@ -96,7 +98,7 @@ function conceptMatchesProfile(candidate: TalentCandidateResult, interpreted: In
 }
 
 function requestedConcepts(interpreted: InterpretedTalentQuery) {
-  const values = [...interpreted.roles, ...interpreted.skills, ...interpreted.languages, ...interpreted.industries];
+  const values = [...interpreted.roles, ...interpreted.skills, ...interpreted.languages, ...interpreted.industries, ...interpreted.locations];
   const byNormalized = new Map<string, string>();
   for (const value of values) {
     const normalized = normalizeSearchValue(value);
@@ -162,6 +164,7 @@ export function explainCandidateMatch(candidate: TalentCandidateResult, interpre
   if (interpreted.skills.length && includesAny(profileText, interpreted.skills)) reasons.push("competencias principales alineadas");
   else if (interpreted.skills.length && includesAny(evidenceText, interpreted.skills)) reasons.push("competencias mencionadas en el CV");
   if (interpreted.languages.length && includesAny(haystack, interpreted.languages)) reasons.push("idioma solicitado");
+  if (interpreted.locations.length && includesAny(haystack, interpreted.locations)) reasons.push("ubicación solicitada");
   if (interpreted.seniority && normalizeSearchValue(haystack).includes(normalizeSearchValue(interpreted.seniority))) reasons.push("seniority compatible");
   const matched = resultCoverage.matchedConcepts.length ? resultCoverage.matchedConcepts.join(", ") : "coincidencia textual parcial";
   const evidence = evidenceConcepts.length ? " Evidencia encontrada en el CV." : " La coincidencia proviene de los datos indexados; conviene revisar el CV.";

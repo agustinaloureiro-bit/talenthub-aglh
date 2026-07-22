@@ -13,7 +13,8 @@ export class RecruitmentIntelligenceEngine {
       ...interpreted.roles,
       ...interpreted.skills,
       ...interpreted.languages,
-      ...interpreted.industries
+      ...interpreted.industries,
+      ...interpreted.locations
     ].filter(Boolean);
     const retrievalQuery = [...new Set(understoodConcepts.length ? understoodConcepts : [interpreted.normalizedQuery])].join(" ");
     const candidates = await this.fallbackSearch(retrievalQuery, filters);

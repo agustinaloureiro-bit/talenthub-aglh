@@ -334,28 +334,66 @@ export function selectYoinersIncrementalCandidates(candidates: CandidateImport[]
   };
 }
 
-async function fetchTalentPayloads(session: Awaited<ReturnType<typeof resolveSession>>) {
-  const requests: Array<{ name: string; path: string; init?: RequestInit }> = [
-    { name: "talentos", path: `/yoiner/getTalents/${encodeURIComponent(session.userId)}/false` },
-    { name: "talentos compartidos", path: `/yoiner/getYoinerSharedTalents/${encodeURIComponent(session.userId)}` }
-  ];
-  if (session.companyId) {
-    requests.push({ name: "talentos de empresa", path: `/talent/${encodeURIComponent(session.userId)}/${encodeURIComponent(session.companyId)}` });
+function paginationFromPayload(payload: unknown) {
+  const root = object(payload) ?? {};
+  const data = object(root.data) ?? root;
+  const hits = object(data.hits) ?? object(root.hits) ?? {};
+  return {
+    page: Number(hits.page ?? data.page ?? root.page ?? 1),
+    totalPages: Number(hits.totalPages ?? hits.total_pages ?? data.totalPages ?? data.total_pages ?? root.totalPages ?? 1)
+  };
+}
+
+async function fetchFilteredTalents(session: Awaited<ReturnType<typeof resolveSession>>) {
+  const payloads: unknown[] = [];
+  const maxPages = 500;
+  for (let page = 1; page <= maxPages; page += 1) {
+    const payload = await authorizedRequest(`/yoiner/getTalentsByFilters/${encodeURIComponent(session.userId)}`, session.token, {
+      method: "POST",
+      body: JSON.stringify({
+        yoiner_user_id: session.userId,
+        page,
+        limit: 100
+      })
+    });
+    payloads.push(payload);
+    const pagination = paginationFromPayload(payload);
+    const rows = candidateRows(payload);
+    if (!rows.length || page >= pagination.totalPages) break;
   }
+  return payloads;
+}
+
+async function fetchTalentPayloads(session: Awaited<ReturnType<typeof resolveSession>>) {
   const payloads: unknown[] = [];
   const failures: string[] = [];
   let authorizationFailures = 0;
-  for (const request of requests) {
+
+  try {
+    payloads.push(...await fetchFilteredTalents(session));
+  } catch (error: any) {
+    if (Number(error?.status) === 401 || Number(error?.status) === 403) authorizationFailures += 1;
+    failures.push(`talentos filtrados: ${text(error?.message) || "error"}`);
+  }
+
+  if (!payloads.length) {
     try {
-      payloads.push(await authorizedRequest(request.path, session.token, request.init));
+      payloads.push(await authorizedRequest(`/yoiner/getTalents/${encodeURIComponent(session.userId)}/false`, session.token));
     } catch (error: any) {
       if (Number(error?.status) === 401 || Number(error?.status) === 403) authorizationFailures += 1;
-      failures.push(`${request.name}: ${text(error?.message) || "error"}`);
+      failures.push(`talentos anteriores: ${text(error?.message) || "error"}`);
     }
   }
+
+  try {
+    payloads.push(await authorizedRequest(`/yoiner/getYoinerSharedTalents/${encodeURIComponent(session.userId)}`, session.token));
+  } catch (error: any) {
+    failures.push(`talentos compartidos: ${text(error?.message) || "error"}`);
+  }
+
   if (!payloads.length) {
     const error = new Error(failures.join(" | ") || "Yoiners no devolvió talentos.") as Error & { status?: number };
-    if (authorizationFailures === requests.length) error.status = 401;
+    if (authorizationFailures >= 2) error.status = 401;
     throw error;
   }
   return { payloads, failures };

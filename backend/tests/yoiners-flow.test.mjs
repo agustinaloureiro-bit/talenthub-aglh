@@ -52,7 +52,7 @@ test("reutiliza una sesión exportada de Cookie-Editor", async () => {
   });
 });
 
-test("sincroniza la API de Yoiners, guarda sesion e importa solo perfiles con CV", async () => {
+test("sincroniza la API paginada vigente de Yoiners, guarda sesion e importa solo perfiles con CV", async () => {
   const { syncYoiners } = await import("../dist/services/yoinersClient.js");
   const originalFetch = globalThis.fetch;
   const requests = [];
@@ -61,23 +61,29 @@ test("sincroniza la API de Yoiners, guarda sesion e importa solo perfiles con CV
     if (String(url).endsWith("/auth/login")) {
       return new Response(JSON.stringify({ data: { token: "access-1", refresh_token: "refresh-1", user_id: "user-1", role: "YOINER" } }), { status: 200 });
     }
-    if (String(url).includes("getTalents/user-1/false")) {
+    if (String(url).includes("getTalentsByFilters/user-1")) {
+      const body = JSON.parse(init.body);
+      if (body.page === 1) return new Response(JSON.stringify({ data: { talents: [
+          { _id: "with-cv", first_name: "Lucía", last_name: "Fernández", talent_cv: "https://files.yoiners.com/lucia.pdf" },
+          { _id: "without-cv", first_name: "Mario", last_name: "Suárez" }
+        ], hits: { totalPages: 2, totalDocs: 3 } } }), { status: 200 });
       return new Response(JSON.stringify({ data: { talents: [
-        { _id: "with-cv", first_name: "Lucía", last_name: "Fernández", talent_cv: "https://files.yoiners.com/lucia.pdf" },
-        { _id: "without-cv", first_name: "Mario", last_name: "Suárez" }
-      ] } }), { status: 200 });
+        { _id: "second-page", first_name: "Valeria", last_name: "Pereira", talent_cv: "https://files.yoiners.com/valeria.pdf" }
+      ], hits: { totalPages: 2, totalDocs: 3 } } }), { status: 200 });
     }
     return new Response(JSON.stringify({ data: [] }), { status: 200 });
   };
 
   try {
     const result = await syncYoiners({ username: "account@example.com", password: "secret" });
-    assert.deepEqual(result.rows.map((candidate) => candidate.sourceId), ["yoiners:with-cv"]);
+    assert.deepEqual(result.rows.map((candidate) => candidate.sourceId), ["yoiners:with-cv", "yoiners:second-page"]);
     assert.equal(result.configUpdate.yoinersRefreshToken, "refresh-1");
     assert.equal(result.configUpdate.sessionStatus, "connected");
-    assert.match(result.message, /1 perfiles reales con CV/);
-    const talentRequest = requests.find((request) => request.url.includes("getTalents"));
+    assert.match(result.message, /2 perfiles reales con CV/);
+    const talentRequest = requests.find((request) => request.url.includes("getTalentsByFilters"));
     assert.equal(talentRequest.init.headers.Authorization, "bearer access-1");
+    assert.equal(talentRequest.init.method, "POST");
+    assert.equal(JSON.parse(talentRequest.init.body).limit, 100);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -108,7 +114,7 @@ test("renueva automaticamente una sesion Yoiners vencida", async () => {
     if (init.headers?.Authorization === "bearer expired-token") {
       return new Response(JSON.stringify({ message: "token expired" }), { status: 401 });
     }
-    if (target.includes("getTalents/user-1/false")) {
+    if (target.includes("getTalentsByFilters/user-1")) {
       return new Response(JSON.stringify({ data: [{ _id: "new", first_name: "Ana", last_name: "Rodríguez", talent_cv: "https://files.yoiners.com/ana.pdf" }] }), { status: 200 });
     }
     return new Response(JSON.stringify({ data: [] }), { status: 200 });

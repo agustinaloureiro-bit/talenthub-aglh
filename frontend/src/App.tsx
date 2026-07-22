@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { AlertCircle, Briefcase, CheckCircle2, ChevronLeft, Database, Download, ExternalLink, Eye, FileText, GraduationCap, Languages, LogOut, Mail, MapPin, Phone, Plug, Plus, RotateCcw, Save, Search, Settings, UserRound, Users, X } from "lucide-react";
+import { AlertCircle, Briefcase, CheckCircle2, ChevronLeft, Database, Download, ExternalLink, Eye, FileText, GraduationCap, Languages, LogOut, Mail, MapPin, MessageCircle, Plug, Plus, RotateCcw, Save, Search, Settings, UserRound, Users, X } from "lucide-react";
 import { API_URL, api, authHeaders, currentUser, login, logout, type User } from "./lib/api";
 
 type Page = "finder" | "candidates" | "candidate" | "integrations" | "settings";
@@ -406,7 +406,7 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
     }
     setSearchStatus("Buscando en los candidatos ya procesados...");
     try {
-      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean } }>("/search/talent", { method: "POST", timeoutMs: 12_000, body: JSON.stringify({ query, page, pageSize: 50, filters: { seniority: seniority || undefined, source: source ? [source] : undefined, location: location || undefined, contact: contact || undefined, minScore: minScore || undefined, activeOnly } }) });
+      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[]; locations?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean } }>("/search/talent", { method: "POST", timeoutMs: 12_000, body: JSON.stringify({ query, page, pageSize: 50, filters: { seniority: seniority || undefined, source: source ? [source] : undefined, location: location || undefined, contact: contact || undefined, minScore: minScore || undefined, activeOnly } }) });
       setResults((previous) => append
         ? [...new Map([...previous, ...response.data].map((candidate) => [candidate.id, candidate])).values()]
         : response.data);
@@ -416,7 +416,8 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
         ...(response.query?.roles ?? []),
         ...(response.query?.skills ?? []),
         ...(response.query?.languages ?? []),
-        ...(response.query?.industries ?? [])
+        ...(response.query?.industries ?? []),
+        ...(response.query?.locations ?? [])
       ])]);
       setSearchStatus("");
     } catch (err: any) {
@@ -1014,6 +1015,15 @@ function cleanDisplayText(value: unknown) {
   return text;
 }
 
+function whatsappUrlForPhone(value: string) {
+  let digits = String(value ?? "").replace(/\D/g, "");
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  if (/^0\d{8}$/.test(digits)) digits = `598${digits.slice(1)}`;
+  else if (/^[249]\d{7}$/.test(digits)) digits = `598${digits}`;
+  if (!/^\d{8,15}$/.test(digits)) return null;
+  return `https://wa.me/${digits}`;
+}
+
 function readableCandidateSummary(candidate: Candidate, document?: CandidateDocument) {
   const summary = cleanDisplayText(candidate.summary);
   if (summary && !/CV importado\. Faltan datos legibles/i.test(summary)) return summary;
@@ -1054,7 +1064,10 @@ function CvAnalysisCard({ analysis }: { analysis?: CvAnalysis }) {
 function ContactCard({ candidate }: { candidate: Candidate }) {
   const items = [
     ...candidate.email.slice(0, 3).map((value) => ({ icon: Mail, label: value, href: `mailto:${value}` })),
-    ...candidate.phone.slice(0, 3).map((value) => ({ icon: Phone, label: value, href: `tel:${value.replace(/\s+/g, "")}` })),
+    ...candidate.phone.slice(0, 3).flatMap((value) => {
+      const href = whatsappUrlForPhone(value);
+      return href ? [{ icon: MessageCircle, label: `${value} · WhatsApp`, href }] : [];
+    }),
     ...(candidate.linkedinUrl ? [{ icon: ExternalLink, label: "LinkedIn", href: candidate.linkedinUrl }] : [])
   ];
   return <div className="card p-4"><h3 className="mb-3 font-bold">Contacto</h3>{items.length === 0 ? <p className="text-sm text-slate-500">Sin datos de contacto.</p> : <div className="grid gap-2">{items.map(({ icon: Icon, label, href }) => <a key={`${href}-${label}`} className="flex min-w-0 items-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50" href={href} target={href.startsWith("http") ? "_blank" : undefined} rel="noreferrer"><Icon size={15} /><span className="truncate">{label}</span></a>)}</div>}</div>;
@@ -1137,7 +1150,7 @@ function CvPreviewModal({ candidate, onClose, onView }: { candidate: Candidate; 
           <p className="mb-5 text-sm leading-6 text-slate-700">{cleanDisplayText(candidate.matchReason) || "El perfil contiene evidencia relacionada con la búsqueda actual."}</p>
           <h3 className="mb-2 font-bold">Datos disponibles</h3>
           <div className="mb-5 grid gap-2 text-sm text-slate-700">
-            {candidate.phone?.[0] && <a className="flex items-center gap-2" href={`tel:${candidate.phone[0]}`}><Phone size={15} /> {candidate.phone[0]}</a>}
+            {candidate.phone?.[0] && whatsappUrlForPhone(candidate.phone[0]) && <a className="flex items-center gap-2 text-emerald-700 hover:underline" href={whatsappUrlForPhone(candidate.phone[0])!} target="_blank" rel="noreferrer" title="Abrir conversación en WhatsApp"><MessageCircle size={15} /> {candidate.phone[0]} · WhatsApp</a>}
             {candidate.email?.[0] && <a className="flex items-center gap-2 break-all" href={`mailto:${candidate.email[0]}`}><Mail size={15} /> {candidate.email[0]}</a>}
             {(candidate.city || candidate.country) && <div className="flex items-center gap-2"><MapPin size={15} /> {[candidate.city, candidate.country].filter(Boolean).join(", ")}</div>}
             <div className="flex items-center gap-2"><FileText size={15} /> {fileName}</div>
@@ -1157,10 +1170,10 @@ function CandidateRow({ candidate, onView, onPreview, reason, matchScore }: { ca
   const role = shortText(candidate.currentRole || "Sin rol", 90);
   const location = shortText(candidate.city || candidate.country || "Sin ciudad", 45);
   const documents = Number(candidate.documentCount ?? 0);
-  const contact = [candidate.phone?.[0], candidate.email?.[0]].filter(Boolean).join(" · ");
+  const whatsappUrl = candidate.phone?.[0] ? whatsappUrlForPhone(candidate.phone[0]) : null;
   const summary = cleanDisplayText(candidate.summary);
   const updated = candidate.lastSeenAt ? new Date(candidate.lastSeenAt).toLocaleDateString("es-UY") : "";
-  return <div className="card flex flex-wrap items-start justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div>{candidate.status === "needs_review" && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">Revisar datos</span>}</div><div className="truncate text-sm text-slate-500">{role} · {location}{candidate.years ? ` · ${candidate.years} años declarados` : ""}</div>{summary && <p className="mt-2 max-w-3xl text-sm leading-5 text-slate-700">{shortText(summary, 260)}</p>}<div className="mt-2 flex flex-wrap items-center gap-2">{documents > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600"><FileText size={13} /> {documents} CV/doc</span>}{candidate.primaryDocumentName && <span className="max-w-sm truncate text-xs text-slate-500">{shortText(candidate.primaryDocumentName, 70)}</span>}{contact && <span className="max-w-md truncate text-xs text-slate-500">{shortText(contact, 90)}</span>}{updated && <span className="text-xs text-slate-400">Actualizado {updated}</span>}</div><div className="mt-2 flex flex-wrap gap-1">{(candidate.sourceTypes ?? []).map((source) => <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600" key={source}>{source}</span>)}</div><TagList tags={candidate.tags ?? []} />{reason && <p className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{shortText(reason, 240)}</p>}</div></div><div className="flex shrink-0 items-center gap-3">{typeof matchScore === "number" && <MatchScore score={matchScore} />}<div className="grid gap-2">{onPreview && documents > 0 && <button className="btn-primary justify-center" onClick={onPreview}><Eye size={16} /> Ver CV</button>}<button className="btn-ghost justify-center" onClick={() => onView(candidate.id)}>Ver ficha</button></div></div></div>;
+  return <div className="card flex flex-wrap items-start justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div>{candidate.status === "needs_review" && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">Revisar datos</span>}</div><div className="truncate text-sm text-slate-500">{role} · {location}{candidate.years ? ` · ${candidate.years} años declarados` : ""}</div>{summary && <p className="mt-2 max-w-3xl text-sm leading-5 text-slate-700">{shortText(summary, 260)}</p>}<div className="mt-2 flex flex-wrap items-center gap-2">{documents > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600"><FileText size={13} /> {documents} CV/doc</span>}{candidate.primaryDocumentName && <span className="max-w-sm truncate text-xs text-slate-500">{shortText(candidate.primaryDocumentName, 70)}</span>}{whatsappUrl && <a className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:underline" href={whatsappUrl} target="_blank" rel="noreferrer" title="Abrir conversación en WhatsApp"><MessageCircle size={13} /> {shortText(candidate.phone[0], 35)}</a>}{candidate.email?.[0] && <a className="max-w-xs truncate text-xs text-slate-500 hover:underline" href={`mailto:${candidate.email[0]}`}>{shortText(candidate.email[0], 45)}</a>}{updated && <span className="text-xs text-slate-400">Actualizado {updated}</span>}</div><div className="mt-2 flex flex-wrap gap-1">{(candidate.sourceTypes ?? []).map((source) => <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600" key={source}>{source}</span>)}</div><TagList tags={candidate.tags ?? []} />{reason && <p className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{shortText(reason, 240)}</p>}</div></div><div className="flex shrink-0 items-center gap-3">{typeof matchScore === "number" && <MatchScore score={matchScore} />}<div className="grid gap-2">{onPreview && documents > 0 && <button className="btn-primary justify-center" onClick={onPreview}><Eye size={16} /> Ver CV</button>}<button className="btn-ghost justify-center" onClick={() => onView(candidate.id)}>Ver ficha</button></div></div></div>;
 }
 
 type InputProps = {

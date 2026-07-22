@@ -118,6 +118,49 @@ test("interpreta una necesidad conceptual aunque no nombre la competencia", () =
   assert.ok(interpreted.skills.includes("comunicacion"));
 });
 
+test("interpreta barrio y sistemas como criterios buscables", () => {
+  const interpreted = interpretTalentQuery("Busco administrativa de Pocitos con manejo de SAP y Memory");
+
+  assert.ok(interpreted.roles.includes("administrativa"));
+  assert.ok(interpreted.locations.includes("pocitos"));
+  assert.ok(interpreted.skills.includes("sap"));
+  assert.ok(interpreted.skills.includes("memory"));
+  assert.ok(interpreted.mustHave.includes("pocitos"));
+});
+
+test("prioriza ubicación y sistema cuando se piden en lenguaje natural", () => {
+  const interpreted = interpretTalentQuery("administrativa en Pocitos con SAP");
+  const ranked = rerankCandidates([
+    {
+      id: "pocitos-sap",
+      fullName: "Ana Pereira",
+      currentRole: "Administrativa",
+      city: "Pocitos",
+      tags: ["sap", "administracion"],
+      qualityScore: 50,
+      documentCount: 1,
+      documentSnippet: "Administrativa con manejo de SAP.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "sin-ubicacion",
+      fullName: "Maria Rodriguez",
+      currentRole: "Administrativa",
+      city: "Salto",
+      tags: ["administracion"],
+      qualityScore: 90,
+      documentCount: 1,
+      documentSnippet: "Experiencia administrativa general.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.equal(ranked[0].id, "pocitos-sap");
+  assert.match(ranked[0].matchReason, /ubicación solicitada/i);
+});
+
 test("amplia la consulta conceptual antes de buscar en todos los CV", async () => {
   let providerQuery = "";
   const engine = new RecruitmentIntelligenceEngine(async (query) => {

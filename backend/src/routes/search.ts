@@ -122,7 +122,7 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
   if (filters.contact === "email") candidateFilter += " AND cardinality(coalesce(c.email, '{}'::text[])) > 0";
   if (filters.contact === "phone") candidateFilter += " AND cardinality(coalesce(c.phone, '{}'::text[])) > 0";
   if (filters.contact === "both") candidateFilter += " AND cardinality(coalesce(c.email, '{}'::text[])) > 0 AND cardinality(coalesce(c.phone, '{}'::text[])) > 0";
-  const candidateText = "coalesce(c.full_name,'') || ' ' || coalesce(c.current_role,'') || ' ' || coalesce(c.ai_summary,'')";
+  const candidateText = "coalesce(c.full_name,'') || ' ' || coalesce(c.current_role,'') || ' ' || coalesce(c.city,'') || ' ' || coalesce(c.country,'') || ' ' || array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' || coalesce(c.ai_summary,'')";
   const documentText = "coalesce(d.raw_text,'') || ' ' || coalesce(d.file_name,'')";
   const { rows } = await qWithTimeout(
     `WITH search_terms AS MATERIALIZED (
