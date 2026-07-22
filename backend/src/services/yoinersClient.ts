@@ -430,9 +430,11 @@ function paginationFromPayload(payload: unknown) {
   const data = object(root.data) ?? root;
   const hits = object(data.hits) ?? object(root.hits) ?? object(data.talentsMeta) ?? object(root.talentsMeta) ?? {};
   const rawTotalPages = hits.totalPages ?? hits.total_pages ?? data.totalPages ?? data.total_pages ?? root.totalPages;
+  const rawTotalDocs = hits.totalDocs ?? hits.total_docs ?? data.totalDocs ?? data.total_docs ?? root.totalDocs;
   return {
     page: Number(hits.page ?? data.page ?? root.page ?? 1),
-    totalPages: rawTotalPages == null ? null : Number(rawTotalPages)
+    totalPages: rawTotalPages == null ? null : Number(rawTotalPages),
+    totalDocs: rawTotalDocs == null ? null : Number(rawTotalDocs)
   };
 }
 
@@ -453,7 +455,8 @@ async function fetchFilteredTalents(
   session: ResolvedSession,
   path: string,
   accountRole: string,
-  scopeToUser = true
+  scopeToUser = true,
+  stopSourceIds: string[] = []
 ) {
   const payloads: unknown[] = [];
   const seenPages = new Set<string>();
@@ -490,6 +493,11 @@ async function fetchFilteredTalents(
 
   const firstPayload = await requestPage(1);
   if (!addPayload(firstPayload)) return payloads;
+  const firstRows = candidateRows(firstPayload);
+  if (stopSourceIds.length && firstRows.some((row) => {
+    const userId = talentUserId(row);
+    return userId && stopSourceIds.includes(`yoiners:${userId}`);
+  })) return payloads;
   const firstPagination = paginationFromPayload(firstPayload);
   if (firstPagination.totalPages != null && Number.isFinite(firstPagination.totalPages)) {
     const pageNumbers = Array.from(
@@ -592,7 +600,8 @@ async function fetchTalentPayloads(session: Awaited<ReturnType<typeof resolveSes
         session,
         `/yoiner/getTalentsByFilters/${encodeURIComponent(session.userId)}`,
         role,
-        false
+        false,
+        text(config.yoinersCursorVersion) === "auditor-catalog-v2" ? list(config.yoinersHeadSourceIds) : []
       );
       const visible = visiblePayloads.flatMap(candidateRows);
       if (visible.length) {
@@ -602,7 +611,7 @@ async function fetchTalentPayloads(session: Awaited<ReturnType<typeof resolveSes
         return {
           payloads: [hydrated.rows],
           failures,
-          visibleCount: visible.length,
+          visibleCount: paginationFromPayload(visiblePayloads[0]).totalDocs ?? visible.length,
           complete: hydrated.failed === 0
         };
       }
