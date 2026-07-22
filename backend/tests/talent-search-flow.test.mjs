@@ -186,7 +186,19 @@ test("un puesto basico en Ciudad de la Costa incluye perfiles operativos cercano
       tags: ["contabilidad"],
       qualityScore: 95,
       documentCount: 1,
-      documentSnippet: "Contador público recibido, experiencia en auditoría y finanzas.",
+      documentSnippet: "Contador público recibido, experiencia en auditoría, finanzas, ventas y atención al cliente.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "montevideo-menciona-canelones",
+      fullName: "Lucia Referencia",
+      currentRole: "Cajera",
+      city: "Montevideo",
+      tags: ["caja"],
+      qualityScore: 80,
+      documentCount: 1,
+      documentSnippet: "Experiencia como cajera en una empresa con sucursal en Canelones.",
       score: 0,
       matchReason: ""
     }

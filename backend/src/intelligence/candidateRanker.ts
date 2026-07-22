@@ -167,7 +167,8 @@ function satisfiesRequiredGroups(candidate: TalentCandidateResult, interpreted: 
 
 function satisfiesLocation(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   if (!interpreted.locationGroups.length) return true;
-  const locationText = [candidate.city ?? "", candidate.country ?? "", candidate.summary ?? "", candidate.documentSnippet ?? ""].join(" ");
+  const declaredLocation = [candidate.city ?? "", candidate.country ?? ""].join(" ").trim();
+  const locationText = declaredLocation || [candidate.summary ?? "", candidate.documentSnippet ?? ""].join(" ");
   return interpreted.locationGroups.every((group) => includesAny(locationText, group));
 }
 
@@ -180,8 +181,8 @@ function basicProfileSuitability(candidate: TalentCandidateResult, interpreted: 
   const evidence = [role, (candidate.tags ?? []).join(" "), candidate.summary ?? "", candidate.documentSnippet ?? ""].join(" ");
   const operationalEvidence = BASIC_WORK_PATTERN.test(evidence);
   const clearlyProfessional = PROFESSIONAL_ROLE_PATTERN.test(role)
-    || (!operationalEvidence && /\b(?:contador(?:a)?|abogad[oa]|ingenier[oa]|arquitect[oa]|m[eé]dic[oa])\s+(?:p[uú]blic[oa]|recibid[oa]|titulad[oa])\b/i.test(evidence));
-  return { allowed: !clearlyProfessional || operationalEvidence, bonus: operationalEvidence ? 12 : 0 };
+    || /\b(?:contador(?:a)?|abogad[oa]|ingenier[oa]|arquitect[oa]|m[eé]dic[oa])\s+(?:p[uú]blic[oa]|recibid[oa]|titulad[oa])\b/i.test(evidence);
+  return { allowed: !clearlyProfessional, bonus: operationalEvidence ? 12 : 0 };
 }
 
 export function explainCandidateMatch(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {

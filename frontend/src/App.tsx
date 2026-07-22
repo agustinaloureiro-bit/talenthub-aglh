@@ -39,6 +39,10 @@ function readTalentFinderSnapshot(): TalentFinderSnapshot {
   }
 }
 
+function clearTalentFinderSnapshot() {
+  window.sessionStorage.removeItem(TALENT_FINDER_STATE_KEY);
+}
+
 type Candidate = {
   id: string;
   fullName: string;
@@ -122,6 +126,13 @@ export function App() {
     setPage("candidate");
   };
 
+  const navigateTo = (nextPage: Page) => {
+    const leavesFinderFlow = nextPage !== "finder"
+      && (page === "finder" || (page === "candidate" && candidateReturnPage === "finder"));
+    if (leavesFinderFlow) clearTalentFinderSnapshot();
+    setPage(nextPage);
+  };
+
   return (
     <div className="flex min-h-screen">
       <aside className="fixed inset-y-0 left-0 w-56 bg-navy text-white">
@@ -134,7 +145,7 @@ export function App() {
         </div>
         <nav className="p-3">
           {nav.map(([key, Icon, label]) => (
-            <button key={key} onClick={() => setPage(key)} className={`mb-1 flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm ${page === key || (page === "candidate" && key === "candidates") ? "bg-white/10 text-white" : "text-white/65 hover:bg-white/5"}`}>
+            <button key={key} onClick={() => navigateTo(key)} className={`mb-1 flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm ${page === key || (page === "candidate" && key === candidateReturnPage) ? "bg-white/10 text-white" : "text-white/65 hover:bg-white/5"}`}>
               <Icon size={17} /> {label}
             </button>
           ))}
@@ -148,7 +159,7 @@ export function App() {
           </div>
           <div className="flex items-center gap-3 text-sm">
             <span className="text-slate-500">{user.name} · {user.role}</span>
-            <button className="btn-ghost" onClick={() => { logout(); setUser(null); }}><LogOut size={16} /></button>
+            <button className="btn-ghost" onClick={() => { clearTalentFinderSnapshot(); logout(); setUser(null); }}><LogOut size={16} /></button>
           </div>
         </header>
         {page === "finder" && <TalentFinder onView={openCandidate} />}
@@ -418,7 +429,7 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
     }
     setSearchStatus("Buscando en los candidatos ya procesados...");
     try {
-      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[]; locations?: string[]; ignoredCriteria?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean } }>("/search/talent", { method: "POST", timeoutMs: 12_000, body: JSON.stringify({ query, page, pageSize: 50, filters: { seniority: seniority || undefined, source: source ? [source] : undefined, location: location || undefined, contact: contact || undefined, minScore: minScore || undefined, activeOnly, recency: recency || undefined, sort } }) });
+      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[]; locations?: string[]; ignoredCriteria?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean } }>("/search/talent", { method: "POST", timeoutMs: 20_000, body: JSON.stringify({ query, page, pageSize: 50, filters: { seniority: seniority || undefined, source: source ? [source] : undefined, location: location || undefined, contact: contact || undefined, minScore: minScore || undefined, activeOnly, recency: recency || undefined, sort } }) });
       setResults((previous) => append
         ? [...new Map([...previous, ...response.data].map((candidate) => [candidate.id, candidate])).values()]
         : response.data);

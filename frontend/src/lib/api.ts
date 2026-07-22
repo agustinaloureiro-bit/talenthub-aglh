@@ -21,6 +21,12 @@ export async function api<T>(path: string, options: ApiRequestOptions = {}): Pro
     const response = await fetch(`${API_URL}${path}`, { ...fetchOptions, headers, signal: options.signal ?? controller?.signal });
     if (response.status === 204) return undefined as T;
     const payload = await response.json().catch(() => ({}));
+    if (response.status === 401 && token && path !== "/auth/login") {
+      localStorage.removeItem("talenthub_token");
+      localStorage.removeItem("talenthub_user");
+      sessionStorage.removeItem("talenthub:finder-state:v2");
+      window.location.reload();
+    }
     if (!response.ok) throw new ApiError(payload.error ?? "Error de API", response.status);
     return payload as T;
   } catch (error: any) {
