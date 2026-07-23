@@ -52,12 +52,14 @@ try {
         + (analysis.educationHighlights.length ? 5 : 0)
         + (analysis.languages.length ? 5 : 0)
       );
-      const country = analysis.country ?? (row.from_gmail && row.country === "Uruguay" ? null : row.country);
-      const currentRole = analysis.primaryRole ?? (technicalTag.test(row.current_role ?? "") ? null : row.current_role);
+      const existingCountry = /[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(row.country ?? "") ? row.country : null;
+      const existingRole = /[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(row.current_role ?? "") && !technicalTag.test(row.current_role ?? "") ? row.current_role : null;
+      const country = analysis.country ?? (row.from_gmail && existingCountry === "Uruguay" ? null : existingCountry);
+      const currentRole = analysis.primaryRole ?? existingRole;
       await q(
         `UPDATE candidates SET
            "current_role"=$1,
-           city=coalesce($2, city),
+           city=$2,
            country=$3,
            ai_seniority_years=coalesce($4, ai_seniority_years),
            ai_tags=$5,

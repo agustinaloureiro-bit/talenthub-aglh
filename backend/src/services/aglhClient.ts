@@ -1,4 +1,6 @@
 import type { AgentSyncResult, CandidateDocumentImport, CandidateImport } from "../agents/types.js";
+import { analyzeCvText } from "./cvAnalysis.js";
+import { extractDocumentText } from "./documentText.js";
 
 const AGLH_AUTH_API = "https://prod-aglh-auth-service.herokuapp.com/api/v1/auth";
 const AGLH_TALENT_API = "https://prod-aglh-backend.herokuapp.com/api/v1/execute/talent";
@@ -118,6 +120,57 @@ function validPersonName(value: string) {
   return value.length >= 4 && value.length <= 100 && words.length >= 2 && words.length <= 7 && !/\d|@|curr[ií]cul|vacante|oferta|postulaci[oó]n/i.test(value);
 }
 
+function humanLabel(value: string) {
+  const cleaned = text(value);
+  if (!cleaned || !/[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(cleaned)) return "";
+  if (/^[\d\s,.;:/_-]+$/.test(cleaned)) return "";
+  return cleaned;
+}
+
+function emailsFromText(value: string) {
+  return unique((value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) ?? []).map((email) => email.toLowerCase()));
+}
+
+function phonesFromText(value: string) {
+  return unique((value.match(/(?:\+?598\s?)?(?:0?9\d|2\d|4\d)[\s.-]?\d{3}[\s.-]?\d{3,4}/g) ?? [])
+    .filter((phone) => phone.replace(/\D/g, "").length >= 7));
+}
+
+export function enrichAglhCandidateFromCv(candidate: CandidateImport) {
+  const rawText = text(candidate.documents?.[0]?.rawText);
+  if (!rawText) return candidate;
+  const analysis = analyzeCvText(rawText);
+  if (!analysis.hasReadableText) return candidate;
+  const structuredRole = humanLabel(text(candidate.currentRole));
+  const structuredCity = humanLabel(text(candidate.city));
+  const languages = analysis.languages.length ? analysis.languages : candidate.languages;
+  candidate.email = unique([...emailsFromText(rawText), ...candidate.email]);
+  candidate.phone = unique([...phonesFromText(rawText), ...candidate.phone]);
+  candidate.currentRole = analysis.primaryRole || structuredRole || null;
+  candidate.city = analysis.city || structuredCity || null;
+  candidate.country = analysis.country || humanLabel(text(candidate.country)) || null;
+  candidate.years = analysis.years ?? candidate.years;
+  candidate.languages = languages;
+  candidate.tags = unique([
+    ...candidate.tags.filter((tag) => Boolean(humanLabel(tag))),
+    ...analysis.roles,
+    ...analysis.skills,
+    ...analysis.languages.map((language) => language.lang)
+  ]).slice(0, 18);
+  candidate.summary = analysis.summary || candidate.summary;
+  candidate.qualityScore = Math.min(100,
+    20
+    + (candidate.email.length ? 15 : 0)
+    + (candidate.phone.length ? 15 : 0)
+    + 15
+    + (analysis.roles.length ? 15 : 0)
+    + (analysis.experienceHighlights.length ? 10 : 0)
+    + (analysis.educationHighlights.length ? 5 : 0)
+    + (analysis.languages.length ? 5 : 0)
+  );
+  return candidate;
+}
+
 export function aglhCandidateFromTalent(input: unknown): CandidateImport | null {
   const talent = object(input);
   if (!talent) return null;
@@ -151,10 +204,10 @@ export function aglhCandidateFromTalent(input: unknown): CandidateImport | null 
     lastName: lastName || null,
     email: emailsFrom(talent),
     phone: phonesFrom(talent),
-    city: firstDeepText(talent, ["city", "ciudad", "district", "barrio"]) || null,
-    country: firstDeepText(talent, ["country", "pais"]) || "Uruguay",
+    city: humanLabel(firstDeepText(talent, ["city", "ciudad", "district", "barrio"])) || null,
+    country: humanLabel(firstDeepText(talent, ["country", "pais"])) || "Uruguay",
     linkedinUrl: firstDeepText(talent, ["linkedin", "linkedin_url"]) || null,
-    currentRole: positions[0] || experienceAreas[0] || null,
+    currentRole: humanLabel(positions[0]) || humanLabel(experienceAreas[0]) || null,
     seniority: firstDeepText(talent, ["seniority", "experience_level"]) || null,
     tags: unique(["aglh", ...experienceAreas, ...positions, ...knowledge, ...tools, ...languages]).slice(0, 12),
     languages: languages.slice(0, 8).map((lang: string) => ({ lang })),
@@ -273,6 +326,8 @@ async function attachAglhCvData(candidate: CandidateImport, token: string) {
     document.fileDataBase64 = buffer.toString("base64");
     document.sizeBytes = buffer.length;
     document.mimeType = response.headers.get("content-type") || document.mimeType || null;
+    document.rawText = await extractDocumentText(document.fileName, document.mimeType, buffer) || null;
+    enrichAglhCandidateFromCv(candidate);
   } catch {
     // The source URL remains available when AGLH does not allow a direct download.
   }

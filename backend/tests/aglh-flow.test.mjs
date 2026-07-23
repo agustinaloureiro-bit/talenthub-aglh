@@ -62,6 +62,37 @@ test("reconoce el campo talent_cv de la API oficial AGLH", async () => {
   assert.equal(candidate.documents[0].fileUrl, "https://files.aglh.com.uy/lucia-fernandez.pdf");
 });
 
+test("AGLH descarta codigos numericos y usa los datos legibles del CV", async () => {
+  const { aglhCandidateFromTalent, enrichAglhCandidateFromCv } = await import("../dist/services/aglhClient.js");
+  const candidate = aglhCandidateFromTalent({
+    _id: "talent-codes",
+    first_name: "Nahuel",
+    last_name: "Perez",
+    position: "23",
+    city: "10, 1",
+    talent_cv: "https://files.aglh.com.uy/nahuel.pdf"
+  });
+
+  assert.ok(candidate);
+  assert.equal(candidate.currentRole, null);
+  assert.equal(candidate.city, null);
+  candidate.email = ["dato-equivocado@aglh.example"];
+  candidate.phone = ["099000000"];
+  candidate.documents[0].rawText = `Nahuel Perez
+Contacto: 095855070, Nahuelpz1323@gmail.com
+Domicilio: Carlos Nery 3342 esq Camino Maldonado (apt3)
+Experiencia laboral
+Reponedor de depósito en mayorista.
+Reposición de góndolas y preparación de pedidos.`;
+  enrichAglhCandidateFromCv(candidate);
+
+  assert.equal(candidate.city, "Montevideo");
+  assert.equal(candidate.currentRole, "repositor");
+  assert.deepEqual(candidate.email, ["nahuelpz1323@gmail.com", "dato-equivocado@aglh.example"]);
+  assert.deepEqual(candidate.phone, ["095855070", "099000000"]);
+  assert.match(candidate.summary, /Montevideo/i);
+});
+
 test("AGLH incremental se detiene al encontrar el ultimo perfil conocido", async () => {
   const { selectAglhIncrementalCandidates } = await import("../dist/services/aglhClient.js");
   const candidates = [

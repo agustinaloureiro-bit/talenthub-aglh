@@ -22,6 +22,13 @@ function cleanDbTextArray(values: string[] | undefined) {
     .filter((value): value is string => Boolean(value)));
 }
 
+function cleanHumanField(value: string | null | undefined) {
+  const cleaned = cleanDbText(value);
+  if (!cleaned || !/[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(cleaned)) return null;
+  if (/^[\d\s,.;:/_-]+$/.test(cleaned)) return null;
+  return cleaned;
+}
+
 const SOURCE_DATE_KEYS = new Set([
   "sourcecreatedat", "submittedat", "applicationdate", "applicationcreatedat", "receivedat",
   "receiveddate", "internaldate", "createdat", "created", "date", "fechapostulacion",
@@ -70,7 +77,7 @@ const ROLE_TAGS = new Set([
 ]);
 
 function cleanCurrentRole(value: string | null | undefined, tags: string[]) {
-  const role = cleanDbText(value);
+  const role = cleanHumanField(value);
   if (role && !/^(?:postgres|postgresql|database|supabase|render|gmail|google|drive|cv|curriculum|curriculo|currículo|currículum|vitae|pdf|doc|docx|rtf|txt|postulaci[oó]n laboral|trabajo|empleo)$/i.test(role)) {
     return role;
   }
@@ -118,8 +125,8 @@ function sanitizeCandidate(candidate: CandidateImport): CandidateImport {
     lastName: cleanDbText(candidate.lastName),
     email: sanitizeEmails(candidate.email),
     phone: sanitizePhones(candidate.phone),
-    city: cleanDbText(candidate.city),
-    country: cleanDbText(candidate.country),
+    city: cleanHumanField(candidate.city),
+    country: cleanHumanField(candidate.country),
     linkedinUrl: cleanDbText(candidate.linkedinUrl),
     currentRole: cleanCurrentRole(candidate.currentRole, tags),
     seniority: cleanDbText(candidate.seniority),
@@ -372,10 +379,10 @@ export async function importCandidate(sourceType: string, candidate: CandidateIm
         last_name=coalesce($3, last_name),
         email=coalesce((SELECT array_agg(DISTINCT value) FROM unnest(email || $4::text[]) AS value), '{}'::text[]),
         phone=coalesce((SELECT array_agg(DISTINCT value) FROM unnest(phone || $5::text[]) AS value), '{}'::text[]),
-        city=coalesce($6, city),
-        country=coalesce($7, country),
+        city=coalesce($6, case when city ~ '[[:alpha:]ÁÉÍÓÚÜÑáéíóúüñ]' then city else null end),
+        country=coalesce($7, case when country ~ '[[:alpha:]ÁÉÍÓÚÜÑáéíóúüñ]' then country else null end),
         linkedin_url=coalesce($8, linkedin_url),
-        "current_role"=coalesce($9, case when "current_role" ~* '^(postgres|postgresql|database|supabase|render|gmail|google|drive|cv|curriculum|curriculo|currículo|currículum|vitae|pdf|doc|docx|rtf|txt|postulación laboral|postulacion laboral|trabajo|empleo)$' then null else "current_role" end),
+        "current_role"=coalesce($9, case when "current_role" !~ '[[:alpha:]ÁÉÍÓÚÜÑáéíóúüñ]' or "current_role" ~* '^(postgres|postgresql|database|supabase|render|gmail|google|drive|cv|curriculum|curriculo|currículo|currículum|vitae|pdf|doc|docx|rtf|txt|postulación laboral|postulacion laboral|trabajo|empleo)$' then null else "current_role" end),
         ai_seniority=coalesce($10, ai_seniority),
         ai_seniority_years=coalesce($11, ai_seniority_years),
         ai_tags=coalesce((SELECT array_agg(DISTINCT value) FROM unnest(ai_tags || $12::text[]) AS value), '{}'::text[]),

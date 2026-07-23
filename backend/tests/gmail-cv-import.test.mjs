@@ -864,6 +864,28 @@ Escuela 236, Toledo, Canelones, Uruguay.`;
   assert.equal(analyzeCvText(text).city, "Maldonado");
 });
 
+test("analisis de CV reconoce Montevideo desde una direccion partida en columnas", async () => {
+  const { analyzeCvText, extractCvResidence } = await import("../dist/services/cvAnalysis.js");
+  const text = `Nahuel Perez
+CONTACTO
+095855070
+Nahuelpz1323@gmail.com
+Carlos Nery 3342
+esq Camino Maldonado (apt3)
+INFORMACIÓN
+23 años
+EXPERIENCIA LABORAL
+REPONEDOR DE DEPOSITO
+Mayorista Los Amigos, agosto 2024
+Reposición de góndolas, encargado de depósito y limpieza.`;
+
+  assert.deepEqual(extractCvResidence(text), { city: "Montevideo", country: "Uruguay" });
+  const analysis = analyzeCvText(text);
+  assert.equal(analysis.city, "Montevideo");
+  assert.equal(analysis.primaryRole, "repositor");
+  assert.ok(analysis.roles.includes("repositor"));
+});
+
 test("rechaza cargos genericos como nombres de candidatos", async () => {
   const { isClearlyGenericCandidateName } = await import("../dist/routes/integrations.js");
 

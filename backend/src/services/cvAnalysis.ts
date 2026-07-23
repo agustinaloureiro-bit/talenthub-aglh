@@ -1,3 +1,5 @@
+import { findUruguayPlace, knownUruguayLocationNames } from "../intelligence/uruguayGeography.js";
+
 export type CvLanguageEvidence = {
   lang: string;
   level: string | null;
@@ -31,7 +33,7 @@ const ROLE_RULES: EvidenceRule[] = [
   { label: "operario de produccion", pattern: /\b(?:operari[oa]\s+de\s+(?:producci[oó]n|f[aá]brica|planta)|operador(?:a)? de (?:maquinaria|producci[oó]n)|auxiliar de producci[oó]n|l[ií]nea de producci[oó]n)\b/i },
   { label: "auxiliar de deposito", pattern: /\b(?:auxiliar|operari[oa]|pe[oó]n)\s+de\s+dep[oó]sito\b|\b(?:picking|packing|preparaci[oó]n de pedidos)\b/i },
   { label: "operario", pattern: /\boperari[oa]\b/i },
-  { label: "repositor", pattern: /\b(?:repositor(?:a)?|reposici[oó]n de mercader[ií]a)\b/i },
+  { label: "repositor", pattern: /\b(?:repositor(?:a)?|reponedor(?:a)?|reposici[oó]n de (?:mercader[ií]a|g[oó]ndolas))\b/i },
   { label: "cajero", pattern: /\b(?:cajer[oa]|manejo de caja|arqueo de caja)\b/i },
   { label: "limpieza", pattern: /\b(?:auxiliar de servicio|operari[oa] de limpieza|limpiador(?:a)?|tareas de limpieza)\b/i },
   { label: "recepcionista", pattern: /\b(?:recepcionista|recepci[oó]n y atenci[oó]n)\b/i },
@@ -96,12 +98,10 @@ const LANGUAGE_RULES: EvidenceRule[] = [
   { label: "italiano", pattern: /\bitaliano\b/i }
 ];
 
-const URUGUAY_LOCATIONS = [
-  "Ciudad de la Costa", "San Jose de Carrasco", "Barra de Carrasco", "Shangri La", "Shangrila",
-  "Solymar", "Lagomar", "El Pinar",
-  "Montevideo", "Canelones", "Maldonado", "San Jose", "Colonia", "Florida", "Rocha", "Paysandu",
-  "Salto", "Rivera", "Tacuarembo", "Durazno", "Soriano", "Lavalleja", "Artigas", "Cerro Largo",
-  "Flores", "Rio Negro", "Treinta y Tres", "Las Piedras", "Ciudad de la Costa", "Pando"
+const URUGUAY_LOCATIONS = knownUruguayLocationNames();
+const ADDRESS_LOCATION_RULES: EvidenceRule[] = [
+  { label: "Montevideo", pattern: /\b(?:camino maldonado|avenida 8 de octubre|av\.?\s*italia|propios|general flores|jos[eé] belloni|ruta 8)\b/i },
+  { label: "Ciudad de la Costa", pattern: /\b(?:giannattasio|interbalnearia)\b/i }
 ];
 
 function normalize(value: string) {
@@ -120,18 +120,34 @@ function earliestKnownLocation(value: string) {
     .sort((left, right) => left.index - right.index || right.location.length - left.location.length)[0]?.location ?? null;
 }
 
+function landmarkLocation(value: string) {
+  return ADDRESS_LOCATION_RULES.find((rule) => rule.pattern.test(value))?.label ?? null;
+}
+
+function uniqueKnownLocations(value: string) {
+  return unique(URUGUAY_LOCATIONS
+    .filter((location) => new RegExp(`\\b${normalize(location).replace(/\s+/g, "\\s+")}\\b`, "i").test(normalize(value)))
+    .map((location) => findUruguayPlace(location)?.name ?? location));
+}
+
 export function extractCvResidence(input: string) {
   const compact = String(input ?? "").replace(/\u0000/g, " ").replace(/\s+/g, " ").trim();
   if (!compact) return null;
-  const personalMarker = /\b(?:datos personales|informaci[oó]n personal|domicilio|direcci[oó]n|lugar de residencia|residencia\s*:|radicad[oa] en|vive en)\b/i.exec(compact);
+  const personalMarker = /\b(?:datos personales|informaci[oó]n personal|contacto|domicilio|direcci[oó]n|lugar de residencia|residencia\s*:|radicad[oa] en|vive en)\b/i.exec(compact);
   if (!personalMarker || personalMarker.index == null) return null;
   const afterMarker = compact.slice(personalMarker.index, personalMarker.index + 1_400);
   const markerOffset = personalMarker[0].length + 20;
   const stop = /\b(?:web\s*&\s*redes|conocimientos|experiencia laboral|trayectoria|estudios b[aá]sicos|educaci[oó]n|formaci[oó]n)\b/i.exec(afterMarker.slice(markerOffset));
   const segment = stop?.index == null ? afterMarker : afterMarker.slice(0, markerOffset + stop.index);
-  const city = earliestKnownLocation(segment);
-  if (!city) return null;
-  return { city, country: /\buruguay\b/i.test(segment) ? "Uruguay" : null };
+  const city = landmarkLocation(segment) ?? earliestKnownLocation(segment);
+  if (city) return { city, country: "Uruguay" };
+
+  // Some CV layouts split the address and its city into separate columns.
+  // Only use a document-wide fallback when there is one unambiguous place.
+  const documentLocations = uniqueKnownLocations(compact);
+  const fallback = documentLocations.length === 1 ? documentLocations[0] : null;
+  if (!fallback) return null;
+  return { city: fallback, country: "Uruguay" };
 }
 
 function cleanLine(value: string) {

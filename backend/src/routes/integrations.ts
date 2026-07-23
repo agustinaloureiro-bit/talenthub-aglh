@@ -9,6 +9,7 @@ import { requireRole } from "../middleware/auth.js";
 import { config as appConfig } from "../config.js";
 import { importCandidate } from "../services/candidateIngestion.js";
 import { analyzeCvText } from "../services/cvAnalysis.js";
+import { extractDocumentText } from "../services/documentText.js";
 import { selectCandidateEmails } from "../services/candidateIdentity.js";
 import { loginAglh, syncAglh } from "../services/aglhClient.js";
 import { syncYoiners } from "../services/yoinersClient.js";
@@ -35,6 +36,7 @@ const SYNC_ENGINE_VERSION = "2026-07-22.3";
 const CANDIDATE_IMPORT_CONCURRENCY = 10;
 const DEFAULT_GMAIL_QUERY = "has:attachment (filename:pdf OR filename:doc OR filename:docx OR filename:rtf OR filename:txt) newer_than:3650d";
 const MAX_STORED_CV_BYTES = 8 * 1024 * 1024;
+const AGLH_REPAIR_BATCH = 20;
 
 function gmailAfterDate(value: unknown) {
   const date = new Date(cleanText(value));
@@ -3200,6 +3202,102 @@ async function markStaleSyncingIntegrations() {
   );
 }
 
+function humanField(value: unknown) {
+  const field = cleanText(value);
+  return field && /[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(field) ? field : null;
+}
+
+async function repairAglhCandidateDocuments(config: Record<string, unknown>) {
+  const { rows } = await q<any>(
+    `SELECT c.id AS candidate_id, c.email, c.phone, c.city, c.country, c."current_role", c.ai_tags,
+            d.id AS document_id, d.file_name, d.file_url, d.mime_type, d.raw_text, d.file_data
+     FROM candidates c
+     JOIN LATERAL (
+       SELECT doc.*
+       FROM documents doc
+       WHERE doc.candidate_id=c.id
+         AND doc.source_type='aglh'
+         AND (doc.file_data IS NOT NULL OR coalesce(doc.file_url,'') <> '' OR length(coalesce(doc.raw_text,'')) >= 80)
+       ORDER BY doc.is_primary_cv DESC, doc.created_at DESC
+       LIMIT 1
+     ) d ON true
+     WHERE c.duplicate_of IS NULL
+       AND c.status='active'
+       AND (
+         d.processed_at IS NULL
+         OR c.city IS NULL
+         OR c.city !~ '[[:alpha:]ÁÉÍÓÚÜÑáéíóúüñ]'
+         OR c."current_role" IS NULL
+         OR c."current_role" !~ '[[:alpha:]ÁÉÍÓÚÜÑáéíóúüñ]'
+       )
+     ORDER BY (d.raw_text IS NOT NULL) DESC, d.created_at DESC
+     LIMIT $1`,
+    [AGLH_REPAIR_BATCH]
+  );
+  const token = cleanText(config.aglhAccessToken ?? config.accessToken);
+  let repaired = 0;
+
+  for (const row of rows) {
+    let rawText = cleanText(row.raw_text);
+    if (!rawText) {
+      let buffer: Buffer | null = row.file_data
+        ? (Buffer.isBuffer(row.file_data) ? row.file_data : Buffer.from(row.file_data))
+        : null;
+      if (!buffer && row.file_url) {
+        try {
+          const response = await fetch(String(row.file_url), {
+            headers: token ? { Authorization: `bearer ${token}` } : undefined
+          });
+          if (response.ok) {
+            const size = Number(response.headers.get("content-length") || 0);
+            if (!size || size <= MAX_STORED_CV_BYTES) buffer = Buffer.from(await response.arrayBuffer());
+          }
+        } catch {
+          buffer = null;
+        }
+      }
+      if (buffer?.length && buffer.length <= MAX_STORED_CV_BYTES) {
+        rawText = await extractDocumentText(row.file_name, row.mime_type, buffer);
+      }
+    }
+    const analysis = analyzeCvText(rawText);
+    if (!analysis.hasReadableText) continue;
+
+    const emails = unique([...extractEmails(rawText).map((email) => email.toLowerCase()), ...(row.email ?? [])]);
+    const phones = unique([...extractPhones(textWithoutReferenceSections(rawText)).slice(0, 2), ...(row.phone ?? [])]);
+    const tags = safeTags([
+      ...(row.ai_tags ?? []),
+      ...analysis.roles,
+      ...analysis.skills,
+      ...analysis.languages.map((language) => language.lang)
+    ], "aglh");
+    const currentRole = analysis.primaryRole ?? humanField(row.current_role);
+    const city = analysis.city ?? humanField(row.city);
+    const country = analysis.country ?? humanField(row.country);
+    await q(
+      `UPDATE candidates
+       SET email=$1,
+           phone=$2,
+           city=$3,
+           country=$4,
+           "current_role"=$5,
+           ai_seniority_years=coalesce($6,ai_seniority_years),
+           ai_tags=$7,
+           ai_languages=case when jsonb_array_length($8::jsonb)>0 then $8::jsonb else ai_languages end,
+           ai_summary=$9,
+           updated_at=now()
+       WHERE id=$10`,
+      [emails, phones, city, country, currentRole, analysis.years, tags, JSON.stringify(analysis.languages), analysis.summary, row.candidate_id]
+    );
+    await q(
+      "UPDATE documents SET raw_text=$1, ai_summary=$2, processed_at=now() WHERE id=$3",
+      [rawText, analysis.summary, row.document_id]
+    );
+    repaired += 1;
+  }
+  return repaired;
+}
+
 integrationsRouter.get("/", asyncHandler(async (_req, res) => {
   await ensureDefaultIntegrations();
   await removeCookieCandidates();
@@ -3378,6 +3476,7 @@ async function syncIntegration(integrationId: string) {
   let updatedRecords = 0;
   let unchangedRecords = 0;
   let errors = 0;
+  let repairedRecords = 0;
 
   if (rowsToImport.length > 0) {
     const candidatesToImport: CandidateImport[] = [];
@@ -3441,6 +3540,17 @@ async function syncIntegration(integrationId: string) {
     status = "error";
     errors = 1;
     message = `${agent?.name ?? integration.rows[0].name} no pudo sincronizar: ${scraperError}`;
+  }
+
+  if (integrationId === "aglh" && !scraperError) {
+    repairedRecords = await repairAglhCandidateDocuments({
+      ...config,
+      ...(scraperResult?.configUpdate ?? {})
+    });
+    if (repairedRecords > 0) {
+      message = `${message} Reparados desde el CV: ${repairedRecords} perfiles históricos.`;
+      if (status === "warning") status = "success";
+    }
   }
 
   if (scraperResult?.message || scraperResult?.configUpdate) {
