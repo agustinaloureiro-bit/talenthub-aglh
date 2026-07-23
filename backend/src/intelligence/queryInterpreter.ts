@@ -157,7 +157,7 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   ])];
   const languages = LANGUAGE_PATTERNS.filter(([pattern]) => pattern.test(normalizedQuery)).map(([, language]) => language);
   const seniority = SENIORITY_PATTERNS.find(([pattern]) => pattern.test(normalizedQuery))?.[1] ?? null;
-  const industries = findHints(normalizedQuery, ["supermercado", "industria", "retail", "logistica", "logística", "manufactura", "tecnologia", "tecnología", "gastronomia", "gastronomía", "restaurante"]);
+  const industries = findHints(normalizedQuery, ["supermercado", "industria", "fabrica", "fábrica", "retail", "logistica", "logística", "manufactura", "tecnologia", "tecnología", "gastronomia", "gastronomía", "restaurante"]);
   const locations = findHints(normalizedQuery, LOCATION_HINTS);
   const profileLevel = basicProfileRequested(normalizedQuery) ? "basic" : null;
 

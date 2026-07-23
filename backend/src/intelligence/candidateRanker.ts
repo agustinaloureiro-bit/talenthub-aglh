@@ -1,6 +1,6 @@
 import type { InterpretedTalentQuery, TalentCandidateResult } from "./types.js";
 import { extractCvResidence } from "../services/cvAnalysis.js";
-import { evaluateUruguayProximity } from "./uruguayGeography.js";
+import { evaluateUruguayProximity, findUruguayPlace, normalizePlaceName } from "./uruguayGeography.js";
 
 function normalizeSearchValue(value: string) {
   return value.toLowerCase()
@@ -45,6 +45,9 @@ const EQUIVALENT_TERMS: Record<string, string[]> = {
   adaptabilidad: ["flexibilidad", "entorno dinamico", "trabajo bajo presion"],
   "trabajo en equipo": ["colaboracion", "colaborativo", "equipos multidisciplinarios"],
   supermercado: ["retail", "cajero", "cajera", "repositor", "repositora", "operario", "operaria", "auxiliar", "deposito", "stock", "atencion al cliente"],
+  operario: ["operaria", "produccion", "fabrica", "manufactura", "linea de produccion", "auxiliar de produccion", "peon"],
+  operaria: ["operario", "produccion", "fabrica", "manufactura", "linea de produccion", "auxiliar de produccion", "peon"],
+  fabrica: ["produccion", "manufactura", "industria", "linea de produccion", "planta industrial"],
   "ciudad de la costa": ["solymar", "lagomar", "el pinar", "lomas de solymar", "medanos de solymar", "shangrila", "shangri la", "san jose de carrasco", "barra de carrasco"]
 };
 
@@ -163,30 +166,59 @@ function coverage(candidate: TalentCandidateResult, interpreted: InterpretedTale
 function satisfiesRequiredGroups(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   if (!interpreted.requiredGroups.length) return true;
   if (isAmbulanceDriverQuery(interpreted)) return hasAmbulanceDriverEvidence(candidate);
-  const haystack = candidateHaystack(candidate);
-  return interpreted.requiredGroups.every((group) => includesAny(haystack, group));
+  const requiresOperationalRole = interpreted.roles
+    .some((role) => ["operario", "operaria"].includes(normalizeSearchValue(role)));
+  const evidence = requiresOperationalRole
+    ? [candidate.currentRole ?? "", (candidate.tags ?? []).join(" ")].join(" ")
+    : candidateHaystack(candidate);
+  return interpreted.requiredGroups.every((group) => includesAny(evidence, group));
 }
 
 function candidateResidence(candidate: TalentCandidateResult) {
   const cvResidence = extractCvResidence(candidate.documentSnippet ?? "");
-  return cvResidence
-    ? [cvResidence.city, cvResidence.country].filter(Boolean).join(" ")
-    : [candidate.city ?? "", candidate.country ?? ""].join(" ").trim();
+  const structuredResidence = [candidate.city ?? "", candidate.country ?? ""].join(" ").trim();
+  if (!cvResidence) return structuredResidence;
+
+  const cvResidenceText = [cvResidence.city, cvResidence.country].filter(Boolean).join(" ");
+  const cvPlace = findUruguayPlace(cvResidenceText);
+  const structuredPlace = findUruguayPlace(structuredResidence);
+  const cvIsBroader = cvPlace
+    && structuredPlace
+    && cvPlace.department === structuredPlace.department
+    && normalizePlaceName(cvPlace.name) === normalizePlaceName(cvPlace.department)
+    && normalizePlaceName(structuredPlace.name) !== normalizePlaceName(cvPlace.name);
+  return cvIsBroader ? structuredResidence : cvResidenceText;
 }
 
 function candidateLocationMatch(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
-  if (!interpreted.locations.length) return { matches: true, distanceKm: null };
+  if (!interpreted.locations.length) return { matches: true, distanceKm: null, confidence: "not_requested" as const };
   const residence = candidateResidence(candidate);
-  if (!residence) return { matches: false, distanceKm: null };
+  if (!residence) return { matches: true, distanceKm: null, confidence: "unknown" as const };
 
   for (const requestedLocation of interpreted.locations) {
     const proximity = evaluateUruguayProximity(residence, requestedLocation);
-    if (proximity?.matches) return { matches: true, distanceKm: proximity.distanceKm };
+    if (proximity?.matches) return { matches: true, distanceKm: proximity.distanceKm, confidence: "nearby" as const };
+
+    const candidatePlace = findUruguayPlace(residence);
+    const requestedPlace = findUruguayPlace(requestedLocation);
+    const candidateIsBroadMontevideo = candidatePlace
+      && requestedPlace
+      && normalizePlaceName(candidatePlace.name) === "montevideo"
+      && candidatePlace.department === requestedPlace.department;
+    if (candidateIsBroadMontevideo) {
+      return { matches: true, distanceKm: null, confidence: "broad" as const };
+    }
   }
 
   const fallbackMatch = interpreted.locationGroups
     .some((group) => includesAny(residence, group));
-  return { matches: fallbackMatch, distanceKm: null };
+  if (fallbackMatch) return { matches: true, distanceKm: null, confidence: "text" as const };
+
+  const knownResidence = findUruguayPlace(residence);
+  const knownRequestedLocation = interpreted.locations.some((location) => findUruguayPlace(location));
+  return knownResidence && knownRequestedLocation
+    ? { matches: false, distanceKm: null, confidence: "incompatible" as const }
+    : { matches: true, distanceKm: null, confidence: "unknown" as const };
 }
 
 const BASIC_WORK_PATTERN = /\b(?:operari[oa]|cajer[oa]|repositor[oa]|auxiliar|pe[oó]n|deposito|dep[oó]sito|stock|almac[eé]n|limpieza|atenci[oó]n al cliente|ventas|mozo|moza|cocina|producci[oó]n|log[ií]stica|supermercado|retail)\b/i;
@@ -216,9 +248,10 @@ export function explainCandidateMatch(candidate: TalentCandidateResult, interpre
   if (interpreted.languages.length && includesAny(haystack, interpreted.languages)) reasons.push("idioma solicitado");
   const locationMatch = candidateLocationMatch(candidate, interpreted);
   if (interpreted.locations.length && locationMatch.matches) {
-    reasons.push(locationMatch.distanceKm == null
-      ? "ubicación solicitada"
-      : `ubicación solicitada (a ${locationMatch.distanceKm} km)`);
+    if (locationMatch.distanceKm != null) reasons.push(`ubicación solicitada (a ${locationMatch.distanceKm} km)`);
+    else if (locationMatch.confidence === "broad") reasons.push("vive en Montevideo, pero el barrio no está declarado");
+    else if (locationMatch.confidence === "unknown") reasons.push("ubicación pendiente de verificar");
+    else reasons.push("ubicación solicitada");
   }
   if (interpreted.seniority && normalizeSearchValue(haystack).includes(normalizeSearchValue(interpreted.seniority))) reasons.push("seniority compatible");
   const matched = resultCoverage.matchedConcepts.length ? resultCoverage.matchedConcepts.join(", ") : "coincidencia textual parcial";
@@ -253,6 +286,8 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
         + (hasContact ? 5 : 0)
         + (interpreted.seniority && seniorityMatch ? 5 : 0)
         + (locationMatch.distanceKm == null ? 0 : Math.max(0, 12 - locationMatch.distanceKm * 0.5))
+        + (locationMatch.confidence === "broad" ? 2 : 0)
+        - (locationMatch.confidence === "unknown" ? 5 : 0)
         + recencyBonus(candidate.latestSourceAt)
         + basicProfileSuitability(candidate, interpreted).bonus
       )));

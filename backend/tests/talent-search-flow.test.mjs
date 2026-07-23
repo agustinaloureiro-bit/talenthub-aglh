@@ -284,6 +284,76 @@ test("prioriza ubicación y sistema cuando se piden en lenguaje natural", () => 
   assert.match(ranked[0].matchReason, /ubicación solicitada/i);
 });
 
+test("operario de fabrica cerca del Prado recupera equivalentes y no oculta Montevideo sin barrio", () => {
+  const interpreted = interpretTalentQuery("Busco un operario para fábrica, tiene que vivir cerca del Prado y tener experiencia en fábrica.");
+  const ranked = rerankCandidates([
+    {
+      id: "prado",
+      fullName: "Carlos Produccion",
+      currentRole: "Auxiliar de producción",
+      city: "Prado",
+      tags: ["produccion", "manufactura"],
+      qualityScore: 65,
+      documentCount: 1,
+      documentSnippet: "Experiencia en fábrica y línea de producción. Domicilio: Prado, Montevideo.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "montevideo",
+      fullName: "Mario Operario",
+      currentRole: "Operario",
+      city: "Montevideo",
+      tags: ["fabrica"],
+      qualityScore: 70,
+      documentCount: 1,
+      documentSnippet: "Operario de fábrica con experiencia en planta industrial. Montevideo.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "sin-ubicacion",
+      fullName: "Pedro Manufactura",
+      currentRole: "Operario de producción",
+      tags: ["manufactura"],
+      qualityScore: 60,
+      documentCount: 1,
+      documentSnippet: "Experiencia en fábrica, producción y tareas de planta.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "maldonado",
+      fullName: "Luis Distante",
+      currentRole: "Operario",
+      city: "Maldonado",
+      tags: ["fabrica"],
+      qualityScore: 90,
+      documentCount: 1,
+      documentSnippet: "Operario de fábrica. Domicilio: Maldonado, Uruguay.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "administrativo",
+      fullName: "Andres Oficina",
+      currentRole: "Administrativo",
+      city: "Prado",
+      tags: ["administracion"],
+      qualityScore: 100,
+      documentCount: 1,
+      documentSnippet: "Tareas administrativas en una fábrica.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.deepEqual(ranked.map((candidate) => candidate.id), ["prado", "montevideo", "sin-ubicacion"]);
+  assert.match(ranked[0].matchReason, /ubicación solicitada/i);
+  assert.match(ranked[1].matchReason, /barrio no está declarado/i);
+  assert.match(ranked[2].matchReason, /ubicación pendiente de verificar/i);
+});
+
 test("amplia la consulta conceptual antes de buscar en todos los CV", async () => {
   let providerQuery = "";
   const engine = new RecruitmentIntelligenceEngine(async (query) => {
