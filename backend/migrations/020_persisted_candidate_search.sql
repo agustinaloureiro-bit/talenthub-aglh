@@ -12,7 +12,7 @@ BEGIN
   NEW.search_vector := to_tsvector(
     'spanish'::regconfig,
     coalesce(NEW.full_name, '') || ' ' ||
-    coalesce(NEW.current_role, '') || ' ' ||
+    coalesce(NEW."current_role", '') || ' ' ||
     coalesce(NEW.city, '') || ' ' ||
     coalesce(NEW.country, '') || ' ' ||
     array_to_string(coalesce(NEW.ai_tags, '{}'::text[]), ' ') || ' ' ||
@@ -31,12 +31,12 @@ EXECUTE FUNCTION talenthub_candidate_search_vector();
 
 DROP TRIGGER IF EXISTS candidates_search_vector_update_trigger ON candidates;
 CREATE TRIGGER candidates_search_vector_update_trigger
-BEFORE UPDATE OF full_name, current_role, city, country, ai_tags, ai_summary
+BEFORE UPDATE OF full_name, "current_role", city, country, ai_tags, ai_summary
 ON candidates
 FOR EACH ROW
 WHEN (
   OLD.full_name IS DISTINCT FROM NEW.full_name
-  OR OLD.current_role IS DISTINCT FROM NEW.current_role
+  OR OLD."current_role" IS DISTINCT FROM NEW."current_role"
   OR OLD.city IS DISTINCT FROM NEW.city
   OR OLD.country IS DISTINCT FROM NEW.country
   OR OLD.ai_tags IS DISTINCT FROM NEW.ai_tags
@@ -48,7 +48,7 @@ UPDATE candidates
 SET search_vector = to_tsvector(
   'spanish'::regconfig,
   coalesce(full_name, '') || ' ' ||
-  coalesce(current_role, '') || ' ' ||
+  coalesce("current_role", '') || ' ' ||
   coalesce(city, '') || ' ' ||
   coalesce(country, '') || ' ' ||
   array_to_string(coalesce(ai_tags, '{}'::text[]), ' ') || ' ' ||
