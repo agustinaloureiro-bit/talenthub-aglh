@@ -3376,6 +3376,7 @@ async function syncIntegration(integrationId: string) {
     : "La integracion necesita estado Conectado y al menos una credencial, sesion o exportado guardado.";
   let newRecords = 0;
   let updatedRecords = 0;
+  let unchangedRecords = 0;
   let errors = 0;
 
   if (rowsToImport.length > 0) {
@@ -3414,6 +3415,7 @@ async function syncIntegration(integrationId: string) {
           const result = await importCandidate(integrationId, candidate, isUsableCandidate);
           if (result === "new") newRecords += 1;
           if (result === "updated") updatedRecords += 1;
+          if (result === "unchanged") unchangedRecords += 1;
           if (result === "skipped") errors += 1;
         } catch (error: any) {
           errors += 1;
@@ -3425,10 +3427,10 @@ async function syncIntegration(integrationId: string) {
       }
     }));
     const savedRecords = newRecords + updatedRecords;
-    status = savedRecords > 0 ? (errors > 0 ? "warning" : "success") : (errors > 0 ? "error" : "warning");
+    status = savedRecords > 0 || unchangedRecords > 0 ? (errors > 0 ? "warning" : "success") : (errors > 0 ? "error" : "warning");
     message = scraperResult?.message
-      ? `${scraperResult.message} Importados: ${newRecords} nuevos, ${updatedRecords} actualizados, ${errors} omitidos.`
-      : `Historico procesado: ${newRecords} nuevos, ${updatedRecords} actualizados, ${errors} omitidos.`;
+      ? `${scraperResult.message} Importados: ${newRecords} nuevos, ${updatedRecords} actualizados, ${unchangedRecords} sin cambios, ${errors} omitidos.`
+      : `Historico procesado: ${newRecords} nuevos, ${updatedRecords} actualizados, ${unchangedRecords} sin cambios, ${errors} omitidos.`;
   } else if (scraperResult) {
     message = scraperResult.message;
     if (/^requires_/i.test(cleanText(scraperResult.configUpdate?.sessionStatus))) {
@@ -3465,7 +3467,7 @@ async function syncIntegration(integrationId: string) {
       newRecords + updatedRecords,
       errors,
       message,
-      JSON.stringify({ hasConfig, source: integration.rows[0].name })
+      JSON.stringify({ hasConfig, source: integration.rows[0].name, unchangedRecords })
     ]
   );
 

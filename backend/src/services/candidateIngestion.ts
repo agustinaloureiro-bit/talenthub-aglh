@@ -3,7 +3,7 @@ import { createHash } from "crypto";
 import { q } from "../db/pool.js";
 import { namesLikelySame, normalizePhoneIdentity } from "./candidateIdentity.js";
 
-export type CandidateImportResult = "new" | "updated" | "skipped";
+export type CandidateImportResult = "new" | "updated" | "unchanged" | "skipped";
 
 export type CandidateValidator = (candidate: CandidateImport, sourceType: string) => boolean;
 
@@ -162,7 +162,56 @@ export function documentContentHash(fileData: Buffer | null, rawText: string | n
   return text ? `text-sha256:${createHash("sha256").update(text).digest("hex")}` : null;
 }
 
-async function saveSource(candidateId: string, sourceType: string, candidate: CandidateImport) {
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, stableValue(item)])
+    );
+  }
+  return value;
+}
+
+export function candidateContentHash(candidate: CandidateImport) {
+  const documents = (candidate.documents ?? []).map((document) => {
+    const fileData = documentFileBuffer(document.fileDataBase64);
+    return {
+      type: document.type,
+      fileName: document.fileName,
+      fileUrl: document.fileUrl ?? null,
+      mimeType: document.mimeType ?? null,
+      sourceId: document.sourceId ?? null,
+      sourcePath: document.sourcePath ?? null,
+      isPrimaryCv: Boolean(document.isPrimaryCv),
+      sizeBytes: document.sizeBytes ?? fileData?.byteLength ?? null,
+      fileHash: cleanDbText(document.fileHash) ?? documentContentHash(fileData, document.rawText)
+    };
+  }).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  const payload = stableValue({
+    fullName: candidate.fullName,
+    firstName: candidate.firstName ?? null,
+    lastName: candidate.lastName ?? null,
+    email: [...candidate.email].sort(),
+    phone: [...candidate.phone].sort(),
+    city: candidate.city ?? null,
+    country: candidate.country ?? null,
+    linkedinUrl: candidate.linkedinUrl ?? null,
+    currentRole: candidate.currentRole ?? null,
+    seniority: candidate.seniority ?? null,
+    years: candidate.years ?? null,
+    tags: [...candidate.tags].sort(),
+    languages: candidate.languages ?? [],
+    summary: candidate.summary ?? null,
+    sourceUrl: candidate.sourceUrl ?? null,
+    sourceCreatedAt: candidate.sourceCreatedAt ?? null,
+    documents
+  });
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
+
+async function saveSource(candidateId: string, sourceType: string, candidate: CandidateImport, contentHash: string) {
   const sourceCreatedAt = candidateSourceDate(candidate);
   const existing = await q<{ id: string }>(
     "SELECT id FROM candidate_sources WHERE candidate_id=$1 AND source_type=$2 AND coalesce(source_id,'')=coalesce($3,'') LIMIT 1",
@@ -171,13 +220,13 @@ async function saveSource(candidateId: string, sourceType: string, candidate: Ca
 
   if (existing.rows[0]) {
     await q(
-      "UPDATE candidate_sources SET source_url=coalesce($1,source_url), source_data=$2::jsonb, source_created_at=coalesce($3::timestamptz,source_created_at), last_synced_at=now(), is_active=true WHERE id=$4",
-      [candidate.sourceUrl, JSON.stringify(candidate.raw), sourceCreatedAt, existing.rows[0].id]
+      "UPDATE candidate_sources SET source_url=coalesce($1,source_url), source_data=$2::jsonb, source_created_at=coalesce($3::timestamptz,source_created_at), content_hash=$4, last_synced_at=now(), is_active=true WHERE id=$5",
+      [candidate.sourceUrl, JSON.stringify(candidate.raw), sourceCreatedAt, contentHash, existing.rows[0].id]
     );
   } else {
     await q(
-      "INSERT INTO candidate_sources (candidate_id, source_type, source_id, source_url, source_data, source_created_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6::timestamptz)",
-      [candidateId, sourceType, candidate.sourceId, candidate.sourceUrl, JSON.stringify(candidate.raw), sourceCreatedAt]
+      "INSERT INTO candidate_sources (candidate_id, source_type, source_id, source_url, source_data, source_created_at, content_hash) VALUES ($1,$2,$3,$4,$5::jsonb,$6::timestamptz,$7)",
+      [candidateId, sourceType, candidate.sourceId, candidate.sourceUrl, JSON.stringify(candidate.raw), sourceCreatedAt, contentHash]
     );
   }
 
@@ -258,13 +307,25 @@ export async function importCandidate(sourceType: string, candidate: CandidateIm
     return "skipped";
   }
   let existingId: string | null = null;
+  const contentHash = candidateContentHash(candidate);
 
   if (candidate.sourceId) {
-    const bySource = await q<{ candidate_id: string }>(
-      "SELECT candidate_id FROM candidate_sources WHERE source_type=$1 AND source_id=$2 LIMIT 1",
+    const bySource = await q<{ candidate_id: string; content_hash: string | null }>(
+      "SELECT candidate_id, content_hash FROM candidate_sources WHERE source_type=$1 AND source_id=$2 LIMIT 1",
       [sourceType, candidate.sourceId]
     );
     existingId = bySource.rows[0]?.candidate_id ?? null;
+    if (existingId && bySource.rows[0]?.content_hash === contentHash) {
+      await q(
+        `UPDATE candidate_sources
+         SET last_synced_at=now(), is_active=true,
+           source_created_at=coalesce(source_created_at,$1::timestamptz)
+         WHERE candidate_id=$2 AND source_type=$3 AND source_id=$4`,
+        [candidateSourceDate(candidate), existingId, sourceType, candidate.sourceId]
+      );
+      await q("UPDATE candidates SET last_seen_at=now() WHERE id=$1", [existingId]);
+      return "unchanged";
+    }
   }
 
   if (!existingId && candidate.email.length > 0) {
@@ -330,7 +391,7 @@ export async function importCandidate(sourceType: string, candidate: CandidateIm
     );
     const updatedId = updated.rows[0]?.id;
     if (updatedId) {
-      await saveSource(updatedId, sourceType, candidate);
+      await saveSource(updatedId, sourceType, candidate, contentHash);
       await saveDocuments(updatedId, sourceType, candidate);
       return "updated";
     }
@@ -345,7 +406,7 @@ export async function importCandidate(sourceType: string, candidate: CandidateIm
       candidate.country, candidate.linkedinUrl, candidate.currentRole, candidate.seniority, candidate.years,
       candidate.tags, JSON.stringify(candidate.languages ?? []), candidate.summary, candidate.qualityScore]
   );
-  await saveSource(inserted.rows[0].id, sourceType, candidate);
+  await saveSource(inserted.rows[0].id, sourceType, candidate, contentHash);
   await saveDocuments(inserted.rows[0].id, sourceType, candidate);
   return "new";
 }

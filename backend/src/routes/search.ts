@@ -134,7 +134,6 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     params.push(new Date(Date.now() - recencyDays * 86_400_000).toISOString());
     candidateFilter += ` AND EXISTS (SELECT 1 FROM candidate_sources recent_source WHERE recent_source.candidate_id=c.id AND recent_source.is_active=true AND recent_source.source_created_at >= $${params.length}::timestamptz)`;
   }
-  const candidateText = "coalesce(c.full_name,'') || ' ' || coalesce(c.current_role,'') || ' ' || coalesce(c.city,'') || ' ' || coalesce(c.country,'') || ' ' || array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' || coalesce(c.ai_summary,'')";
   const documentText = "coalesce(d.raw_text,'') || ' ' || coalesce(d.file_name,'')";
   const { rows } = await qWithTimeout(
     `WITH search_terms AS MATERIALIZED (
@@ -142,11 +141,11 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
          websearch_to_tsquery('spanish', $2) AS broad_query
      ), candidate_hits AS (
        SELECT c.id,
-         0.02 + ts_rank_cd(to_tsvector('spanish', ${candidateText}), search_terms.broad_query)
-           + CASE WHEN to_tsvector('spanish', ${candidateText}) @@ search_terms.exact_query THEN 1 ELSE 0 END AS rank
+         0.02 + ts_rank_cd(c.search_vector, search_terms.broad_query)
+           + CASE WHEN c.search_vector @@ search_terms.exact_query THEN 1 ELSE 0 END AS rank
        FROM candidates c CROSS JOIN search_terms
        WHERE ${candidateFilter}
-         AND to_tsvector('spanish', ${candidateText}) @@ search_terms.broad_query
+         AND c.search_vector @@ search_terms.broad_query
 
        UNION ALL
 
