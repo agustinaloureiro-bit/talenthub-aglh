@@ -301,13 +301,13 @@ test("operario de fabrica cerca del Prado recupera equivalentes y no oculta Mont
     },
     {
       id: "montevideo",
-      fullName: "Mario Operario",
-      currentRole: "Operario",
+      fullName: "Mario Operador",
+      currentRole: "Operador de maquinaria",
       city: "Montevideo",
-      tags: ["fabrica"],
+      tags: ["planta industrial"],
       qualityScore: 70,
       documentCount: 1,
-      documentSnippet: "Operario de fábrica con experiencia en planta industrial. Montevideo.",
+      documentSnippet: "Operador de maquinaria con experiencia en planta industrial. Montevideo.",
       score: 0,
       matchReason: ""
     },
@@ -319,6 +319,18 @@ test("operario de fabrica cerca del Prado recupera equivalentes y no oculta Mont
       qualityScore: 60,
       documentCount: 1,
       documentSnippet: "Experiencia en fábrica, producción y tareas de planta.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "experiencia-previa",
+      fullName: "Martin Experiencia",
+      currentRole: "Vendedor",
+      city: "Prado",
+      tags: ["ventas"],
+      qualityScore: 75,
+      documentCount: 1,
+      documentSnippet: "Actualmente vendedor. Anteriormente operario de línea de producción y manejo de maquinaria en fábrica.",
       score: 0,
       matchReason: ""
     },
@@ -339,7 +351,7 @@ test("operario de fabrica cerca del Prado recupera equivalentes y no oculta Mont
       fullName: "Andres Oficina",
       currentRole: "Administrativo",
       city: "Prado",
-      tags: ["administracion"],
+      tags: ["administracion", "fabrica"],
       qualityScore: 100,
       documentCount: 1,
       documentSnippet: "Tareas administrativas en una fábrica.",
@@ -348,10 +360,14 @@ test("operario de fabrica cerca del Prado recupera equivalentes y no oculta Mont
     }
   ], interpreted);
 
-  assert.deepEqual(ranked.map((candidate) => candidate.id), ["prado", "montevideo", "sin-ubicacion"]);
+  assert.deepEqual(ranked.map((candidate) => candidate.id), ["prado", "montevideo", "sin-ubicacion", "experiencia-previa"]);
   assert.match(ranked[0].matchReason, /ubicación solicitada/i);
   assert.match(ranked[1].matchReason, /barrio no está declarado/i);
   assert.match(ranked[2].matchReason, /ubicación pendiente de verificar/i);
+  assert.ok(ranked[0].score > ranked[1].score);
+  assert.ok(ranked[1].score > ranked[2].score);
+  assert.ok(ranked[3].score < 70);
+  assert.match(ranked[3].matchReason, /no como perfil principal/i);
 });
 
 test("amplia la consulta conceptual antes de buscar en todos los CV", async () => {

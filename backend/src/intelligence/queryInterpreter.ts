@@ -45,6 +45,9 @@ const ROLE_HINTS = [
   "contador",
   "recursos humanos",
   "operario",
+  "operaria",
+  "operador",
+  "operadora",
   "tecnico",
   "técnico"
 ];

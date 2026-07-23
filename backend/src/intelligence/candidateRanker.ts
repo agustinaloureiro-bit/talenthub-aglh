@@ -45,9 +45,11 @@ const EQUIVALENT_TERMS: Record<string, string[]> = {
   adaptabilidad: ["flexibilidad", "entorno dinamico", "trabajo bajo presion"],
   "trabajo en equipo": ["colaboracion", "colaborativo", "equipos multidisciplinarios"],
   supermercado: ["retail", "cajero", "cajera", "repositor", "repositora", "operario", "operaria", "auxiliar", "deposito", "stock", "atencion al cliente"],
-  operario: ["operaria", "produccion", "fabrica", "manufactura", "linea de produccion", "auxiliar de produccion", "peon"],
-  operaria: ["operario", "produccion", "fabrica", "manufactura", "linea de produccion", "auxiliar de produccion", "peon"],
-  fabrica: ["produccion", "manufactura", "industria", "linea de produccion", "planta industrial"],
+  operario: ["operaria", "operador", "operadora", "produccion", "manufactura", "linea de produccion", "auxiliar de produccion", "peon", "maquinista", "envasado", "empaque"],
+  operaria: ["operario", "operador", "operadora", "produccion", "manufactura", "linea de produccion", "auxiliar de produccion", "peon", "maquinista", "envasado", "empaque"],
+  operador: ["operario", "operaria", "operadora", "produccion", "manufactura", "maquinista", "linea de produccion"],
+  operadora: ["operario", "operaria", "operador", "produccion", "manufactura", "maquinista", "linea de produccion"],
+  fabrica: ["produccion", "manufactura", "industria", "linea de produccion", "planta industrial", "envasado", "empaque", "control de calidad"],
   "ciudad de la costa": ["solymar", "lagomar", "el pinar", "lomas de solymar", "medanos de solymar", "shangrila", "shangri la", "san jose de carrasco", "barra de carrasco"]
 };
 
@@ -159,8 +161,27 @@ function hasAmbulanceDriverEvidence(candidate: TalentCandidateResult) {
 function coverage(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   const haystack = candidateHaystack(candidate);
   const concepts = requestedConcepts(interpreted);
-  const matchedConcepts = concepts.filter((concept) => conceptMatchesText(haystack, interpreted, concept));
+  const requestedLocations = new Set(interpreted.locations.map(normalizeSearchValue));
+  const locationMatch = candidateLocationMatch(candidate, interpreted);
+  const matchedConcepts = concepts.filter((concept) => {
+    if (!requestedLocations.has(normalizeSearchValue(concept))) {
+      return conceptMatchesText(haystack, interpreted, concept);
+    }
+    return locationMatch.matches && !["unknown", "broad"].includes(locationMatch.confidence);
+  });
   return { required: concepts.length, matched: matchedConcepts.length, ratio: concepts.length ? matchedConcepts.length / concepts.length : 1, concepts, matchedConcepts };
+}
+
+const FACTORY_OPERATION_ROLE_PATTERN = /\b(?:operari[oa]|operador(?:a)?|auxiliar de producci[oó]n|pe[oó]n|maquinista|producci[oó]n|manufactura|l[ií]nea de producci[oó]n|envasad[oa]|empaquetad[oa]|armador(?:a)?|control de calidad)\b/i;
+const EXPLICIT_FACTORY_EXPERIENCE_PATTERN = /\b(?:operari[oa]|operador(?:a)?|auxiliar de producci[oó]n|pe[oó]n|maquinista|l[ií]nea de producci[oó]n|envasad[oa]|empaquetad[oa]|armador(?:a)?|control de calidad|manejo de maquinarias?|operaci[oó]n de maquinarias?)\b/i;
+const CLEARLY_NON_OPERATIONAL_ROLE_PATTERN = /\b(?:administrativ[oa]|contador(?:a)?|abogad[oa]|ingenier[oa]|arquitect[oa]|psic[oó]log[oa]|recursos humanos|marketing|comercial|ventas|secretari[oa])\b/i;
+
+function hasFactoryOperationsRoleEvidence(candidate: TalentCandidateResult) {
+  const currentRole = candidate.currentRole ?? "";
+  if (!CLEARLY_NON_OPERATIONAL_ROLE_PATTERN.test(currentRole) && FACTORY_OPERATION_ROLE_PATTERN.test(currentRole)) return true;
+  const cvEvidence = [candidate.summary ?? "", candidate.documentSnippet ?? ""].join(" ");
+  if (EXPLICIT_FACTORY_EXPERIENCE_PATTERN.test(cvEvidence)) return true;
+  return !currentRole.trim() && FACTORY_OPERATION_ROLE_PATTERN.test((candidate.tags ?? []).join(" "));
 }
 
 function satisfiesRequiredGroups(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
@@ -168,9 +189,8 @@ function satisfiesRequiredGroups(candidate: TalentCandidateResult, interpreted: 
   if (isAmbulanceDriverQuery(interpreted)) return hasAmbulanceDriverEvidence(candidate);
   const requiresOperationalRole = interpreted.roles
     .some((role) => ["operario", "operaria"].includes(normalizeSearchValue(role)));
-  const evidence = requiresOperationalRole
-    ? [candidate.currentRole ?? "", (candidate.tags ?? []).join(" ")].join(" ")
-    : candidateHaystack(candidate);
+  if (requiresOperationalRole && !hasFactoryOperationsRoleEvidence(candidate)) return false;
+  const evidence = candidateHaystack(candidate);
   return interpreted.requiredGroups.every((group) => includesAny(evidence, group));
 }
 
@@ -269,7 +289,11 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
       const locationMatch = candidateLocationMatch(candidate, interpreted);
       const conceptCoverage = coverage(candidate, interpreted);
       const documentText = candidate.documentSnippet ?? "";
-      const documentMatches = conceptCoverage.concepts.filter((concept) => conceptMatchesText(documentText, interpreted, concept)).length;
+      const requestedLocations = new Set(interpreted.locations.map(normalizeSearchValue));
+      const documentMatches = conceptCoverage.concepts
+        .filter((concept) => !requestedLocations.has(normalizeSearchValue(concept)))
+        .filter((concept) => conceptMatchesText(documentText, interpreted, concept))
+        .length;
       const documentRatio = conceptCoverage.required ? documentMatches / conceptCoverage.required : 0;
       const profileText = candidateProfileText(candidate);
       const profileMatches = conceptCoverage.concepts.filter((concept) => conceptMatchesProfile(candidate, interpreted, concept)).length;
