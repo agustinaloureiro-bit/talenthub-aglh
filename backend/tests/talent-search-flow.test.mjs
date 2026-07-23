@@ -5,6 +5,7 @@ const { interpretTalentQuery } = await import("../dist/intelligence/queryInterpr
 const { isCredibleCandidateName, rerankCandidates } = await import("../dist/intelligence/candidateRanker.js");
 const { RecruitmentIntelligenceEngine } = await import("../dist/intelligence/intelligenceEngine.js");
 const { downloadContentDisposition } = await import("../dist/routes/candidates.js");
+const { evaluateUruguayProximity, nearbyUruguayLocations } = await import("../dist/intelligence/uruguayGeography.js");
 
 test("interpreta abogado con ingles como rol e idioma", () => {
   const interpreted = interpretTalentQuery("Necesito un abogado con inglés.");
@@ -135,8 +136,24 @@ test("interpreta supermercado sin experiencia como perfil operativo y expande Ci
   assert.ok(interpreted.locations.includes("ciudad de la costa"));
   assert.equal(interpreted.profileLevel, "basic");
   assert.ok(interpreted.locationGroups[0].includes("solymar"));
-  assert.ok(interpreted.locationGroups[0].includes("canelones"));
+  assert.ok(interpreted.locationGroups[0].includes("lagomar"));
+  assert.ok(!interpreted.locationGroups[0].includes("canelones"));
   assert.deepEqual(interpreted.ignoredCriteria, ["genero"]);
+});
+
+test("calcula cercania geografica real para localidades uruguayas", () => {
+  const solymar = evaluateUruguayProximity("Solymar", "Ciudad de la Costa");
+  const canelones = evaluateUruguayProximity("Canelones", "Ciudad de la Costa");
+  const maldonado = evaluateUruguayProximity("Maldonado", "Ciudad de la Costa");
+  const nearby = nearbyUruguayLocations("Ciudad de la Costa");
+
+  assert.equal(solymar?.matches, true);
+  assert.ok((solymar?.distanceKm ?? 99) < 5);
+  assert.equal(canelones?.matches, false);
+  assert.equal(maldonado?.matches, false);
+  assert.ok(nearby.includes("Lagomar"));
+  assert.ok(!nearby.includes("Canelones"));
+  assert.ok(!nearby.includes("Maldonado"));
 });
 
 test("un puesto basico en Ciudad de la Costa incluye perfiles operativos cercanos y excluye ubicaciones o profesiones incompatibles", () => {
@@ -155,10 +172,10 @@ test("un puesto basico en Ciudad de la Costa incluye perfiles operativos cercano
       matchReason: ""
     },
     {
-      id: "canelones",
-      fullName: "Pablo Produccion",
+      id: "lagomar",
+      fullName: "Pablo Operativo",
       currentRole: "Operario de producción",
-      city: "Canelones",
+      city: "Lagomar",
       tags: ["produccion"],
       qualityScore: 55,
       documentCount: 1,
@@ -216,8 +233,8 @@ test("un puesto basico en Ciudad de la Costa incluye perfiles operativos cercano
     }
   ], interpreted);
 
-  assert.deepEqual(ranked.map((candidate) => candidate.id), ["solymar", "canelones"]);
-  assert.match(ranked[0].matchReason, /ubicación solicitada/i);
+  assert.deepEqual(ranked.map((candidate) => candidate.id), ["solymar", "lagomar"]);
+  assert.match(ranked[0].matchReason, /ubicación solicitada \(a \d+(?:\.\d+)? km\)/i);
 });
 
 test("no usa el genero solicitado para recuperar ni ordenar candidatos", async () => {

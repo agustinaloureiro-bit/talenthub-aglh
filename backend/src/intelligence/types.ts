@@ -46,6 +46,7 @@ export type TalentCandidateResult = {
   primaryDocumentSourceType?: string | null;
   documentSnippet?: string | null;
   latestSourceAt?: string | null;
+  matchDistanceKm?: number | null;
   score: number;
   matchReason: string;
 };

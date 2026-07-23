@@ -77,8 +77,9 @@ La busqueda no consulta Gmail, AGLH, Buscojobs ni Yoiners en tiempo real.
 - La deduplicacion no tiene una cola de revision manual para casos ambiguos.
 - La extraccion estructurada cubre areas, idiomas, residencia y resumen, pero no
   persiste toda la experiencia y educacion de todos los conectores.
-- La geografia usa conocimiento de localidades y evidencia del CV, pero no una
-  tabla completa de coordenadas y distancias.
+- La geografia usa coordenadas, radios y distancia real para las localidades
+  uruguayas catalogadas, ademas de priorizar el domicilio extraido del CV; el
+  catalogo todavia no cubre todo el territorio nacional.
 - El full-text es permanente; los campos `embedding` existen, pero no hay un
   proveedor configurado ni busqueda vectorial activa.
 - Los cursores dependen de las capacidades reales de cada plataforma.
@@ -90,7 +91,7 @@ La busqueda no consulta Gmail, AGLH, Buscojobs ni Yoiners en tiempo real.
 - Reconstruccion completa del indice como trabajo administrativo en segundo
   plano con progreso.
 - Pipeline de embeddings con version de modelo y revectorizacion controlada.
-- Tabla geografica de Uruguay con coordenadas y radios.
+- Completar el catalogo geografico de Uruguay y permitir radios configurables.
 - Aprendizaje a partir de acciones del reclutador.
 - Metricas persistidas de latencia, cobertura y calidad del indice.
 - Pruebas end-to-end contra una base efimera y navegador en CI.

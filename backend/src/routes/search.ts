@@ -5,6 +5,7 @@ import { asyncHandler } from "../middleware/errors.js";
 import { RecruitmentIntelligenceEngine } from "../intelligence/intelligenceEngine.js";
 import type { TalentSearchFilters } from "../intelligence/types.js";
 import { extractCvResidence } from "../services/cvAnalysis.js";
+import { knownUruguayLocationNames, nearbyUruguayLocations, normalizePlaceName } from "../intelligence/uruguayGeography.js";
 
 export const searchRouter = Router();
 
@@ -81,9 +82,9 @@ function expandedSearchTerms(query: string) {
     ambulancia: ["chofer de ambulancia", "conductor de ambulancia", "ambulanciero", "emergencia movil", "emergencia médica", "traslado de pacientes"],
     supermercado: ["retail", "cajero", "cajera", "repositor", "repositora", "operario", "operaria", "auxiliar", "deposito", "depósito", "stock", "atencion al cliente", "atención al cliente"]
   };
-  const geographicTerms = normalizedQuery.includes("ciudad de la costa")
-    ? ["ciudad de la costa", "solymar", "lagomar", "el pinar", "shangrila", "san jose de carrasco", "barra de carrasco", "canelones"]
-    : [];
+  const geographicTerms = knownUruguayLocationNames()
+    .filter((location) => normalizedQuery.includes(normalizePlaceName(location)))
+    .flatMap((location) => nearbyUruguayLocations(location));
   const terms = [...new Set([...words, ...words.flatMap((word) => extras[word] ?? []), ...geographicTerms].map(normalizeSearchText))]
     .filter(Boolean);
   return terms.length ? terms : [normalizedQuery];

@@ -1,4 +1,5 @@
 import type { InterpretedTalentQuery } from "./types.js";
+import { knownUruguayLocationNames, nearbyUruguayLocations } from "./uruguayGeography.js";
 
 const LANGUAGE_PATTERNS: Array<[RegExp, string]> = [
   [/ingles|ingl[eé]s|english/i, "ingles"],
@@ -48,13 +49,7 @@ const ROLE_HINTS = [
   "técnico"
 ];
 
-const LOCATION_HINTS = [
-  "montevideo", "canelones", "maldonado", "san jose", "colonia", "salto", "paysandu", "rivera",
-  "pocitos", "cordon", "centro", "ciudad vieja", "carrasco", "malvin", "punta carretas", "la blanqueada",
-  "tres cruces", "prado", "aguada", "goes", "buceo", "parque batlle", "union", "penarol", "colon",
-  "manga", "cerro", "la teja", "paso molino", "las piedras", "pando", "ciudad de la costa",
-  "solymar", "lagomar", "el pinar", "shangrila", "shangri la", "san jose de carrasco", "barra de carrasco"
-];
+const LOCATION_HINTS = [...new Set(knownUruguayLocationNames().map(normalizeHint))];
 
 const SKILL_HINTS = [
   "mejora continua",
@@ -138,15 +133,8 @@ function requiredGroupsForQuery(query: string, roles: string[]) {
   return roles.map((role) => [role]);
 }
 
-const CIUDAD_DE_LA_COSTA_AREA = [
-  "ciudad de la costa", "solymar", "lagomar", "el pinar", "shangrila", "shangri la",
-  "san jose de carrasco", "barra de carrasco", "canelones"
-];
-
 function locationGroupsForQuery(locations: string[]) {
-  return locations.map((location) => normalizeHint(location) === "ciudad de la costa"
-    ? CIUDAD_DE_LA_COSTA_AREA
-    : [location]);
+  return locations.map((location) => nearbyUruguayLocations(location).map(normalizeHint));
 }
 
 function basicProfileRequested(query: string) {
