@@ -105,6 +105,91 @@ type CvAnalysis = {
   warning?: string | null;
 };
 
+type FilterOption = {
+  value: string;
+  label: string;
+};
+
+type FilterField = {
+  key: string;
+  type: "text" | "select";
+  placeholder?: string;
+  options?: FilterOption[];
+  parse?: (value: string) => string | number;
+};
+
+function FilterControls({
+  fields,
+  values,
+  onChange,
+  onEnter,
+  className
+}: {
+  fields: FilterField[];
+  values: Record<string, string | number>;
+  onChange: (key: string, value: string | number) => void;
+  onEnter?: () => void;
+  className: string;
+}) {
+  return (
+    <div className={className}>
+      {fields.map((field) => field.type === "text" ? (
+        <input
+          key={field.key}
+          className="field"
+          placeholder={field.placeholder}
+          value={values[field.key] ?? ""}
+          onChange={(event) => onChange(field.key, event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") onEnter?.();
+          }}
+        />
+      ) : (
+        <select
+          key={field.key}
+          className="field"
+          value={values[field.key] ?? ""}
+          onChange={(event) => onChange(field.key, field.parse ? field.parse(event.target.value) : event.target.value)}
+        >
+          {(field.options ?? []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      ))}
+    </div>
+  );
+}
+
+const sourceOptions: FilterOption[] = [
+  { value: "", label: "Todas las fuentes" },
+  { value: "gmail", label: "Gmail" },
+  { value: "buscojobs", label: "Buscojobs" },
+  { value: "yoiners", label: "Yoiners" },
+  { value: "aglh", label: "AGLH" }
+];
+
+const seniorityOptions: FilterOption[] = [
+  { value: "", label: "Todo seniority" },
+  { value: "Junior", label: "Junior" },
+  { value: "Semi-Senior", label: "Semi-Senior" },
+  { value: "Senior", label: "Senior" },
+  { value: "Lead", label: "Lead" },
+  { value: "Manager", label: "Manager" }
+];
+
+const contactOptions: FilterOption[] = [
+  { value: "", label: "Cualquier contacto" },
+  { value: "phone", label: "Con teléfono" },
+  { value: "email", label: "Con email" },
+  { value: "both", label: "Con teléfono y email" }
+];
+
+const recencyOptions: FilterOption[] = [
+  { value: "", label: "Cualquier fecha" },
+  { value: "7d", label: "Últimos 7 días" },
+  { value: "30d", label: "Últimos 30 días" },
+  { value: "90d", label: "Últimos 3 meses" },
+  { value: "365d", label: "Último año" }
+];
+
 const nav = [
   ["finder", Search, "Talent Finder"],
   ["candidates", Users, "Candidatos"],
@@ -243,21 +328,38 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
     setSearch(""); setSource(""); setContact(""); setLocation(""); setSeniority(""); setDocument(""); setStatus("active"); setRecency(""); setSort("updated");
     load(0, { search: "", source: "", contact: "", location: "", seniority: "", document: "", status: "active", recency: "", sort: "updated" });
   }
+  const filterSetters: Record<string, (value: string) => void> = {
+    search: setSearch,
+    location: setLocation,
+    seniority: setSeniority,
+    source: setSource,
+    contact: setContact,
+    document: setDocument,
+    status: setStatus,
+    recency: setRecency,
+    sort: setSort
+  };
+  const updateFilter = (key: string, value: string | number) => filterSetters[key]?.(String(value));
+  const filterValues = { search, source, contact, location, seniority, document, status, recency, sort };
+  const primaryFields: FilterField[] = [
+    { key: "search", type: "text", placeholder: "Buscar por nombre, experiencia, rol o contacto" },
+    { key: "location", type: "text", placeholder: "Ciudad o país" },
+    { key: "seniority", type: "select", options: seniorityOptions }
+  ];
+  const secondaryFields: FilterField[] = [
+    { key: "source", type: "select", options: sourceOptions },
+    { key: "contact", type: "select", options: contactOptions },
+    { key: "document", type: "select", options: [{ value: "", label: "Cualquier CV" }, { value: "pdf", label: "CV en PDF" }, { value: "word", label: "CV en Word" }] },
+    { key: "status", type: "select", options: [{ value: "active", label: "Base confiable" }, { value: "needs_review", label: "Requieren revisión" }] },
+    { key: "recency", type: "select", options: recencyOptions },
+    { key: "sort", type: "select", options: [{ value: "updated", label: "Actualizados recientemente" }, { value: "recent", label: "CV más recientes" }, { value: "oldest", label: "CV más antiguos" }, { value: "name", label: "Nombre A-Z" }] }
+  ];
   return (
     <PagePad>
       <section className="card mb-4 p-4">
-      <div className="grid gap-2 lg:grid-cols-[minmax(280px,1fr)_180px_180px]">
-        <input className="field" placeholder="Buscar por nombre, experiencia, rol o contacto" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === "Enter" && load(0)} />
-        <input className="field" placeholder="Ciudad o país" value={location} onChange={(e) => setLocation(e.target.value)} onKeyDown={(e) => e.key === "Enter" && load(0)} />
-        <select className="field" value={seniority} onChange={(e) => setSeniority(e.target.value)}><option value="">Todo seniority</option><option>Junior</option><option>Semi-Senior</option><option>Senior</option><option>Lead</option><option>Manager</option></select>
-      </div>
+      <FilterControls fields={primaryFields} values={filterValues} onChange={updateFilter} onEnter={() => load(0)} className="grid gap-2 lg:grid-cols-[minmax(280px,1fr)_180px_180px]" />
       <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-[150px_170px_150px_165px_170px_170px_auto_auto]">
-        <select className="field" value={source} onChange={(e) => setSource(e.target.value)}><option value="">Todas las fuentes</option><option value="gmail">Gmail</option><option value="buscojobs">Buscojobs</option><option value="yoiners">Yoiners</option><option value="aglh">AGLH</option></select>
-        <select className="field" value={contact} onChange={(e) => setContact(e.target.value)}><option value="">Cualquier contacto</option><option value="phone">Con teléfono</option><option value="email">Con email</option><option value="both">Con teléfono y email</option></select>
-        <select className="field" value={document} onChange={(e) => setDocument(e.target.value)}><option value="">Cualquier CV</option><option value="pdf">CV en PDF</option><option value="word">CV en Word</option></select>
-        <select className="field" value={status} onChange={(e) => setStatus(e.target.value)}><option value="active">Base confiable</option><option value="needs_review">Requieren revisión</option></select>
-        <select className="field" value={recency} onChange={(e) => setRecency(e.target.value)}><option value="">Cualquier fecha</option><option value="7d">Últimos 7 días</option><option value="30d">Últimos 30 días</option><option value="90d">Últimos 3 meses</option><option value="365d">Último año</option></select>
-        <select className="field" value={sort} onChange={(e) => setSort(e.target.value)}><option value="updated">Actualizados recientemente</option><option value="recent">CV más recientes</option><option value="oldest">CV más antiguos</option><option value="name">Nombre A-Z</option></select>
+        <FilterControls fields={secondaryFields} values={filterValues} onChange={updateFilter} className="contents" />
         <button className="btn-primary" onClick={() => load(0)} disabled={loading}><Search size={16} /> {loading ? "Buscando..." : "Aplicar filtros"}</button>
         <button className="btn-ghost" onClick={resetFilters} disabled={loading}><RotateCcw size={16} /> Limpiar</button>
       </div>
@@ -452,20 +554,35 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
       setLoading(false);
     }
   }
+  const filterSetters: Record<string, (value: string | number) => void> = {
+    source: (value) => setSource(String(value)),
+    location: (value) => setLocation(String(value)),
+    seniority: (value) => setSeniority(String(value)),
+    contact: (value) => setContact(String(value)),
+    minScore: (value) => setMinScore(Number(value)),
+    recency: (value) => setRecency(String(value)),
+    sort: (value) => setSort(String(value))
+  };
+  const finderFields: FilterField[] = [
+    { key: "source", type: "select", options: sourceOptions },
+    { key: "location", type: "text", placeholder: "Ciudad o país" },
+    { key: "seniority", type: "select", options: seniorityOptions },
+    { key: "contact", type: "select", options: contactOptions },
+    { key: "minScore", type: "select", parse: Number, options: [{ value: "0", label: "Toda coincidencia" }, { value: "60", label: "60% o más" }, { value: "70", label: "70% o más" }, { value: "80", label: "80% o más" }, { value: "90", label: "90% o más" }] },
+    { key: "recency", type: "select", options: recencyOptions },
+    { key: "sort", type: "select", options: [{ value: "relevance", label: "Mayor compatibilidad" }, { value: "recent", label: "CV más recientes" }] }
+  ];
   return (
     <PagePad>
       <section className="card mb-4 p-4">
         <label className="label">¿Qué perfil necesitás?</label>
         <textarea className="field min-h-28" placeholder="Ejemplo: auxiliar administrativo con experiencia en facturación y atención al cliente" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") run(1, false); }} />
-        <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-7">
-          <select className="field" value={source} onChange={(e) => setSource(e.target.value)}><option value="">Todas las fuentes</option><option value="gmail">Gmail</option><option value="buscojobs">Buscojobs</option><option value="yoiners">Yoiners</option><option value="aglh">AGLH</option></select>
-          <input className="field" placeholder="Ciudad o país" value={location} onChange={(e) => setLocation(e.target.value)} />
-          <select className="field" value={seniority} onChange={(e) => setSeniority(e.target.value)}><option value="">Todo seniority</option><option>Junior</option><option>Semi-Senior</option><option>Senior</option><option>Lead</option><option>Manager</option></select>
-          <select className="field" value={contact} onChange={(e) => setContact(e.target.value)}><option value="">Cualquier contacto</option><option value="phone">Con teléfono</option><option value="email">Con email</option><option value="both">Con teléfono y email</option></select>
-          <select className="field" value={minScore} onChange={(e) => setMinScore(Number(e.target.value))}><option value="0">Toda coincidencia</option><option value="60">60% o más</option><option value="70">70% o más</option><option value="80">80% o más</option><option value="90">90% o más</option></select>
-          <select className="field" value={recency} onChange={(e) => setRecency(e.target.value)}><option value="">Cualquier fecha</option><option value="7d">Últimos 7 días</option><option value="30d">Últimos 30 días</option><option value="90d">Últimos 3 meses</option><option value="365d">Último año</option></select>
-          <select className="field" value={sort} onChange={(e) => setSort(e.target.value)}><option value="relevance">Mayor compatibilidad</option><option value="recent">CV más recientes</option></select>
-        </div>
+        <FilterControls
+          fields={finderFields}
+          values={{ source, location, seniority, contact, minScore, recency, sort }}
+          onChange={(key, value) => filterSetters[key]?.(value)}
+          className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-7"
+        />
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)} /> Solo activos</label>
           <button className="btn-primary ml-auto" onClick={() => run(1, false)} disabled={!query.trim() || loading}><Search size={16} /> {loading ? "Buscando..." : "Buscar candidatos"}</button>
