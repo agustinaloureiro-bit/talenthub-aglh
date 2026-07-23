@@ -85,7 +85,28 @@ function expandedSearchTerms(query: string) {
     conductor: ["chofer", "driver", "libreta profesional"],
     ambulanciero: ["chofer de ambulancia", "conductor de ambulancia", "ambulancia", "traslado de pacientes"],
     ambulancia: ["chofer de ambulancia", "conductor de ambulancia", "ambulanciero", "emergencia movil", "emergencia médica", "traslado de pacientes"],
-    supermercado: ["retail", "cajero", "cajera", "repositor", "repositora", "operario", "operaria", "auxiliar", "deposito", "depósito", "stock", "atencion al cliente", "atención al cliente"]
+    supermercado: ["retail", "cajero", "cajera", "repositor", "repositora", "operario", "operaria", "auxiliar", "deposito", "depósito", "stock", "atencion al cliente", "atención al cliente"],
+    vigilante: ["guardia de seguridad", "vigilancia", "seguridad fisica", "seguridad física"],
+    repositor: ["repositora", "reposicion", "reposición", "supermercado", "retail"],
+    repositora: ["repositor", "reposicion", "reposición", "supermercado", "retail"],
+    cajero: ["cajera", "manejo de caja", "arqueo de caja", "pos"],
+    cajera: ["cajero", "manejo de caja", "arqueo de caja", "pos"],
+    recepcionista: ["recepcion", "recepción", "atencion telefonica", "atención telefónica"],
+    electricista: ["electricidad", "electricidad industrial", "instalaciones electricas", "instalaciones eléctricas"],
+    mecanico: ["mecánico", "mecanica", "mecánica", "mantenimiento mecanico", "mantenimiento mecánico"],
+    soldador: ["soldadora", "soldadura", "mig", "mag", "tig"],
+    enfermero: ["enfermera", "enfermeria", "enfermería", "auxiliar de enfermeria", "auxiliar de enfermería"],
+    enfermera: ["enfermero", "enfermeria", "enfermería", "auxiliar de enfermeria", "auxiliar de enfermería"],
+    cuidador: ["cuidadora", "cuidados", "acompanante terapeutico", "acompañante terapéutico", "cuidado de pacientes"],
+    cuidadora: ["cuidador", "cuidados", "acompanante terapeutica", "acompañante terapéutica", "cuidado de pacientes"],
+    psicologo: ["psicóloga", "psicologia", "psicología", "licenciado en psicologia", "licenciada en psicología"],
+    psicologa: ["psicólogo", "psicologia", "psicología", "licenciado en psicologia", "licenciada en psicología"],
+    autoelevador: ["montacargas", "forklift"],
+    montacargas: ["autoelevador", "forklift"],
+    picking: ["preparacion de pedidos", "preparación de pedidos", "deposito", "depósito", "logistica", "logística"],
+    packing: ["embalaje", "empaque", "deposito", "depósito"],
+    cobranzas: ["cobranza", "gestion de morosos", "gestión de morosos", "recuperacion de deuda", "recuperación de deuda"],
+    payroll: ["liquidacion de sueldos", "liquidación de sueldos", "nomina", "nómina", "bops"]
   };
   const geographicTerms = knownUruguayLocationNames()
     .filter((location) => normalizedQuery.includes(normalizePlaceName(location)))

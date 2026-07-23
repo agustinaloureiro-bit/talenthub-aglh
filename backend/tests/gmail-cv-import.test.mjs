@@ -66,6 +66,28 @@ Ingles intermedio.`,
   assert.ok(candidate.documents?.[0]?.rawText?.includes("Experiencia en logistica"));
 });
 
+test("el analisis conserva como rol principal la primera experiencia concreta del CV", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const candidate = candidateFromFreeText(
+    "gmail",
+    `Martin Rodriguez
+Email martin.rodriguez@example.com
+Telefono 099 222 333
+Experiencia laboral
+Operario de deposito. Preparacion de pedidos, picking y manejo de autoelevador.
+Anteriormente trabaje en ventas y atencion al cliente.`,
+    {
+      sourceId: "gmail:cv-deposito",
+      fileName: "CV_Martin_Rodriguez.pdf"
+    }
+  );
+
+  assert.ok(candidate);
+  assert.equal(candidate.currentRole, "auxiliar de deposito");
+  assert.ok(candidate.tags.includes("autoelevador"));
+  assert.ok(candidate.tags.includes("picking"));
+});
+
 test("Gmail importa CV adjunto aunque el texto extraido no incluya nombre, usando remitente humano", async () => {
   const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
   const candidate = candidateFromFreeText(

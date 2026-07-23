@@ -1020,7 +1020,7 @@ export function candidateFromFreeText(sourceType: string, text: string, options:
   if ((sourceType === "gmail" || sourceType === "drive") && !candidateNameLooksReal(realName)) return null;
 
   const analysis = analyzeCvText(content);
-  const roleFromText = analysis.roles[0] ?? content.match(/(?:cargo|puesto|rol|postulaci[oó]n)\s*[:\-]\s*([^.;\n\r]{3,70})/i)?.[1];
+  const roleFromText = analysis.primaryRole ?? content.match(/(?:cargo|puesto|rol|postulaci[oó]n)\s*[:\-]\s*([^.;\n\r]{3,70})/i)?.[1];
   const fallbackRole = sourceType === "gmail" || sourceType === "drive" ? null : options.currentRole;
   const role = compactLabel(roleFromText ?? fallbackRole, "Candidato importado");
   const languageTags = analysis.languages.map((language) => language.lang);
@@ -2323,7 +2323,7 @@ function compactLabel(value: unknown, fallback = "") {
 }
 
 function safeTags(items: unknown[], sourceType: string) {
-  return unique([sourceType, ...items.map((item) => compactLabel(item)).filter(Boolean)]).slice(0, 6);
+  return unique([sourceType, ...items.map((item) => compactLabel(item)).filter(Boolean)]).slice(0, 14);
 }
 
 function candidateSummaryLooksLikeOffer(candidate: CandidateImport) {

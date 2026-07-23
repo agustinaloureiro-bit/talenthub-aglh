@@ -53,7 +53,7 @@ try {
         + (analysis.languages.length ? 5 : 0)
       );
       const country = analysis.country ?? (row.from_gmail && row.country === "Uruguay" ? null : row.country);
-      const currentRole = analysis.roles[0] ?? (technicalTag.test(row.current_role ?? "") ? null : row.current_role);
+      const currentRole = analysis.primaryRole ?? (technicalTag.test(row.current_role ?? "") ? null : row.current_role);
       await q(
         `UPDATE candidates SET
            "current_role"=$1,

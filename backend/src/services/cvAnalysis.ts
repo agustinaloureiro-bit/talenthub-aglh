@@ -7,6 +7,7 @@ export type CvLanguageEvidence = {
 export type CvAnalysis = {
   hasReadableText: boolean;
   summary: string | null;
+  primaryRole: string | null;
   roles: string[];
   skills: string[];
   languages: CvLanguageEvidence[];
@@ -22,7 +23,27 @@ export type CvAnalysis = {
 type EvidenceRule = { label: string; pattern: RegExp };
 
 const ROLE_RULES: EvidenceRule[] = [
+  { label: "chofer de ambulancia", pattern: /\b(?:chofer|conductor(?:a)?)\s+de\s+ambulancia\b|\bambulancier[oa]\b/i },
   { label: "abogado", pattern: /\b(?:abogad[oa]|asesor(?:a)? legal|derecho (?:laboral|corporativo|civil|penal)|jur[ií]dic[oa])\b/i },
+  { label: "auxiliar administrativo", pattern: /\b(?:auxiliar|asistente)\s+administrativ[oa]\b|\bback office\b/i },
+  { label: "auxiliar contable", pattern: /\b(?:auxiliar|asistente)\s+contable\b/i },
+  { label: "guardia de seguridad", pattern: /\b(?:guardia de seguridad|vigilante|vigilancia|seguridad f[ií]sica)\b/i },
+  { label: "operario de produccion", pattern: /\b(?:operari[oa]\s+de\s+(?:producci[oó]n|f[aá]brica|planta)|operador(?:a)? de (?:maquinaria|producci[oó]n)|auxiliar de producci[oó]n|l[ií]nea de producci[oó]n)\b/i },
+  { label: "auxiliar de deposito", pattern: /\b(?:auxiliar|operari[oa]|pe[oó]n)\s+de\s+dep[oó]sito\b|\b(?:picking|packing|preparaci[oó]n de pedidos)\b/i },
+  { label: "operario", pattern: /\boperari[oa]\b/i },
+  { label: "repositor", pattern: /\b(?:repositor(?:a)?|reposici[oó]n de mercader[ií]a)\b/i },
+  { label: "cajero", pattern: /\b(?:cajer[oa]|manejo de caja|arqueo de caja)\b/i },
+  { label: "limpieza", pattern: /\b(?:auxiliar de servicio|operari[oa] de limpieza|limpiador(?:a)?|tareas de limpieza)\b/i },
+  { label: "recepcionista", pattern: /\b(?:recepcionista|recepci[oó]n y atenci[oó]n)\b/i },
+  { label: "call center", pattern: /\b(?:call center|contact center|telemarketer|telemarketing|operador(?:a)? telef[oó]nic[oa])\b/i },
+  { label: "electricista", pattern: /\b(?:electricista|electricidad industrial|instalaciones el[eé]ctricas)\b/i },
+  { label: "mecanico", pattern: /\b(?:mec[aá]nic[oa]|mec[aá]nica automotriz|mantenimiento mec[aá]nico)\b/i },
+  { label: "soldador", pattern: /\b(?:soldador(?:a)?|soldadura|mig|mag|tig)\b/i },
+  { label: "construccion", pattern: /\b(?:alba[nñ]il|construcci[oó]n|obra civil|ayudante de obra)\b/i },
+  { label: "enfermeria", pattern: /\b(?:enfermer[oa]|auxiliar de enfermer[ií]a|licenciad[oa] en enfermer[ií]a)\b/i },
+  { label: "cuidados", pattern: /\b(?:cuidador(?:a)?|acompa[nñ]ante terap[eé]utic[oa]|cuidado de (?:adultos|pacientes))\b/i },
+  { label: "psicologia", pattern: /\b(?:psic[oó]log[oa]|licenciad[oa] en psicolog[ií]a)\b/i },
+  { label: "farmacia", pattern: /\b(?:auxiliar de farmacia|id[oó]neo en farmacia|farmac[eé]utic[oa])\b/i },
   { label: "ventas", pattern: /\b(?:ventas?|vendedor(?:a)?|ejecutiv[oa] comercial|asesor(?:a)? comercial)\b/i },
   { label: "gastronomia", pattern: /\b(?:gastronom[ií]a|restaurante|mozo|moza|cociner[oa]|ayudante de cocina|barista)\b/i },
   { label: "administracion", pattern: /\b(?:administraci[oó]n|administrativ[oa]|auxiliar administrativo)\b/i },
@@ -48,6 +69,22 @@ const SKILL_RULES: EvidenceRule[] = [
   { label: "facturacion", pattern: /\bfacturaci[oó]n\b/i },
   { label: "compras", pattern: /\bcompras\b/i },
   { label: "inventario", pattern: /\b(?:inventario|control de stock)\b/i },
+  { label: "autoelevador", pattern: /\b(?:autoelevador|montacargas|forklift)\b/i },
+  { label: "picking", pattern: /\bpicking\b|\bpreparaci[oó]n de pedidos\b/i },
+  { label: "packing", pattern: /\bpacking\b|\bembalaje\b|\bempaque\b/i },
+  { label: "libreta profesional", pattern: /\b(?:libreta|licencia)\s+(?:de conducir\s+)?(?:categor[ií]a\s+)?(?:a|b|c|d|e|f|h)\b|\blibreta profesional\b/i },
+  { label: "cobranzas", pattern: /\b(?:cobranza|gesti[oó]n de morosos|recuperaci[oó]n de deuda)\b/i },
+  { label: "conciliaciones", pattern: /\b(?:conciliaci[oó]n bancaria|conciliaciones)\b/i },
+  { label: "liquidacion de sueldos", pattern: /\b(?:liquidaci[oó]n de sueldos|n[oó]mina|payroll|b[oó]ps)\b/i },
+  { label: "memory", pattern: /\bmemory\b/i },
+  { label: "tango", pattern: /\btango gesti[oó]n\b|\bsistema tango\b/i },
+  { label: "odoo", pattern: /\bodoo\b/i },
+  { label: "nodum", pattern: /\bnodum\b/i },
+  { label: "genexus", pattern: /\bgenexus\b/i },
+  { label: "salesforce", pattern: /\bsalesforce\b/i },
+  { label: "crm", pattern: /\bcrm\b/i },
+  { label: "erp", pattern: /\berp\b/i },
+  { label: "office", pattern: /\b(?:microsoft office|paquete office|word|outlook)\b/i },
   { label: "liderazgo", pattern: /\b(?:liderazgo|supervisi[oó]n de equipo|jefatura)\b/i },
   { label: "negociacion", pattern: /\bnegociaci[oó]n\b/i }
 ];
@@ -128,6 +165,14 @@ function labelsFor(text: string, rules: EvidenceRule[]) {
   return rules.filter((rule) => rule.pattern.test(text)).map((rule) => rule.label);
 }
 
+function primaryRoleFor(text: string) {
+  const candidates = ROLE_RULES.flatMap((rule) => {
+    const match = rule.pattern.exec(text);
+    return match?.index == null ? [] : [{ label: rule.label, index: match.index }];
+  });
+  return candidates.sort((left, right) => left.index - right.index)[0]?.label ?? null;
+}
+
 function extractYears(text: string) {
   const matches = [
     ...text.matchAll(/(?:m[aá]s de|mas de|cuento con|con)\s*(\d{1,2})\s*a[nñ]os?\s*(?:de\s*)?(?:experiencia|trayectoria)/gi),
@@ -188,12 +233,13 @@ export function analyzeCvText(input: string): CvAnalysis {
   const technicalSignals = (compact.match(/%PDF-|endobj|xref|\/FlateDecode|\/XObject/g) ?? []).length;
   const hasReadableText = compact.length >= 80 && letterCount / Math.max(1, compact.length) >= 0.55 && technicalSignals < 5;
   if (!hasReadableText) {
-    return { hasReadableText: false, summary: null, roles: [], skills: [], languages: [], years: null, city: null, country: null, experienceHighlights: [], educationHighlights: [], confidence: "baja", warning: "El archivo existe, pero no tiene texto suficiente para analizarlo con confianza." };
+    return { hasReadableText: false, summary: null, primaryRole: null, roles: [], skills: [], languages: [], years: null, city: null, country: null, experienceHighlights: [], educationHighlights: [], confidence: "baja", warning: "El archivo existe, pero no tiene texto suficiente para analizarlo con confianza." };
   }
 
   const referenceCut = compact.search(/\b(?:referencias laborales|referencias personales)\b/i);
   const mainText = referenceCut > 0 ? compact.slice(0, referenceCut) : compact;
   const roles = unique(labelsFor(mainText, ROLE_RULES));
+  const primaryRole = primaryRoleFor(mainText);
   const skills = unique(labelsFor(mainText, SKILL_RULES));
   const languages = extractLanguageEvidence(mainText);
   const years = extractYears(mainText);
@@ -219,6 +265,7 @@ export function analyzeCvText(input: string): CvAnalysis {
   return {
     hasReadableText,
     summary: facts.length ? facts.join("\n") : "CV disponible, sin suficientes datos estructurados para generar un resumen confiable.",
+    primaryRole,
     roles,
     skills,
     languages,

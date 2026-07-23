@@ -144,6 +144,111 @@ test("usa la vista oficial de empresa aunque la vista Yoiner devuelva cero talen
   }
 });
 
+test("abre el detalle de cada talento de empresa cuando el listado no incluye el CV", async () => {
+  const { syncYoiners } = await import("../dist/services/yoinersClient.js");
+  const originalFetch = globalThis.fetch;
+  const detailIds = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    if (target.endsWith("/auth/me")) {
+      return new Response(JSON.stringify({
+        data: { user_id: "team-user", role: "COMPANY_TEAM", company_id: "company-1" }
+      }), { status: 200 });
+    }
+    if (target.includes("/company/getTalentsByFiltersCompany/company-1")) {
+      return new Response(JSON.stringify({
+        data: {
+          talents: [
+            { user_id: "talent-1", first_name: "Ana", last_name: "Pereira", created_at: "2026-07-22T10:00:00Z" },
+            { user_id: "talent-2", first_name: "Luis", last_name: "Gómez", created_at: "2026-07-21T10:00:00Z" }
+          ],
+          hits: { totalPages: 1, totalDocs: 2 }
+        }
+      }), { status: 200 });
+    }
+    const detail = target.match(/\/talent\/(talent-\d+)\/company-1$/);
+    if (detail) {
+      detailIds.push(detail[1]);
+      return new Response(JSON.stringify({
+        data: {
+          user_id: detail[1],
+          first_name: detail[1] === "talent-1" ? "Ana" : "Luis",
+          last_name: detail[1] === "talent-1" ? "Pereira" : "Gómez",
+          talent_cv: `https://files.yoiners.com/${detail[1]}.pdf`
+        }
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  };
+
+  try {
+    const result = await syncYoiners({
+      yoinersAccessToken: "company-access",
+      yoinersUserId: "team-user",
+      yoinersRole: "COMPANY_TEAM",
+      yoinersCompanyId: "company-1"
+    });
+
+    assert.deepEqual(detailIds.sort(), ["talent-1", "talent-2"]);
+    assert.deepEqual(result.rows.map((candidate) => candidate.sourceId).sort(), ["yoiners:talent-1", "yoiners:talent-2"]);
+    assert.equal(result.configUpdate.yoinersCursorVersion, "talent-views-v2");
+    assert.equal(result.configUpdate.yoinersTotalVisible, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("una sincronizacion posterior de empresa abre solo talentos nuevos", async () => {
+  const { syncYoiners } = await import("../dist/services/yoinersClient.js");
+  const originalFetch = globalThis.fetch;
+  const detailIds = [];
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    if (target.includes("/company/getTalentsByFiltersCompany/company-1")) {
+      return new Response(JSON.stringify({
+        data: {
+          talents: [
+            { user_id: "talent-new", first_name: "Nueva", last_name: "Persona", created_at: "2026-07-23T10:00:00Z" },
+            { user_id: "talent-known", first_name: "Persona", last_name: "Conocida", created_at: "2026-07-20T10:00:00Z" }
+          ],
+          hits: { totalPages: 1, totalDocs: 2 }
+        }
+      }), { status: 200 });
+    }
+    const detail = target.match(/\/talent\/(talent-[^/]+)\/company-1$/);
+    if (detail) {
+      detailIds.push(detail[1]);
+      return new Response(JSON.stringify({
+        data: {
+          user_id: detail[1],
+          first_name: "Nueva",
+          last_name: "Persona",
+          talent_cv: `https://files.yoiners.com/${detail[1]}.pdf`,
+          created_at: "2026-07-23T10:00:00Z"
+        }
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  };
+
+  try {
+    const result = await syncYoiners({
+      yoinersAccessToken: "company-access",
+      yoinersUserId: "team-user",
+      yoinersRole: "COMPANY_TEAM",
+      yoinersCompanyId: "company-1",
+      yoinersCursorVersion: "talent-views-v2",
+      yoinersHeadSourceIds: ["yoiners:talent-known"],
+      yoinersLastSyncAt: "2026-07-22T00:00:00Z"
+    });
+
+    assert.deepEqual(detailIds, ["talent-new"]);
+    assert.deepEqual(result.rows.map((candidate) => candidate.sourceId), ["yoiners:talent-new"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("completa una sesion antigua con el rol y la empresa desde auth me", async () => {
   const { syncYoiners } = await import("../dist/services/yoinersClient.js");
   const originalFetch = globalThis.fetch;

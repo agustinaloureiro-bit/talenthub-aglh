@@ -18,7 +18,7 @@ import { intelligenceRouter } from "./routes/intelligence.js";
 
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const release = "2026-07-20.6";
+const release = "2026-07-23.1";
 
 app.use(helmet({
   contentSecurityPolicy: {

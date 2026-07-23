@@ -33,6 +33,47 @@ test("interpreta auxiliar administrativo con facturacion sin palabras de relleno
   assert.doesNotMatch(providerQuery, /\bbusco\b|\bexperiencia\b/);
 });
 
+test("interpreta deposito, autoelevador y preparacion de pedidos como criterios buscables", () => {
+  const interpreted = interpretTalentQuery("Necesito auxiliar de depósito con autoelevador, picking y preparación de pedidos");
+
+  assert.ok(interpreted.roles.includes("auxiliar de deposito"));
+  assert.ok(interpreted.skills.includes("autoelevador"));
+  assert.ok(interpreted.skills.includes("picking"));
+  assert.ok(interpreted.skills.includes("preparacion de pedidos"));
+});
+
+test("prioriza evidencia exacta de deposito sobre experiencia logistica general", () => {
+  const interpreted = interpretTalentQuery("Necesito auxiliar de depósito con autoelevador y picking");
+  const ranked = rerankCandidates([
+    {
+      id: "exacto",
+      fullName: "Martin Deposito",
+      currentRole: "Auxiliar de depósito",
+      tags: ["autoelevador", "picking"],
+      qualityScore: 65,
+      documentCount: 1,
+      documentSnippet: "Operario de depósito con manejo de autoelevador, picking y preparación de pedidos.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "general",
+      fullName: "Pablo Logistica",
+      currentRole: "Auxiliar de logística",
+      tags: ["logistica"],
+      qualityScore: 95,
+      documentCount: 1,
+      documentSnippet: "Experiencia general en logística y distribución.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.equal(ranked[0].id, "exacto");
+  assert.ok(ranked[0].score > (ranked[1]?.score ?? 0));
+  assert.match(ranked[0].matchReason, /autoelevador|picking/i);
+});
+
 test("interpreta chofer de ambulancia como un rol especializado con requisitos obligatorios", () => {
   const interpreted = interpretTalentQuery("Necesito un chofer de ambulancia");
 

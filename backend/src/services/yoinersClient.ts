@@ -531,12 +531,12 @@ async function mapConcurrent<T, R>(items: T[], concurrency: number, mapper: (ite
 }
 
 function talentUserId(talent: JsonObject) {
-  return text(talent.user_id ?? talent.userId ?? talent.talent_id ?? talent.talentId)
-    || firstDeepText(talent, ["user_id", "userid", "talent_id", "talentid"]);
+  return text(talent.user_id ?? talent.userId ?? talent.talent_id ?? talent.talentId ?? talent._id ?? talent.id)
+    || firstDeepText(talent, ["user_id", "userid", "talent_id", "talentid", "id", "_id"]);
 }
 
-function selectNewTalentSummaries(summaries: JsonObject[], config: JsonObject) {
-  const cursorCompatible = text(config.yoinersCursorVersion) === "auditor-catalog-v2";
+function selectNewTalentSummaries(summaries: JsonObject[], config: JsonObject, cursorVersion: string) {
+  const cursorCompatible = text(config.yoinersCursorVersion) === cursorVersion;
   if (!cursorCompatible) return summaries;
   const known = new Set(list(config.yoinersHeadSourceIds));
   const lastSync = Date.parse(text(config.yoinersLastSyncAt));
@@ -561,7 +561,9 @@ async function hydrateTalentSummaries(session: ResolvedSession, summaries: JsonO
     }
     try {
       const companySuffix = session.companyId ? encodeURIComponent(session.companyId) : "";
-      const detail = object(await authorizedRequest(`/talent/${encodeURIComponent(userId)}/${companySuffix}`, session.token));
+      const payload = await authorizedRequest(`/talent/${encodeURIComponent(userId)}/${companySuffix}`, session.token);
+      const root = object(payload);
+      const detail = object(root?.data) ?? root;
       return detail ? { ...summary, ...detail, created_at: detail.created_at ?? summary.created_at } : null;
     } catch {
       failed += 1;
@@ -605,7 +607,7 @@ async function fetchTalentPayloads(session: Awaited<ReturnType<typeof resolveSes
       );
       const visible = visiblePayloads.flatMap(candidateRows);
       if (visible.length) {
-        const summariesToHydrate = selectNewTalentSummaries(visible, config);
+        const summariesToHydrate = selectNewTalentSummaries(visible, config, "auditor-catalog-v2");
         const hydrated = await hydrateTalentSummaries(session, summariesToHydrate);
         if (hydrated.failed) failures.push(`${hydrated.failed} perfiles no pudieron abrirse en detalle`);
         return {
@@ -629,6 +631,10 @@ async function fetchTalentPayloads(session: Awaited<ReturnType<typeof resolveSes
   }
   const companyAccount = role === "COMPANY" || role === "COMPANY_TEAM" || Boolean(session.companyId);
   const companyTarget = session.companyId || session.userId;
+  const companyCursorVersion = "talent-views-v2";
+  const stopSourceIds = text(config.yoinersCursorVersion) === companyCursorVersion
+    ? list(config.yoinersHeadSourceIds)
+    : [];
   const filteredViews = companyAccount
     ? [
         { label: "talentos de empresa", path: `/company/getTalentsByFiltersCompany/${encodeURIComponent(companyTarget)}`, role: role || "COMPANY" },
@@ -643,7 +649,7 @@ async function fetchTalentPayloads(session: Awaited<ReturnType<typeof resolveSes
   // response is therefore not conclusive: try the other official account view.
   for (const view of filteredViews) {
     try {
-      const viewPayloads = await fetchFilteredTalents(session, view.path, view.role);
+      const viewPayloads = await fetchFilteredTalents(session, view.path, view.role, true, stopSourceIds);
       if (viewPayloads.length) payloads.push(...viewPayloads);
     } catch (error: any) {
       if (Number(error?.status) === 401 || Number(error?.status) === 403) authorizationFailures += 1;
@@ -676,7 +682,22 @@ async function fetchTalentPayloads(session: Awaited<ReturnType<typeof resolveSes
     if (authorizationFailures >= 2) error.status = 401;
     throw error;
   }
-  return { payloads, failures };
+
+  const visibleById = new Map<string, JsonObject>();
+  for (const row of payloads.flatMap(candidateRows)) {
+    const id = talentUserId(row);
+    if (id && !visibleById.has(id)) visibleById.set(id, row);
+  }
+  const visible = [...visibleById.values()];
+  const summariesToHydrate = selectNewTalentSummaries(visible, config, companyCursorVersion);
+  const hydrated = await hydrateTalentSummaries(session, summariesToHydrate);
+  if (hydrated.failed) failures.push(`${hydrated.failed} perfiles no pudieron abrirse en detalle`);
+  return {
+    payloads: [hydrated.rows],
+    failures,
+    visibleCount: visible.length,
+    complete: hydrated.failed === 0
+  };
 }
 
 export async function syncYoiners(config: JsonObject): Promise<AgentSyncResult> {
@@ -728,7 +749,7 @@ export async function syncYoiners(config: JsonObject): Promise<AgentSyncResult> 
       }
     }
     const candidates = [...byId.values()];
-    const cursorVersion = session.role.toUpperCase() === "AUDITOR" ? "auditor-catalog-v2" : "talent-views-v1";
+    const cursorVersion = session.role.toUpperCase() === "AUDITOR" ? "auditor-catalog-v2" : "talent-views-v2";
     const cursorCompatible = text(config.yoinersCursorVersion) === cursorVersion;
     const previousHeads = cursorCompatible ? list(config.yoinersHeadSourceIds) : [];
     const previousSyncAt = cursorCompatible ? text(config.yoinersLastSyncAt) : "";
