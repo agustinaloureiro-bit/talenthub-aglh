@@ -194,6 +194,26 @@ function ignoredSensitiveCriteria(query: string) {
   return /\b(?:hombre|hombres|varon|varones|mujer|mujeres|sexo|genero)\b/.test(normalized) ? ["genero"] : [];
 }
 
+function residualKeywords(query: string, knownConcepts: string[]) {
+  const ignoredWords = new Set([
+    "busco", "buscar", "buscando", "estoy", "necesito", "preciso", "persona", "alguien",
+    "perfil", "candidato", "candidata", "con", "sin", "para", "por", "experiencia",
+    "experiencias", "tener", "tenga", "tengan", "que", "una", "uno", "trabajar", "trabajo",
+    "necesita", "necesitan", "requiere", "requieren", "especifica", "especifico", "alguna",
+    "algun", "alguno", "tiene", "debe", "deben", "sean", "sea", "ser", "puesto", "cargo",
+    "cerca", "alrededores", "vivir", "vive", "viva", "residir", "residente", "residentes",
+    "manejo", "conocimiento", "conocimientos", "nivel", "buen", "buena", "muy", "del", "las",
+    "los", "como", "hombre", "hombres", "mujer", "mujeres", "organizada", "organizado",
+    "coordinar", "equipo", "equipos", "tratar", "clientes"
+  ]);
+  const knownTokens = new Set(knownConcepts
+    .flatMap((concept) => normalizeHint(concept).split(/[^\p{L}\p{N}]+/u))
+    .filter(Boolean));
+  return [...new Set(normalizeHint(query)
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((word) => word.length >= 4 && !ignoredWords.has(word) && !knownTokens.has(word)))];
+}
+
 export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   const normalizedQuery = query.replace(/\s+/g, " ").trim();
   const roles = findHints(normalizedQuery, ROLE_HINTS);
@@ -206,6 +226,7 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   const industries = findHints(normalizedQuery, ["supermercado", "industria", "fabrica", "fábrica", "retail", "logistica", "logística", "manufactura", "tecnologia", "tecnología", "gastronomia", "gastronomía", "restaurante"]);
   const locations = findHints(normalizedQuery, LOCATION_HINTS);
   const profileLevel = basicProfileRequested(normalizedQuery) ? "basic" : null;
+  const keywords = residualKeywords(normalizedQuery, [...roles, ...skills, ...languages, ...industries, ...locations]);
 
   return {
     originalQuery: query,
@@ -216,10 +237,11 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
     seniority,
     industries,
     locations,
+    keywords,
     locationGroups: locationGroupsForQuery(locations),
     profileLevel,
     ignoredCriteria: ignoredSensitiveCriteria(normalizedQuery),
-    mustHave: [...roles, ...skills, ...languages, ...locations],
+    mustHave: [...roles, ...skills, ...languages, ...locations, ...keywords],
     requiredGroups: requiredGroupsForQuery(normalizedQuery, roles)
   };
 }

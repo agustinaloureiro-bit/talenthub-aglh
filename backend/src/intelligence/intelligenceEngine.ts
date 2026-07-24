@@ -29,7 +29,8 @@ export class RecruitmentIntelligenceEngine {
       ...interpreted.skills,
       ...interpreted.languages,
       ...interpreted.industries,
-      ...interpreted.locations
+      ...interpreted.locations,
+      ...interpreted.keywords
     ].filter(Boolean);
     const retrievalQuery = [...new Set([
       retrievalSignals(interpreted.normalizedQuery),

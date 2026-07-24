@@ -143,13 +143,26 @@ function conceptMatchesProfile(candidate: TalentCandidateResult, interpreted: In
 }
 
 function requestedConcepts(interpreted: InterpretedTalentQuery) {
-  const values = [...interpreted.roles, ...interpreted.skills, ...interpreted.languages, ...interpreted.industries, ...interpreted.locations];
+  const values = [
+    ...interpreted.roles,
+    ...interpreted.skills,
+    ...interpreted.languages,
+    ...interpreted.industries,
+    ...interpreted.locations,
+    ...interpreted.keywords
+  ];
   const byNormalized = new Map<string, string>();
   for (const value of values) {
     const normalized = normalizeSearchValue(value);
     if (normalized && !byNormalized.has(normalized)) byNormalized.set(normalized, value);
   }
   return [...byNormalized.values()];
+}
+
+function satisfiesResidualKeywords(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
+  if (!interpreted.keywords.length) return true;
+  const haystack = candidateHaystack(candidate);
+  return interpreted.keywords.some((keyword) => includesAny(haystack, [keyword]));
 }
 
 function conceptMatchesText(text: string, interpreted: InterpretedTalentQuery, concept: string) {
@@ -308,6 +321,7 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
   return candidates
     .filter((candidate) => isCredibleCandidateName(candidate.fullName))
     .filter((candidate) => satisfiesRequiredGroups(candidate, interpreted))
+    .filter((candidate) => satisfiesResidualKeywords(candidate, interpreted))
     .filter((candidate) => candidateLocationMatch(candidate, interpreted).matches)
     .filter((candidate) => basicProfileSuitability(candidate, interpreted).allowed)
     .map((candidate) => {

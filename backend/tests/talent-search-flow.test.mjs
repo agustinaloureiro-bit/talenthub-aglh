@@ -47,6 +47,38 @@ test("la recuperacion conserva competencias no catalogadas de la consulta origin
   assert.match(providerQuery, /industrial/i);
 });
 
+test("usa competencias no catalogadas para excluir coincidencias genericas", () => {
+  const interpreted = interpretTalentQuery("Busco técnico con experiencia en metrología industrial");
+  const ranked = rerankCandidates([
+    {
+      id: "metrologia",
+      fullName: "Mario Pereira",
+      currentRole: "Técnico de calidad",
+      tags: ["calidad"],
+      qualityScore: 70,
+      documentCount: 1,
+      documentSnippet: "Técnico con experiencia en metrología industrial, calibración y control dimensional.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "generico",
+      fullName: "Pedro Rodriguez",
+      currentRole: "Técnico",
+      tags: ["mantenimiento"],
+      qualityScore: 95,
+      documentCount: 1,
+      documentSnippet: "Técnico de mantenimiento general.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.deepEqual(interpreted.keywords, ["metrologia", "industrial"]);
+  assert.deepEqual(ranked.map((candidate) => candidate.id), ["metrologia"]);
+  assert.match(ranked[0].matchReason, /metrologia|industrial/i);
+});
+
 test("interpreta deposito, autoelevador y preparacion de pedidos como criterios buscables", () => {
   const interpreted = interpretTalentQuery("Necesito auxiliar de depósito con autoelevador, picking y preparación de pedidos");
 

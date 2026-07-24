@@ -195,7 +195,7 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
        JOIN candidates c ON c.id=m.id
        WHERE EXISTS (SELECT 1 FROM documents available_doc WHERE available_doc.candidate_id=c.id)
        ORDER BY m.rank DESC, c.quality_score DESC, c.updated_at DESC
-       LIMIT 1200
+       LIMIT 800
      )
      SELECT c.*,
       coalesce(src.source_count, 0)::int AS source_count,
