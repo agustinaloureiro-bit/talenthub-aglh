@@ -16,6 +16,14 @@ export function isCredibleCandidateName(value: string) {
   const words = name.split(" ").filter(Boolean);
   if (words.length < 2 || words.length > 8) return false;
   if (!words.every((word) => /^[\p{L}'-]+$/u.test(word))) return false;
+  const genericRoleWords = new Set([
+    "administrativo", "administrativa", "auxiliar", "ayudante", "chofer", "conductor",
+    "contable", "deposito", "encargado", "encargada", "experiencia", "fabrica", "general",
+    "laboral", "operario", "operaria", "operador", "operadora", "practico", "practica",
+    "profesional", "repositor", "repositora", "tecnico", "tecnica", "vendedor", "vendedora"
+  ]);
+  const normalizedWords = words.map(normalizeSearchValue);
+  if (normalizedWords.every((word) => genericRoleWords.has(word))) return false;
   return !/(sin t[ií]tulo|sin nombre|preparaci[oó]n|entrega de|[oó]rdenes|experiencia en|responsable de|tareas de|funciones|perfil profesional|objetivo laboral|curr[ií]culum|curriculum vitae|postulaci[oó]n|futuras vacantes)/i.test(name);
 }
 

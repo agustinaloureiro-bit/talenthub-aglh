@@ -568,6 +568,12 @@ test("excluye frases del CV usadas por error como nombre", () => {
   assert.equal(isCredibleCandidateName("Gimena Gonzalez"), true);
 });
 
+test("excluye cargos genericos usados como nombre de persona", () => {
+  assert.equal(isCredibleCandidateName("Operario práctico"), false);
+  assert.equal(isCredibleCandidateName("Auxiliar administrativa"), false);
+  assert.equal(isCredibleCandidateName("Mario Pereira"), true);
+});
+
 test("genera un nombre de descarga valido para archivos con acentos combinados", () => {
   const header = downloadContentDisposition("Oscar Domínguez.pdf");
 
