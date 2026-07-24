@@ -166,6 +166,22 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     `WITH search_terms AS MATERIALIZED (
        SELECT plainto_tsquery('spanish', $1) AS exact_query,
          websearch_to_tsquery('spanish', $2) AS broad_query
+     ), document_hits AS MATERIALIZED (
+       SELECT DISTINCT ON (d.candidate_id)
+         d.candidate_id AS id,
+         d.id AS document_id,
+         0.02 + ts_rank_cd(to_tsvector('spanish', ${documentText}), search_terms.broad_query)
+           + CASE WHEN to_tsvector('spanish', ${documentText}) @@ search_terms.exact_query THEN 1 ELSE 0 END AS rank
+       FROM documents d
+       JOIN candidates c ON c.id=d.candidate_id
+       CROSS JOIN search_terms
+       WHERE ${candidateFilter}
+         AND to_tsvector('spanish', ${documentText}) @@ search_terms.broad_query
+       ORDER BY
+         d.candidate_id,
+         rank DESC,
+         d.is_primary_cv DESC,
+         d.created_at DESC
      ), candidate_hits AS (
        SELECT c.id,
          0.02 + ts_rank_cd(c.search_vector, search_terms.broad_query)
@@ -176,15 +192,8 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
 
        UNION ALL
 
-       SELECT d.candidate_id AS id,
-         max(0.02 + ts_rank_cd(to_tsvector('spanish', ${documentText}), search_terms.broad_query)
-           + CASE WHEN to_tsvector('spanish', ${documentText}) @@ search_terms.exact_query THEN 1 ELSE 0 END) AS rank
-       FROM documents d
-       JOIN candidates c ON c.id=d.candidate_id
-       CROSS JOIN search_terms
-       WHERE ${candidateFilter}
-         AND to_tsvector('spanish', ${documentText}) @@ search_terms.broad_query
-       GROUP BY d.candidate_id
+       SELECT id, rank
+       FROM document_hits
      ), matched AS (
        SELECT id, max(rank) AS rank
        FROM candidate_hits
@@ -200,7 +209,7 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
      SELECT c.*,
       coalesce(src.source_count, 0)::int AS source_count,
       coalesce(src.source_types, '{}'::text[]) AS source_types,
-      coalesce(doc_count.document_count, 0)::int AS document_count,
+      coalesce(primary_doc.document_count, 0)::int AS document_count,
       primary_doc.file_name AS primary_document_name,
       primary_doc.id AS primary_document_id,
       primary_doc.mime_type AS primary_document_mime_type,
@@ -215,56 +224,42 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
             'EVIDENCIA EN OTRO DOCUMENTO: ',
             coalesce(matched_doc.file_name, 'CV'),
             E'\n',
-            matched_doc.search_evidence
+            ts_headline(
+              'spanish',
+              coalesce(matched_doc.raw_text, ''),
+              search_terms.broad_query,
+              'MaxFragments=12, MinWords=8, MaxWords=55, FragmentDelimiter=" ... "'
+            )
           ), '')
         END
       ) AS document_snippet,
-      source_activity.latest_source_at,
+      src.latest_source_at,
       top_matches.rank
      FROM top_matches
      JOIN candidates c ON c.id=top_matches.id
+     CROSS JOIN search_terms
      LEFT JOIN LATERAL (
-       SELECT count(*)::int AS document_count
-       FROM documents d
-       WHERE d.candidate_id = c.id
-     ) doc_count ON true
-     LEFT JOIN LATERAL (
-       SELECT d.id, d.file_name, d.mime_type, d.source_type, d.raw_text
+       SELECT
+         d.id,
+         d.file_name,
+         d.mime_type,
+         d.source_type,
+         d.raw_text,
+         count(*) OVER ()::int AS document_count
        FROM documents d
        WHERE d.candidate_id = c.id
        ORDER BY d.is_primary_cv DESC, d.created_at DESC
        LIMIT 1
      ) primary_doc ON true
-     LEFT JOIN LATERAL (
-       SELECT d.id,
-         d.file_name,
-         ts_headline(
-           'spanish',
-           coalesce(d.raw_text, ''),
-           search_terms.broad_query,
-           'MaxFragments=12, MinWords=8, MaxWords=55, FragmentDelimiter=" ... "'
-         ) AS search_evidence
-       FROM documents d
-       CROSS JOIN search_terms
-       WHERE d.candidate_id = c.id
-         AND to_tsvector('spanish', ${documentText}) @@ search_terms.broad_query
-       ORDER BY
-         ts_rank_cd(to_tsvector('spanish', ${documentText}), search_terms.broad_query) DESC,
-         d.is_primary_cv DESC,
-         d.created_at DESC
-       LIMIT 1
-     ) matched_doc ON true
+     LEFT JOIN document_hits matched_hit ON matched_hit.id = c.id
+     LEFT JOIN documents matched_doc ON matched_doc.id = matched_hit.document_id
      LEFT JOIN LATERAL (
        SELECT count(DISTINCT source_type)::int AS source_count,
-         array_agg(DISTINCT source_type ORDER BY source_type) AS source_types
+         array_agg(DISTINCT source_type ORDER BY source_type) AS source_types,
+         max(cs.source_created_at) AS latest_source_at
        FROM candidate_sources cs
        WHERE cs.candidate_id = c.id AND cs.is_active=true
      ) src ON true
-     LEFT JOIN LATERAL (
-       SELECT max(cs.source_created_at) AS latest_source_at
-       FROM candidate_sources cs
-       WHERE cs.candidate_id = c.id AND cs.is_active=true
-     ) source_activity ON true
      ORDER BY top_matches.rank DESC, c.quality_score DESC, c.updated_at DESC`,
     params,
     9_000
