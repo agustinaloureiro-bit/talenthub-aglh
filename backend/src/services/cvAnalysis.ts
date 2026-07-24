@@ -1,4 +1,4 @@
-import { findUruguayPlace, knownUruguayLocationNames } from "../intelligence/uruguayGeography.js";
+import { knownUruguayLocationNames } from "../intelligence/uruguayGeography.js";
 
 export type CvLanguageEvidence = {
   lang: string;
@@ -141,8 +141,10 @@ function declaredLocation(value: string) {
     .replace(/\s+/g, " ")
     .trim();
   if (location.length < 3 || location.length > 100 || !/[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{3}/.test(location) || /@/.test(location)) return null;
-  const knownPlace = findUruguayPlace(location);
-  if (knownPlace) return knownPlace.name;
+  const knownPlace = earliestKnownLocation(withoutStreetPlaceNames(location));
+  if (knownPlace) return knownPlace;
+  const landmark = landmarkLocation(location);
+  if (landmark) return landmark;
   return location.replace(/,?\s*Uruguay\s*$/i, "").trim() || null;
 }
 
@@ -150,6 +152,24 @@ export function extractCvResidence(input: string) {
   const compact = String(input ?? "").replace(/\u0000/g, " ").replace(/\s+/g, " ").trim();
   if (!compact) return null;
   const personalMarker = /\b(?:datos personales|informaci[oó]n personal|contacto|domicilio|direcci[oó]n|ubicaci[oó]n|localidad|barrio|departamento|lugar de residencia|residencia\s*:|radicad[oa] en|vive en)\b/i.exec(compact);
+  const professionalMarker = /\b(?:experiencia laboral|experiencia profesional|trayectoria(?: laboral| profesional)?|antecedentes laborales|historial laboral|empleos?|educaci[oó]n|formaci[oó]n|estudios(?: b[aá]sicos| avanzados)?)\b/i.exec(compact);
+  const frontMatterEnd = Math.min(professionalMarker?.index ?? 2_400, 2_400);
+  const frontMatter = compact.slice(0, frontMatterEnd);
+  const hasContactEvidence = Boolean(
+    personalMarker
+    || /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(frontMatter)
+    || /(?:\+?598\s?)?(?:0?9\d|2\d|4\d)[\s.-]?\d{3}[\s.-]?\d{3,4}/.test(frontMatter)
+  );
+
+  // Many CV templates put the address in the header, before "Información personal".
+  // Only inspect the front matter: locations appearing in jobs or studies are not residence evidence.
+  if (hasContactEvidence) {
+    const frontMatterCity = declaredLocation(frontMatter)
+      ?? earliestKnownLocation(withoutStreetPlaceNames(frontMatter))
+      ?? landmarkLocation(frontMatter);
+    if (frontMatterCity) return { city: frontMatterCity, country: "Uruguay" };
+  }
+
   if (!personalMarker || personalMarker.index == null) return null;
   const afterMarker = compact.slice(personalMarker.index, personalMarker.index + 1_400);
   const markerOffset = personalMarker[0].length + 20;

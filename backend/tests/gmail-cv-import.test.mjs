@@ -864,6 +864,24 @@ Escuela 236, Toledo, Canelones, Uruguay.`;
   assert.equal(analyzeCvText(text).city, "Maldonado");
 });
 
+test("analisis de CV toma la residencia del encabezado anterior al bloque personal", async () => {
+  const { analyzeCvText, extractCvResidence } = await import("../dist/services/cvAnalysis.js");
+  const text = `LUIS ALEXIS CAMMARANO MORALEZ
+BALNEARIO BUENOS AIRES-MALDONADO
+CALLE 26
+Celular +598 92 019 063
+Email: candidato@example.com
+INFORMACION PERSONAL
+Ciudadania uruguaya
+Libreta de conducir categorias A, E y C
+EXPERIENCIA LABORAL
+Chofer repartidor en Montevideo
+Guardia de seguridad en Camino Maldonado, Montevideo`;
+
+  assert.deepEqual(extractCvResidence(text), { city: "Maldonado", country: "Uruguay" });
+  assert.equal(analyzeCvText(text).city, "Maldonado");
+});
+
 test("analisis de CV reconoce Montevideo desde una direccion partida en columnas", async () => {
   const { analyzeCvText, extractCvResidence } = await import("../dist/services/cvAnalysis.js");
   const text = `Nahuel Perez

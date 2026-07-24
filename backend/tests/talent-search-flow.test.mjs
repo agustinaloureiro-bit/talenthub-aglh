@@ -411,6 +411,46 @@ test("operario de fabrica cerca del Prado recupera equivalentes y no oculta Mont
   assert.match(ranked[3].matchReason, /no como perfil principal/i);
 });
 
+test("la residencia declarada en el encabezado corrige una ciudad historica incompatible", () => {
+  const interpreted = interpretTalentQuery("Busco una persona para supermercado que viva cerca del Prado.");
+  const ranked = rerankCandidates([
+    {
+      id: "maldonado-mal-clasificado",
+      fullName: "Luis Cammarano",
+      currentRole: "Chofer",
+      city: "Montevideo",
+      country: "Uruguay",
+      tags: ["supermercado", "chofer"],
+      qualityScore: 90,
+      documentCount: 1,
+      documentSnippet: `LUIS CAMMARANO
+BALNEARIO BUENOS AIRES-MALDONADO
+Celular +598 92 019 063
+Email candidato@example.com
+INFORMACION PERSONAL
+EXPERIENCIA LABORAL
+Guardia en supermercado de Montevideo`,
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "prado",
+      fullName: "Carlos Prado",
+      currentRole: "Repositor",
+      city: "Prado",
+      country: "Uruguay",
+      tags: ["supermercado"],
+      qualityScore: 60,
+      documentCount: 1,
+      documentSnippet: "CONTACTO Domicilio: Prado, Montevideo. EXPERIENCIA LABORAL Repositor de supermercado.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.deepEqual(ranked.map((candidate) => candidate.id), ["prado"]);
+});
+
 test("amplia la consulta conceptual antes de buscar en todos los CV", async () => {
   let providerQuery = "";
   const engine = new RecruitmentIntelligenceEngine(async (query) => {
