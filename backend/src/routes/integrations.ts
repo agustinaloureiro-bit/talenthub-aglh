@@ -1210,8 +1210,32 @@ async function exchangeGoogleOAuthCode(sourceType: "gmail" | "drive", config: Re
 async function googleJson(url: string, token: string) {
   const response = await fetch(url, { headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(`Google API respondio ${response.status}: ${JSON.stringify(payload).slice(0, 180)}`);
+  if (!response.ok) {
+    const error = new Error(`Google API respondio ${response.status}: ${JSON.stringify(payload).slice(0, 180)}`) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
+  }
   return payload;
+}
+
+export function googleApiErrorHasStatus(error: unknown, status: number) {
+  const candidate = error as { status?: unknown; message?: unknown } | null;
+  if (Number(candidate?.status) === status) return true;
+  return new RegExp(`Google API respondio\\s+${status}\\b`, "i").test(cleanText(candidate?.message));
+}
+
+export function gmailShouldUseHistory(config: Record<string, unknown>) {
+  const storedPendingIds = Array.isArray(config.gmailPendingMessageIds)
+    ? (config.gmailPendingMessageIds as unknown[]).map(cleanText).filter(Boolean)
+    : [];
+  const hasListQueue = storedPendingIds.length > 0 || Boolean(cleanText(config.gmailNextPageToken));
+  const hasHistoryCursor = Boolean(cleanText(config.gmailHistoryId) || cleanText(config.gmailHistoryStartId));
+  return Boolean(
+    cleanText(config.gmailBackfillCompleteAt)
+    && !cleanText(config.query)
+    && hasHistoryCursor
+    && (config.gmailHistorySyncActive === true || !hasListQueue)
+  );
 }
 
 function googleWebFallback(sourceType: "gmail" | "drive", displayName: string, config: Record<string, unknown>) {
@@ -1721,20 +1745,17 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
     const storedHistoryStartId = cleanText(config.gmailHistoryStartId);
     const storedHistoryTargetId = cleanText(config.gmailHistoryTargetId);
     const storedHistoryPageToken = cleanText(config.gmailHistoryNextPageToken);
-    const canUseHistory = Boolean(
-      cleanText(config.gmailBackfillCompleteAt)
-      && !cleanText(config.query)
-      && (storedHistoryId || storedHistoryStartId)
-    );
-    const historyMode = canUseHistory && (storedPendingIds.length > 0 || storedHistoryId || storedHistoryStartId);
+    const historyMode = gmailShouldUseHistory(config);
     const syncQuery = historyMode
       ? { query: "", mode: "history", since: storedHistoryStartId || storedHistoryId }
       : gmailSyncQueryForConfig(config, storedPendingIds.length > 0 || Boolean(storedNextPageToken));
+    let syncMode = syncQuery.mode;
+    let syncSince = syncQuery.since;
     let historySeedId = cleanText(config.gmailHistorySeedId);
-    if (!historyMode && syncQuery.mode !== "custom" && !historySeedId) {
+    if (!historyMode && syncMode !== "custom" && !historySeedId) {
       historySeedId = (await gmailProfile(auth.token)).historyId;
     }
-    const query = syncQuery.query;
+    let query = syncQuery.query;
     const resetStoredQueue = !historyMode && Boolean(storedQuery && storedQuery !== query);
     const pendingIds = resetStoredQueue ? [] : storedPendingIds;
     let nextPageToken = resetStoredQueue ? "" : storedNextPageToken;
@@ -1760,7 +1781,7 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
           totalMatchingMessages = batchMessageIds.length;
           fetchedPage = true;
         } catch (error: any) {
-          if (!/Google API respondio 404:/i.test(cleanText(error?.message))) throw error;
+          if (!googleApiErrorHasStatus(error, 404)) throw error;
           // Gmail expires old history cursors. A one-day-overlap search safely rebuilds it.
           historyStartId = "";
           historyTargetId = "";
@@ -1773,9 +1794,9 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
           nextPageToken = cleanText(list.nextPageToken);
           totalMatchingMessages = Number(list.resultSizeEstimate ?? totalMatchingMessages);
           fetchedPage = true;
-          syncQuery.query = fallback.query;
-          syncQuery.mode = "incremental";
-          syncQuery.since = fallback.since;
+          query = fallback.query;
+          syncMode = fallback.mode;
+          syncSince = fallback.since;
         }
       } else {
         const pageToken = resetStoredQueue ? "" : cleanText(config.gmailNextPageToken);
@@ -1795,6 +1816,7 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
     let candidateAttachmentCount = 0;
     let skippedSystem = 0;
     let skippedNoSignal = 0;
+    let skippedMissing = 0;
     let parsedNoCandidate = 0;
     let stoppedByTime = false;
     let processedMessages = 0;
@@ -1805,7 +1827,14 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
         break;
       }
       processedMessages += 1;
-      const message = await googleJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`, auth.token);
+      let message: any;
+      try {
+        message = await googleJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`, auth.token);
+      } catch (error) {
+        if (!googleApiErrorHasStatus(error, 404)) throw error;
+        skippedMissing += 1;
+        continue;
+      }
       const parsed = gmailMessageText(message);
       const attachments = await gmailAttachments(id, parsed.parts, auth.token, deadlineMs);
       const candidateAttachments = attachments.filter(gmailAttachmentLooksCandidate);
@@ -1856,22 +1885,22 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
       }
     }
     const remainingPendingIds = batchMessageIds.slice(processedMessages);
-    const hasMore = remainingPendingIds.length > 0 || Boolean(syncQuery.mode === "history" ? historyNextPageToken : nextPageToken);
+    const hasMore = remainingPendingIds.length > 0 || Boolean(syncMode === "history" ? historyNextPageToken : nextPageToken);
     const finishedAt = new Date().toISOString();
-    const completedHistoricalAt = !hasMore && syncQuery.mode === "historical" ? finishedAt : (cleanText(config.gmailBackfillCompleteAt) || null);
-    const lastIncrementalSyncAt = !hasMore && (syncQuery.mode === "incremental" || syncQuery.mode === "history") ? finishedAt : (cleanText(config.gmailLastIncrementalSyncAt) || null);
+    const completedHistoricalAt = !hasMore && syncMode === "historical" ? finishedAt : (cleanText(config.gmailBackfillCompleteAt) || null);
+    const lastIncrementalSyncAt = !hasMore && (syncMode === "incremental" || syncMode === "history") ? finishedAt : (cleanText(config.gmailLastIncrementalSyncAt) || null);
     let committedHistoryId = storedHistoryId || null;
-    if (!hasMore && syncQuery.mode === "history") {
+    if (!hasMore && syncMode === "history") {
       committedHistoryId = historyTargetId || historyStartId || storedHistoryId || null;
-    } else if (!hasMore && syncQuery.mode !== "historical" && syncQuery.mode !== "custom") {
+    } else if (!hasMore && syncMode !== "historical" && syncMode !== "custom") {
       committedHistoryId = historySeedId || (await gmailProfile(auth.token)).historyId || committedHistoryId;
-    } else if (!hasMore && syncQuery.mode === "historical") {
+    } else if (!hasMore && syncMode === "historical") {
       committedHistoryId = historySeedId || (await gmailProfile(auth.token)).historyId || committedHistoryId;
     }
     const sampleText = unique(sampleAttachments).slice(0, 5).join(", ");
     const progressText = totalMatchingMessages ? ` de aprox. ${totalMatchingMessages}` : "";
-    const modeText = syncQuery.mode === "history" ? "modo correos nuevos" : (syncQuery.mode === "incremental" ? `modo nuevos desde ${syncQuery.since}` : (syncQuery.mode === "custom" ? "modo busqueda personalizada" : "modo historico"));
-    const diagnostic = `Gmail (${modeText}): procesados ${processedMessages}${progressText} correos de la tanda, ${messagesWithAttachments} con adjuntos, ${reviewedAttachments} adjuntos PDF/Word/texto revisados, ${candidateAttachmentCount} con pinta de CV, ${rows.length} candidatos extraidos. Ignorados: ${skippedSystem} sistema, ${skippedNoSignal} sin senales, ${parsedNoCandidate} sin nombre/contacto.${hasMore ? " Quedan mas correos: volve a sincronizar para seguir importando." : " Se llego al final de la busqueda guardada; las proximas sincronizaciones van a revisar solo correos nuevos."}${stoppedByTime ? " Se corto por tiempo y guardo resultado parcial." : ""}${sampleText ? ` Adjuntos ejemplo: ${sampleText}.` : ""}`;
+    const modeText = syncMode === "history" ? "modo correos nuevos" : (syncMode === "incremental" ? `modo nuevos desde ${syncSince}` : (syncMode === "custom" ? "modo busqueda personalizada" : "modo historico"));
+    const diagnostic = `Gmail (${modeText}): procesados ${processedMessages}${progressText} correos de la tanda, ${messagesWithAttachments} con adjuntos, ${reviewedAttachments} adjuntos PDF/Word/texto revisados, ${candidateAttachmentCount} con pinta de CV, ${rows.length} candidatos extraidos. Ignorados: ${skippedSystem} sistema, ${skippedNoSignal} sin senales, ${parsedNoCandidate} sin nombre/contacto, ${skippedMissing} eliminados o no disponibles.${hasMore ? " Quedan mas correos: volve a sincronizar para seguir importando." : " Se llego al final de la busqueda guardada; las proximas sincronizaciones van a revisar solo correos nuevos."}${stoppedByTime ? " Se corto por tiempo y guardo resultado parcial." : ""}${sampleText ? ` Adjuntos ejemplo: ${sampleText}.` : ""}`;
     return {
       rows,
       configUpdate: {
@@ -1883,27 +1912,28 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
         gmailNextPageToken: remainingPendingIds.length ? nextPageToken : (nextPageToken || null),
         gmailPendingMessageIds: remainingPendingIds,
         gmailHistoryId: committedHistoryId,
-        gmailHistoryStartId: hasMore && syncQuery.mode === "history" ? historyStartId : null,
-        gmailHistoryTargetId: hasMore && syncQuery.mode === "history" ? historyTargetId : null,
-        gmailHistoryNextPageToken: hasMore && syncQuery.mode === "history" ? historyNextPageToken : null,
-        gmailHistorySyncActive: syncQuery.mode === "history" && hasMore,
-        gmailHistorySeedId: hasMore && syncQuery.mode !== "history" ? historySeedId : null,
+        gmailHistoryStartId: hasMore && syncMode === "history" ? historyStartId : null,
+        gmailHistoryTargetId: hasMore && syncMode === "history" ? historyTargetId : null,
+        gmailHistoryNextPageToken: hasMore && syncMode === "history" ? historyNextPageToken : null,
+        gmailHistorySyncActive: syncMode === "history" && hasMore,
+        gmailHistorySeedId: hasMore && syncMode !== "history" ? historySeedId : null,
         gmailTotalMatchingMessages: totalMatchingMessages,
         gmailLastFetchedNewPage: fetchedPage,
         gmailHasMore: hasMore,
-        gmailSyncMode: syncQuery.mode,
-        gmailIncrementalSince: syncQuery.since || null,
+        gmailSyncMode: syncMode,
+        gmailIncrementalSince: syncSince || null,
         gmailBackfillCompleteAt: completedHistoricalAt,
         gmailLastIncrementalSyncAt: lastIncrementalSyncAt
       },
       message: diagnostic
     };
   } catch (error: any) {
+    const requiresOauth = googleApiErrorHasStatus(error, 401) || googleApiErrorHasStatus(error, 403);
     return {
       rows: [],
       configUpdate: {
         ...auth.configUpdate,
-        sessionStatus: "requires_oauth",
+        sessionStatus: requiresOauth ? "requires_oauth" : "error",
         sessionLastError: `Gmail API no funciono: ${cleanText(error?.message).slice(0, 180)}`
       },
       message: `Gmail API no funciono: ${cleanText(error?.message).slice(0, 180)}`

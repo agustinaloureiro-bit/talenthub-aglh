@@ -654,6 +654,41 @@ test("Gmail extrae sin duplicar los mensajes nuevos del historial", async () => 
   assert.deepEqual(result, ["nuevo-1", "nuevo-2"]);
 });
 
+test("Gmail reconoce un historial vencido por estado o por mensaje de Google", async () => {
+  const { googleApiErrorHasStatus } = await import("../dist/routes/integrations.js");
+  const statusError = Object.assign(new Error("not found"), { status: 404 });
+  const legacyError = new Error('Google API respondio 404: {"error":{"message":"Requested entity was not found."}}');
+
+  assert.equal(googleApiErrorHasStatus(statusError, 404), true);
+  assert.equal(googleApiErrorHasStatus(legacyError, 404), true);
+  assert.equal(googleApiErrorHasStatus(legacyError, 401), false);
+});
+
+test("Gmail termina la recuperacion incremental antes de volver al historial", async () => {
+  const { gmailShouldUseHistory } = await import("../dist/routes/integrations.js");
+  const base = {
+    gmailBackfillCompleteAt: "2026-07-20T14:45:01.000Z",
+    gmailHistoryId: "historial-vencido"
+  };
+
+  assert.equal(gmailShouldUseHistory(base), true);
+  assert.equal(gmailShouldUseHistory({
+    ...base,
+    gmailNextPageToken: "pagina-recuperacion",
+    gmailHistorySyncActive: false
+  }), false);
+  assert.equal(gmailShouldUseHistory({
+    ...base,
+    gmailPendingMessageIds: ["mensaje-pendiente"],
+    gmailHistorySyncActive: false
+  }), false);
+  assert.equal(gmailShouldUseHistory({
+    ...base,
+    gmailPendingMessageIds: ["mensaje-historial"],
+    gmailHistorySyncActive: true
+  }), true);
+});
+
 test("Gmail Takeout MBOX importa CV adjunto con ventas y gastronomia", async () => {
   const { candidatesFromGmailMbox } = await import("../dist/routes/integrations.js");
   const cvText = `Camila Perez
