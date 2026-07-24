@@ -33,6 +33,20 @@ test("interpreta auxiliar administrativo con facturacion sin palabras de relleno
   assert.doesNotMatch(providerQuery, /\bbusco\b|\bexperiencia\b/);
 });
 
+test("la recuperacion conserva competencias no catalogadas de la consulta original", async () => {
+  let providerQuery = "";
+  const engine = new RecruitmentIntelligenceEngine(async (query) => {
+    providerQuery = query;
+    return [];
+  });
+
+  await engine.search("Busco técnico con experiencia en metrología industrial");
+
+  assert.match(providerQuery, /t[eé]cnico/i);
+  assert.match(providerQuery, /metrolog[ií]a/i);
+  assert.match(providerQuery, /industrial/i);
+});
+
 test("interpreta deposito, autoelevador y preparacion de pedidos como criterios buscables", () => {
   const interpreted = interpretTalentQuery("Necesito auxiliar de depósito con autoelevador, picking y preparación de pedidos");
 

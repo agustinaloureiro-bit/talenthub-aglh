@@ -4,6 +4,21 @@ import type { TalentCandidateResult, TalentSearchFilters, TalentSearchResult } f
 
 export type CandidateSearchProvider = (query: string, filters?: TalentSearchFilters) => Promise<TalentCandidateResult[]>;
 
+function retrievalSignals(query: string) {
+  const ignoredWords = new Set([
+    "busco", "buscar", "buscando", "estoy", "necesito", "preciso", "persona", "alguien",
+    "perfil", "candidato", "candidata", "con", "sin", "para", "experiencia", "experiencias",
+    "tener", "tenga", "que", "una", "uno", "trabajar", "necesita", "necesitan", "requiere",
+    "requieren", "especifica", "especifico", "sean", "alrededores", "hombre", "hombres",
+    "mujer", "mujeres"
+  ]);
+  return query
+    .split(/\s+/)
+    .map((word) => word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
+    .filter((word) => word.length >= 2 && !ignoredWords.has(word.toLowerCase()))
+    .join(" ");
+}
+
 export class RecruitmentIntelligenceEngine {
   constructor(private readonly fallbackSearch: CandidateSearchProvider) {}
 
@@ -16,7 +31,10 @@ export class RecruitmentIntelligenceEngine {
       ...interpreted.industries,
       ...interpreted.locations
     ].filter(Boolean);
-    const retrievalQuery = [...new Set(understoodConcepts.length ? understoodConcepts : [interpreted.normalizedQuery])].join(" ");
+    const retrievalQuery = [...new Set([
+      retrievalSignals(interpreted.normalizedQuery),
+      ...understoodConcepts
+    ].filter(Boolean))].join(" ");
     const candidates = await this.fallbackSearch(retrievalQuery, filters);
     let ranked = rerankCandidates(candidates, interpreted)
       .filter((candidate) => candidate.score >= (filters.minScore ?? 0));

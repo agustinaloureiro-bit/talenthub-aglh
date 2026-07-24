@@ -205,7 +205,20 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
       primary_doc.id AS primary_document_id,
       primary_doc.mime_type AS primary_document_mime_type,
       primary_doc.source_type AS primary_document_source_type,
-      left(coalesce(primary_doc.raw_text, ''), 3500) AS document_snippet,
+      concat_ws(
+        E'\n\n',
+        nullif(left(coalesce(primary_doc.raw_text, ''), 5000), ''),
+        CASE
+          WHEN matched_doc.id IS NULL OR matched_doc.id = primary_doc.id
+            THEN nullif(substring(coalesce(primary_doc.raw_text, '') FROM 5001 FOR 5000), '')
+          ELSE nullif(concat(
+            'EVIDENCIA EN OTRO DOCUMENTO: ',
+            coalesce(matched_doc.file_name, 'CV'),
+            E'\n',
+            matched_doc.search_evidence
+          ), '')
+        END
+      ) AS document_snippet,
       source_activity.latest_source_at,
       top_matches.rank
      FROM top_matches
@@ -222,6 +235,25 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
        ORDER BY d.is_primary_cv DESC, d.created_at DESC
        LIMIT 1
      ) primary_doc ON true
+     LEFT JOIN LATERAL (
+       SELECT d.id,
+         d.file_name,
+         ts_headline(
+           'spanish',
+           coalesce(d.raw_text, ''),
+           search_terms.broad_query,
+           'MaxFragments=12, MinWords=8, MaxWords=55, FragmentDelimiter=" ... "'
+         ) AS search_evidence
+       FROM documents d
+       CROSS JOIN search_terms
+       WHERE d.candidate_id = c.id
+         AND to_tsvector('spanish', ${documentText}) @@ search_terms.broad_query
+       ORDER BY
+         ts_rank_cd(to_tsvector('spanish', ${documentText}), search_terms.broad_query) DESC,
+         d.is_primary_cv DESC,
+         d.created_at DESC
+       LIMIT 1
+     ) matched_doc ON true
      LEFT JOIN LATERAL (
        SELECT count(DISTINCT source_type)::int AS source_count,
          array_agg(DISTINCT source_type ORDER BY source_type) AS source_types
