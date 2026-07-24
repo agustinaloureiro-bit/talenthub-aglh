@@ -20,6 +20,7 @@ export type InterpretedTalentQuery = {
   locations: string[];
   keywords: string[];
   locationGroups: string[][];
+  locationStrict: boolean;
   profileLevel?: "basic" | null;
   ignoredCriteria: string[];
   mustHave: string[];

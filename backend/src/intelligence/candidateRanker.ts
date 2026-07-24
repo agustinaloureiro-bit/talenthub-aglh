@@ -162,7 +162,7 @@ function requestedConcepts(interpreted: InterpretedTalentQuery) {
 function satisfiesResidualKeywords(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   if (!interpreted.keywords.length) return true;
   const haystack = candidateHaystack(candidate);
-  return interpreted.keywords.some((keyword) => includesAny(haystack, [keyword]));
+  return interpreted.keywords.every((keyword) => includesAny(haystack, [keyword]));
 }
 
 function conceptMatchesText(text: string, interpreted: InterpretedTalentQuery, concept: string) {
@@ -251,7 +251,7 @@ function candidateResidence(candidate: TalentCandidateResult) {
 function candidateLocationMatch(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   if (!interpreted.locations.length) return { matches: true, distanceKm: null, confidence: "not_requested" as const };
   const residence = candidateResidence(candidate);
-  if (!residence) return { matches: true, distanceKm: null, confidence: "unknown" as const };
+  if (!residence) return { matches: !interpreted.locationStrict, distanceKm: null, confidence: "unknown" as const };
 
   for (const requestedLocation of interpreted.locations) {
     const proximity = evaluateUruguayProximity(residence, requestedLocation);
@@ -264,7 +264,7 @@ function candidateLocationMatch(candidate: TalentCandidateResult, interpreted: I
       && normalizePlaceName(candidatePlace.name) === "montevideo"
       && candidatePlace.department === requestedPlace.department;
     if (candidateIsBroadMontevideo) {
-      return { matches: true, distanceKm: null, confidence: "broad" as const };
+      return { matches: !interpreted.locationStrict, distanceKm: null, confidence: "broad" as const };
     }
   }
 
@@ -276,7 +276,7 @@ function candidateLocationMatch(candidate: TalentCandidateResult, interpreted: I
   const knownRequestedLocation = interpreted.locations.some((location) => findUruguayPlace(location));
   return knownResidence && knownRequestedLocation
     ? { matches: false, distanceKm: null, confidence: "incompatible" as const }
-    : { matches: true, distanceKm: null, confidence: "unknown" as const };
+    : { matches: !interpreted.locationStrict, distanceKm: null, confidence: "unknown" as const };
 }
 
 const BASIC_WORK_PATTERN = /\b(?:operari[oa]|cajer[oa]|repositor[oa]|auxiliar|pe[oó]n|deposito|dep[oó]sito|stock|almac[eé]n|limpieza|atenci[oó]n al cliente|ventas|mozo|moza|cocina|producci[oó]n|log[ií]stica|supermercado|retail)\b/i;

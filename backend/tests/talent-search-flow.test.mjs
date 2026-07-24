@@ -19,7 +19,7 @@ test("interpreta abogado con ingles como rol e idioma", () => {
 test("interpreta auxiliar administrativo con facturacion sin palabras de relleno", async () => {
   const interpreted = interpretTalentQuery("Busco un auxiliar administrativo con experiencia en facturación");
   assert.deepEqual(interpreted.roles, ["auxiliar administrativo"]);
-  assert.ok(interpreted.skills.includes("facturación"));
+  assert.ok(interpreted.skills.some((skill) => /facturaci[oó]n/i.test(skill)));
 
   let providerQuery = "";
   const engine = new RecruitmentIntelligenceEngine(async (query) => {
@@ -226,6 +226,7 @@ test("interpreta supermercado sin experiencia como perfil operativo y expande Ci
   assert.ok(interpreted.locationGroups[0].includes("lagomar"));
   assert.ok(!interpreted.locationGroups[0].includes("canelones"));
   assert.deepEqual(interpreted.ignoredCriteria, ["genero"]);
+  assert.equal(interpreted.locationStrict, true);
 });
 
 test("calcula cercania geografica real para localidades uruguayas", () => {
@@ -371,7 +372,7 @@ test("prioriza ubicación y sistema cuando se piden en lenguaje natural", () => 
   assert.match(ranked[0].matchReason, /ubicación solicitada/i);
 });
 
-test("operario de fabrica cerca del Prado recupera equivalentes y no oculta Montevideo sin barrio", () => {
+test("operario de fabrica con residencia obligatoria cerca del Prado exige evidencia geografica", () => {
   const interpreted = interpretTalentQuery("Busco un operario para fábrica, tiene que vivir cerca del Prado y tener experiencia en fábrica.");
   const ranked = rerankCandidates([
     {
@@ -447,14 +448,10 @@ test("operario de fabrica cerca del Prado recupera equivalentes y no oculta Mont
     }
   ], interpreted);
 
-  assert.deepEqual(ranked.map((candidate) => candidate.id), ["prado", "montevideo", "sin-ubicacion", "experiencia-previa"]);
+  assert.deepEqual(ranked.map((candidate) => candidate.id), ["prado", "experiencia-previa"]);
   assert.match(ranked[0].matchReason, /ubicación solicitada/i);
-  assert.match(ranked[1].matchReason, /barrio no está declarado/i);
-  assert.match(ranked[2].matchReason, /ubicación pendiente de verificar/i);
-  assert.ok(ranked[0].score > ranked[1].score);
-  assert.ok(ranked[1].score > ranked[2].score);
-  assert.ok(ranked[3].score < 70);
-  assert.match(ranked[3].matchReason, /no como perfil principal/i);
+  assert.ok(ranked[1].score < 70);
+  assert.match(ranked[1].matchReason, /no como perfil principal/i);
 });
 
 test("la residencia declarada en el encabezado corrige una ciudad historica incompatible", () => {

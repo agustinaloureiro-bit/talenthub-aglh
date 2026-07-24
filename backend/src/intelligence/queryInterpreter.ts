@@ -161,11 +161,17 @@ function findHints(query: string, hints: string[]) {
   const matches = hints
     .filter((hint) => normalized.includes(normalizeHint(hint)))
     .sort((left, right) => normalizeHint(right).length - normalizeHint(left).length);
-  return matches.filter((hint, index) => !matches.slice(0, index).some((longer) => {
+  const filtered = matches.filter((hint, index) => !matches.slice(0, index).some((longer) => {
     const normalizedHint = normalizeHint(hint);
     const normalizedLonger = normalizeHint(longer);
     return normalizedLonger.includes(normalizedHint) && normalizedLonger !== normalizedHint;
   }));
+  const unique = new Map<string, string>();
+  for (const hint of filtered) {
+    const normalizedHint = normalizeHint(hint);
+    if (!unique.has(normalizedHint)) unique.set(normalizedHint, hint);
+  }
+  return [...unique.values()];
 }
 
 function requiredGroupsForQuery(query: string, roles: string[]) {
@@ -187,6 +193,13 @@ function basicProfileRequested(query: string) {
   const normalized = normalizeHint(query);
   return /\b(?:sin experiencia|no (?:necesita|necesitan|requiere|requieren) (?:tener )?experiencia|trabajo (?:basico|operativo)|perfil (?:basico|operativo)|puesto (?:basico|operativo))\b/.test(normalized)
     || (/\bsupermercad/.test(normalized) && /\b(?:sin experiencia|no requiere|no necesitan)\b/.test(normalized));
+}
+
+function strictLocationRequested(query: string) {
+  const normalized = normalizeHint(query);
+  return /\b(?:tiene que|debe|deben|preciso que|necesito que)\s+(?:vivir|viva|vivan|ser|sean|residir)\b/.test(normalized)
+    || /\b(?:vivir|residir)\s+cerca\b/.test(normalized)
+    || /\bresidentes?\s+de\b/.test(normalized);
 }
 
 function ignoredSensitiveCriteria(query: string) {
@@ -239,6 +252,7 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
     locations,
     keywords,
     locationGroups: locationGroupsForQuery(locations),
+    locationStrict: strictLocationRequested(normalizedQuery),
     profileLevel,
     ignoredCriteria: ignoredSensitiveCriteria(normalizedQuery),
     mustHave: [...roles, ...skills, ...languages, ...locations, ...keywords],
