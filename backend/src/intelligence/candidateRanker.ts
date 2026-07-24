@@ -232,12 +232,16 @@ function hasFactoryOperationsRoleEvidence(candidate: TalentCandidateResult) {
 
 function satisfiesRequiredGroups(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   if (!interpreted.requiredGroups.length) return true;
-  if (isAmbulanceDriverQuery(interpreted)) return hasAmbulanceDriverEvidence(candidate);
+  if (isAmbulanceDriverQuery(interpreted) && !hasAmbulanceDriverEvidence(candidate)) return false;
   const requiresOperationalRole = interpreted.roles
     .some((role) => ["operario", "operaria"].includes(normalizeSearchValue(role)));
   if (requiresOperationalRole && !hasFactoryOperationsRoleEvidence(candidate)) return false;
   const evidence = candidateHaystack(candidate);
-  return interpreted.requiredGroups.every((group) => includesAny(evidence, group));
+  return interpreted.requiredGroups.every((group) => {
+    if (isAmbulanceDriverQuery(interpreted)
+      && (group.includes("ambulanciero") || group.includes("ambulancia"))) return true;
+    return includesAny(evidence, group);
+  });
 }
 
 function candidateResidence(candidate: TalentCandidateResult) {

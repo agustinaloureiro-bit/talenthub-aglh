@@ -174,15 +174,28 @@ function findHints(query: string, hints: string[]) {
   return [...unique.values()];
 }
 
-function requiredGroupsForQuery(query: string, roles: string[]) {
+function requiredGroupsForQuery(
+  query: string,
+  roles: string[],
+  skills: string[],
+  languages: string[],
+  industries: string[]
+) {
   const normalized = normalizeHint(query);
+  const groups = [...roles, ...skills, ...languages, ...industries].map((concept) => [concept]);
   if (/\b(chofer|conductor|ambulanciero)\b/.test(normalized) && /\b(ambulancia|emergencia movil|traslado de pacientes)\b/.test(normalized)) {
     return [
       ["chofer", "conductor", "driver", "ambulanciero"],
-      ["ambulancia", "emergencia movil", "emergencia medica", "traslado de pacientes"]
+      ["ambulancia", "emergencia movil", "emergencia medica", "traslado de pacientes"],
+      ...groups.filter((group) => !roles.includes(group[0]))
     ];
   }
-  return roles.map((role) => [role]);
+  const unique = new Map<string, string[]>();
+  for (const group of groups) {
+    const key = group.map(normalizeHint).sort().join("|");
+    if (key && !unique.has(key)) unique.set(key, group);
+  }
+  return [...unique.values()];
 }
 
 function locationGroupsForQuery(locations: string[]) {
@@ -256,6 +269,6 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
     profileLevel,
     ignoredCriteria: ignoredSensitiveCriteria(normalizedQuery),
     mustHave: [...roles, ...skills, ...languages, ...locations, ...keywords],
-    requiredGroups: requiredGroupsForQuery(normalizedQuery, roles)
+    requiredGroups: requiredGroupsForQuery(normalizedQuery, roles, skills, languages, industries)
   };
 }

@@ -14,6 +14,49 @@ test("interpreta abogado con ingles como rol e idioma", () => {
   assert.ok(interpreted.languages.includes("ingles"));
   assert.ok(interpreted.mustHave.includes("abogado"));
   assert.ok(interpreted.mustHave.includes("ingles"));
+  assert.ok(interpreted.requiredGroups.some((group) => group.includes("abogado")));
+  assert.ok(interpreted.requiredGroups.some((group) => group.includes("ingles")));
+});
+
+test("abogado con ingles exige evidencia de ambos criterios", () => {
+  const interpreted = interpretTalentQuery("Necesito un abogado con inglés.");
+  const ranked = rerankCandidates([
+    {
+      id: "completo",
+      fullName: "Martin Pereira",
+      currentRole: "Abogado",
+      tags: ["legal", "ingles"],
+      qualityScore: 60,
+      documentCount: 1,
+      documentSnippet: "Abogado corporativo. Inglés avanzado.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "sin-idioma",
+      fullName: "Pedro Rodriguez",
+      currentRole: "Abogado",
+      tags: ["legal"],
+      qualityScore: 95,
+      documentCount: 1,
+      documentSnippet: "Abogado con experiencia en derecho laboral.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "idioma-sin-rol",
+      fullName: "Lucia Fernandez",
+      currentRole: "Administrativa",
+      tags: ["ingles"],
+      qualityScore: 100,
+      documentCount: 1,
+      documentSnippet: "Administrativa con inglés avanzado.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.deepEqual(ranked.map((candidate) => candidate.id), ["completo"]);
 });
 
 test("interpreta auxiliar administrativo con facturacion sin palabras de relleno", async () => {
@@ -86,6 +129,9 @@ test("interpreta deposito, autoelevador y preparacion de pedidos como criterios 
   assert.ok(interpreted.skills.includes("autoelevador"));
   assert.ok(interpreted.skills.includes("picking"));
   assert.ok(interpreted.skills.includes("preparacion de pedidos"));
+  assert.ok(interpreted.requiredGroups.some((group) => group.includes("autoelevador")));
+  assert.ok(interpreted.requiredGroups.some((group) => group.includes("picking")));
+  assert.ok(interpreted.requiredGroups.some((group) => group.includes("preparacion de pedidos")));
 });
 
 test("prioriza evidencia exacta de deposito sobre experiencia logistica general", () => {
