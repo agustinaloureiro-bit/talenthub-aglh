@@ -11,6 +11,7 @@ import { importCandidate } from "../services/candidateIngestion.js";
 import { analyzeCvText } from "../services/cvAnalysis.js";
 import { extractDocumentText } from "../services/documentText.js";
 import { selectCandidateEmails } from "../services/candidateIdentity.js";
+import { extractCvCandidateEvidence, humanCandidateField } from "../services/cvCandidateEnrichment.js";
 import { loginAglh, syncAglh } from "../services/aglhClient.js";
 import { syncYoiners } from "../services/yoinersClient.js";
 import {
@@ -32,11 +33,11 @@ const DEFAULT_INTEGRATIONS = [
   ["linkedin", "LinkedIn Recruiter"]
 ] as const;
 
-const SYNC_ENGINE_VERSION = "2026-07-22.3";
+const SYNC_ENGINE_VERSION = "2026-07-24.1";
 const CANDIDATE_IMPORT_CONCURRENCY = 10;
 const DEFAULT_GMAIL_QUERY = "has:attachment (filename:pdf OR filename:doc OR filename:docx OR filename:rtf OR filename:txt) newer_than:3650d";
 const MAX_STORED_CV_BYTES = 8 * 1024 * 1024;
-const AGLH_REPAIR_BATCH = 20;
+const CV_REPAIR_BATCH = 30;
 
 function gmailAfterDate(value: unknown) {
   const date = new Date(cleanText(value));
@@ -3202,39 +3203,29 @@ async function markStaleSyncingIntegrations() {
   );
 }
 
-function humanField(value: unknown) {
-  const field = cleanText(value);
-  return field && /[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(field) ? field : null;
-}
-
-async function repairAglhCandidateDocuments(config: Record<string, unknown>) {
+async function repairCandidateDocuments(sourceType: string, config: Record<string, unknown>) {
   const { rows } = await q<any>(
-    `SELECT c.id AS candidate_id, c.email, c.phone, c.city, c.country, c."current_role", c.ai_tags,
+    `SELECT c.id AS candidate_id, c.full_name, c.email, c.phone, c.city, c.country, c."current_role", c.ai_tags,
             d.id AS document_id, d.file_name, d.file_url, d.mime_type, d.raw_text, d.file_data
      FROM candidates c
      JOIN LATERAL (
        SELECT doc.*
        FROM documents doc
        WHERE doc.candidate_id=c.id
-         AND doc.source_type='aglh'
+         AND doc.source_type=$1
+         AND (doc.is_primary_cv OR lower(doc.type) IN ('cv','resume','curriculum'))
          AND (doc.file_data IS NOT NULL OR coalesce(doc.file_url,'') <> '' OR length(coalesce(doc.raw_text,'')) >= 80)
        ORDER BY doc.is_primary_cv DESC, doc.created_at DESC
        LIMIT 1
      ) d ON true
      WHERE c.duplicate_of IS NULL
        AND c.status='active'
-       AND (
-         d.processed_at IS NULL
-         OR c.city IS NULL
-         OR c.city !~ '[[:alpha:]ÁÉÍÓÚÜÑáéíóúüñ]'
-         OR c."current_role" IS NULL
-         OR c."current_role" !~ '[[:alpha:]ÁÉÍÓÚÜÑáéíóúüñ]'
-       )
+       AND d.processed_at IS NULL
      ORDER BY (d.raw_text IS NOT NULL) DESC, d.created_at DESC
-     LIMIT $1`,
-    [AGLH_REPAIR_BATCH]
+     LIMIT $2`,
+    [sourceType, CV_REPAIR_BATCH]
   );
-  const token = cleanText(config.aglhAccessToken ?? config.accessToken);
+  const token = sourceType === "aglh" ? cleanText(config.aglhAccessToken ?? config.accessToken) : "";
   let repaired = 0;
 
   for (const row of rows) {
@@ -3243,7 +3234,7 @@ async function repairAglhCandidateDocuments(config: Record<string, unknown>) {
       let buffer: Buffer | null = row.file_data
         ? (Buffer.isBuffer(row.file_data) ? row.file_data : Buffer.from(row.file_data))
         : null;
-      if (!buffer && row.file_url) {
+      if (!buffer && row.file_url && sourceType === "aglh") {
         try {
           const response = await fetch(String(row.file_url), {
             headers: token ? { Authorization: `bearer ${token}` } : undefined
@@ -3260,20 +3251,24 @@ async function repairAglhCandidateDocuments(config: Record<string, unknown>) {
         rawText = await extractDocumentText(row.file_name, row.mime_type, buffer);
       }
     }
-    const analysis = analyzeCvText(rawText);
-    if (!analysis.hasReadableText) continue;
+    const evidence = extractCvCandidateEvidence(rawText, row.full_name);
+    const analysis = evidence.analysis;
+    if (!analysis.hasReadableText) {
+      await q("UPDATE documents SET processed_at=now() WHERE id=$1", [row.document_id]);
+      continue;
+    }
 
-    const emails = unique([...extractEmails(rawText).map((email) => email.toLowerCase()), ...(row.email ?? [])]);
-    const phones = unique([...extractPhones(textWithoutReferenceSections(rawText)).slice(0, 2), ...(row.phone ?? [])]);
+    const emails = unique([...evidence.emails, ...(row.email ?? [])]);
+    const phones = unique([...evidence.phones, ...(row.phone ?? [])]);
     const tags = safeTags([
       ...(row.ai_tags ?? []),
       ...analysis.roles,
       ...analysis.skills,
       ...analysis.languages.map((language) => language.lang)
-    ], "aglh");
-    const currentRole = analysis.primaryRole ?? humanField(row.current_role);
-    const city = analysis.city ?? humanField(row.city);
-    const country = analysis.country ?? humanField(row.country);
+    ], sourceType);
+    const currentRole = analysis.primaryRole ?? humanCandidateField(row.current_role);
+    const city = analysis.city ?? humanCandidateField(row.city);
+    const country = analysis.country ?? humanCandidateField(row.country);
     await q(
       `UPDATE candidates
        SET email=$1,
@@ -3542,15 +3537,13 @@ async function syncIntegration(integrationId: string) {
     message = `${agent?.name ?? integration.rows[0].name} no pudo sincronizar: ${scraperError}`;
   }
 
-  if (integrationId === "aglh" && !scraperError) {
-    repairedRecords = await repairAglhCandidateDocuments({
+  repairedRecords = await repairCandidateDocuments(integrationId, {
       ...config,
       ...(scraperResult?.configUpdate ?? {})
-    });
-    if (repairedRecords > 0) {
-      message = `${message} Reparados desde el CV: ${repairedRecords} perfiles históricos.`;
-      if (status === "warning") status = "success";
-    }
+  });
+  if (repairedRecords > 0) {
+    message = `${message} Reanalizados desde el CV: ${repairedRecords} perfiles históricos de ${integration.rows[0].name}.`;
+    if (status === "warning") status = "success";
   }
 
   if (scraperResult?.message || scraperResult?.configUpdate) {

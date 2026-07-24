@@ -1,4 +1,5 @@
 import type { CandidateImport } from "../agents/types.js";
+import { enrichCandidateFromCv } from "./cvCandidateEnrichment.js";
 import { createHash } from "crypto";
 import { q } from "../db/pool.js";
 import { namesLikelySame, normalizePhoneIdentity } from "./candidateIdentity.js";
@@ -293,14 +294,15 @@ async function saveDocuments(candidateId: string, sourceType: string, candidate:
           file_data=coalesce($7,file_data),
           size_bytes=coalesce($8,size_bytes),
           file_hash=coalesce($9,file_hash),
-          file_data_saved_at=case when $7::bytea is not null then now() else file_data_saved_at end
+          file_data_saved_at=case when $7::bytea is not null then now() else file_data_saved_at end,
+          processed_at=case when length(coalesce($3,'')) >= 80 then now() else processed_at end
          WHERE id=$10`,
         [fileName, document.fileUrl, document.rawText, document.mimeType, document.sourcePath, Boolean(document.isPrimaryCv), fileData, document.sizeBytes ?? fileData?.byteLength ?? null, fileHash, existing.rows[0].id]
       );
     } else {
       await q(
-        `INSERT INTO documents (candidate_id, type, file_name, file_url, raw_text, mime_type, source_type, source_id, source_path, is_primary_cv, file_data, size_bytes, file_hash, file_data_saved_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,case when $11::bytea is not null then now() else null end)`,
+        `INSERT INTO documents (candidate_id, type, file_name, file_url, raw_text, mime_type, source_type, source_id, source_path, is_primary_cv, file_data, size_bytes, file_hash, file_data_saved_at, processed_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,case when $11::bytea is not null then now() else null end,case when length(coalesce($5,'')) >= 80 then now() else null end)`,
         [candidateId, document.type, fileName, document.fileUrl ?? document.sourcePath, document.rawText, document.mimeType, sourceType, document.sourceId, document.sourcePath, Boolean(document.isPrimaryCv), fileData, document.sizeBytes ?? fileData?.byteLength ?? null, fileHash]
       );
     }
@@ -308,7 +310,7 @@ async function saveDocuments(candidateId: string, sourceType: string, candidate:
 }
 
 export async function importCandidate(sourceType: string, candidate: CandidateImport, isUsableCandidate: CandidateValidator): Promise<CandidateImportResult> {
-  candidate = sanitizeCandidate(candidate);
+  candidate = sanitizeCandidate(enrichCandidateFromCv(candidate));
   if (!isUsableCandidate(candidate, sourceType)) {
     await recordRejectedImport(sourceType, candidate, "No parece una persona real o parece una oferta, barrio o categoria.");
     return "skipped";

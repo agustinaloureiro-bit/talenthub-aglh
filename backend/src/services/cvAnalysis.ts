@@ -120,34 +120,44 @@ function earliestKnownLocation(value: string) {
     .sort((left, right) => left.index - right.index || right.location.length - left.location.length)[0]?.location ?? null;
 }
 
+function withoutStreetPlaceNames(value: string) {
+  const normalized = normalize(value);
+  return URUGUAY_LOCATIONS.reduce((result, location) => {
+    const place = normalize(location).replace(/\s+/g, "\\s+");
+    return result.replace(new RegExp(`\\b(?:camino|calle|avenida|av|ruta|bulevar|boulevard)\\s+${place}\\b`, "gi"), " ");
+  }, normalized);
+}
+
 function landmarkLocation(value: string) {
   return ADDRESS_LOCATION_RULES.find((rule) => rule.pattern.test(value))?.label ?? null;
 }
 
-function uniqueKnownLocations(value: string) {
-  return unique(URUGUAY_LOCATIONS
-    .filter((location) => new RegExp(`\\b${normalize(location).replace(/\s+/g, "\\s+")}\\b`, "i").test(normalize(value)))
-    .map((location) => findUruguayPlace(location)?.name ?? location));
+function declaredLocation(value: string) {
+  const match = /\b(?:domicilio|direcci[oó]n|ubicaci[oó]n|localidad|barrio|lugar de residencia|residencia|radicad[oa] en|vive en)\s*[:\-]?\s*([\s\S]{3,140})/i.exec(value);
+  if (!match) return null;
+  const location = match[1]
+    .split(/\b(?:tel[eé]fono|celular|m[oó]vil|email|correo|fecha de nacimiento|edad|nacionalidad|documento|c[eé]dula|experiencia|educaci[oó]n|formaci[oó]n|estudios)\b/i)[0]
+    .replace(/^[\s,.;:/|_-]+|[\s,.;:/|_-]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (location.length < 3 || location.length > 100 || !/[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{3}/.test(location) || /@/.test(location)) return null;
+  const knownPlace = findUruguayPlace(location);
+  if (knownPlace) return knownPlace.name;
+  return location.replace(/,?\s*Uruguay\s*$/i, "").trim() || null;
 }
 
 export function extractCvResidence(input: string) {
   const compact = String(input ?? "").replace(/\u0000/g, " ").replace(/\s+/g, " ").trim();
   if (!compact) return null;
-  const personalMarker = /\b(?:datos personales|informaci[oó]n personal|contacto|domicilio|direcci[oó]n|lugar de residencia|residencia\s*:|radicad[oa] en|vive en)\b/i.exec(compact);
+  const personalMarker = /\b(?:datos personales|informaci[oó]n personal|contacto|domicilio|direcci[oó]n|ubicaci[oó]n|localidad|barrio|departamento|lugar de residencia|residencia\s*:|radicad[oa] en|vive en)\b/i.exec(compact);
   if (!personalMarker || personalMarker.index == null) return null;
   const afterMarker = compact.slice(personalMarker.index, personalMarker.index + 1_400);
   const markerOffset = personalMarker[0].length + 20;
   const stop = /\b(?:web\s*&\s*redes|conocimientos|experiencia laboral|trayectoria|estudios b[aá]sicos|educaci[oó]n|formaci[oó]n)\b/i.exec(afterMarker.slice(markerOffset));
   const segment = stop?.index == null ? afterMarker : afterMarker.slice(0, markerOffset + stop.index);
-  const city = landmarkLocation(segment) ?? earliestKnownLocation(segment);
+  const city = earliestKnownLocation(withoutStreetPlaceNames(segment)) ?? landmarkLocation(segment) ?? declaredLocation(segment);
   if (city) return { city, country: "Uruguay" };
-
-  // Some CV layouts split the address and its city into separate columns.
-  // Only use a document-wide fallback when there is one unambiguous place.
-  const documentLocations = uniqueKnownLocations(compact);
-  const fallback = documentLocations.length === 1 ? documentLocations[0] : null;
-  if (!fallback) return null;
-  return { city: fallback, country: "Uruguay" };
+  return null;
 }
 
 function cleanLine(value: string) {

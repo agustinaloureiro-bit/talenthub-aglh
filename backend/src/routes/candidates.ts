@@ -5,7 +5,7 @@ import { asyncHandler } from "../middleware/errors.js";
 import { requireRole } from "../middleware/auth.js";
 import { analyzeCvText } from "../services/cvAnalysis.js";
 import { downloadBuscojobsCv } from "../services/buscojobsClient.js";
-import { selectCandidateEmails } from "../services/candidateIdentity.js";
+import { extractCvCandidateEvidence } from "../services/cvCandidateEnrichment.js";
 
 export const candidatesRouter = Router();
 
@@ -296,14 +296,6 @@ function extractEmails(text: string) {
 
 function extractPhones(text: string) {
   return unique(text.match(/(?:\+?\d[\d\s().-]{6,}\d)/g) ?? []).map((phone) => phone.replace(/\s+/g, " ").trim());
-}
-
-function extractCvPhones(text: string) {
-  return unique((text.match(/(?:\+?598\s?)?(?:0?9\d|2\d|4\d)[\s.-]?\d{3}[\s.-]?\d{3,4}/g) ?? [])
-    .filter((phone) => {
-      const digits = phone.replace(/\D/g, "");
-      return digits.length >= 7 && digits.length <= 11 && !/^0+$/.test(digits);
-    }));
 }
 
 function firstValue(row: Record<string, unknown>, names: string[]) {
@@ -633,13 +625,12 @@ candidatesRouter.get("/:id", asyncHandler(async (req, res) => {
   ]);
   const primaryDocument = documents.rows.find((document: any) => document.is_primary_cv && document.raw_text)
     ?? documents.rows.find((document: any) => document.raw_text);
-  const cvAnalysis = analyzeCvText(primaryDocument?.raw_text ?? "");
-  const candidate = mapCandidate(rows[0]);
   const cvText = String(primaryDocument?.raw_text ?? "");
-  const cvEmails = selectCandidateEmails(extractEmails(cvText), candidate.fullName);
-  const cvPhones = extractCvPhones(cvText);
-  candidate.email = unique([...cvEmails, ...candidate.email]);
-  candidate.phone = unique([...cvPhones, ...candidate.phone]);
+  const evidence = extractCvCandidateEvidence(cvText, rows[0].full_name);
+  const cvAnalysis = evidence.analysis;
+  const candidate = mapCandidate(rows[0]);
+  candidate.email = unique([...evidence.emails, ...candidate.email]);
+  candidate.phone = unique([...evidence.phones, ...candidate.phone]);
   if (cvAnalysis.primaryRole) candidate.currentRole = cvAnalysis.primaryRole;
   if (cvAnalysis.city) candidate.city = cvAnalysis.city;
   if (cvAnalysis.country) candidate.country = cvAnalysis.country;

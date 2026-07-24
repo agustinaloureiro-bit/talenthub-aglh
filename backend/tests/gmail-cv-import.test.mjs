@@ -886,6 +886,69 @@ Reposición de góndolas, encargado de depósito y limpieza.`;
   assert.ok(analysis.roles.includes("repositor"));
 });
 
+test("analisis de CV prioriza localidad explicita sobre corredores y nombres de calles", async () => {
+  const { extractCvResidence } = await import("../dist/services/cvAnalysis.js");
+  assert.deepEqual(
+    extractCvResidence("CONTACTO Dirección: Avenida Giannattasio 123, Solymar. EXPERIENCIA LABORAL Cajero"),
+    { city: "Solymar", country: "Uruguay" }
+  );
+  assert.deepEqual(
+    extractCvResidence("DATOS PERSONALES Barrio: Peñarol, Montevideo. FORMACIÓN Secundaria"),
+    { city: "Penarol", country: "Uruguay" }
+  );
+  assert.deepEqual(
+    extractCvResidence("INFORMACIÓN PERSONAL Localidad: Pando, Canelones. EXPERIENCIA LABORAL Operario"),
+    { city: "Pando", country: "Uruguay" }
+  );
+});
+
+test("analisis de CV no toma como residencia una ciudad mencionada solo en experiencia", async () => {
+  const { extractCvResidence } = await import("../dist/services/cvAnalysis.js");
+  const text = `CONTACTO
+099 123 456
+persona@example.com
+EXPERIENCIA LABORAL
+Operario en planta industrial de Maldonado.`;
+  assert.equal(extractCvResidence(text), null);
+});
+
+test("analisis de CV conserva un domicilio declarado aunque la localidad no este en el catalogo", async () => {
+  const { extractCvResidence } = await import("../dist/services/cvAnalysis.js");
+  assert.deepEqual(
+    extractCvResidence("CONTACTO Domicilio: Calle Los Ceibos 1542, Villa Nueva. Celular: 099 123 456 EXPERIENCIA LABORAL Operario"),
+    { city: "Calle Los Ceibos 1542, Villa Nueva", country: "Uruguay" }
+  );
+});
+
+test("enriquecimiento de CV es comun a candidatos de cualquier fuente", async () => {
+  const { enrichCandidateFromCv } = await import("../dist/services/cvCandidateEnrichment.js");
+  for (const source of ["gmail", "buscojobs", "aglh", "yoiners"]) {
+    const candidate = {
+      fullName: "Lucia Fernandez",
+      email: [],
+      phone: [],
+      city: "10, 1",
+      country: "23",
+      currentRole: "23",
+      tags: [source],
+      qualityScore: 20,
+      documents: [{
+        type: "cv",
+        fileName: `${source}.pdf`,
+        rawText: "DATOS PERSONALES Localidad: Pando, Canelones. Celular 099 123 456. lucia.fernandez@example.com EXPERIENCIA LABORAL Auxiliar administrativa con experiencia en facturacion y Excel.",
+        isPrimaryCv: true
+      }],
+      raw: { source }
+    };
+    enrichCandidateFromCv(candidate);
+    assert.equal(candidate.city, "Pando");
+    assert.equal(candidate.country, "Uruguay");
+    assert.equal(candidate.currentRole, "auxiliar administrativo");
+    assert.ok(candidate.email.includes("lucia.fernandez@example.com"));
+    assert.ok(candidate.phone.some((phone) => phone.includes("099")));
+  }
+});
+
 test("rechaza cargos genericos como nombres de candidatos", async () => {
   const { isClearlyGenericCandidateName } = await import("../dist/routes/integrations.js");
 
