@@ -114,9 +114,19 @@ Horario: 8:00 a 18:00, lunes a viernes y algún sábado.`,
       candidate("deposito-sin-control", {
         currentRole: "Peón de depósito",
         documentSnippet: "Carga y descarga manual de mercadería."
+      }),
+      candidate("supervisor-logistica", {
+        currentRole: "Supervisor/Coordinador de Logística",
+        tags: ["logistica", "deposito"],
+        documentSnippet: "Supervisión del depósito, control documental, inventario, carga y descarga de mercadería."
+      }),
+      candidate("director-logistica", {
+        currentRole: "Director/Gerente de Logística",
+        tags: ["logistica", "deposito"],
+        documentSnippet: "Dirección integral de logística, control documental, inventario, carga y descarga de mercadería."
       })
     ],
-    expected: ["control-cargas", "administrativo-deposito"]
+    expected: ["control-cargas", "administrativo-deposito", "supervisor-logistica", "director-logistica"]
   },
   {
     name: "ubicación estricta en Prado descarta residencias incompatibles",

@@ -201,6 +201,34 @@ function isAmbulanceDriverQuery(interpreted: InterpretedTalentQuery) {
     .includes(normalizeSearchValue(role)));
 }
 
+function isAdministrativeWarehouseQuery(interpreted: InterpretedTalentQuery) {
+  const concepts = [...interpreted.roles, ...interpreted.skills].map(normalizeSearchValue);
+  return interpreted.requiredGroups.length > 1
+    && concepts.some((concept) => ["auxiliar de deposito", "apuntador", "control documental", "control de mercaderia"].includes(concept))
+    && interpreted.requiredGroups.some((group) => group.some((value) => /\b(?:deposito|almacen|logistica|stock|mercaderia|contenedor|puerto)\b/.test(normalizeSearchValue(value))));
+}
+
+function administrativeWarehouseFit(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
+  if (!isAdministrativeWarehouseQuery(interpreted)) return 0;
+  const role = normalizeSearchValue(candidate.currentRole ?? "");
+  const evidence = normalizeSearchValue([
+    candidate.currentRole ?? "",
+    (candidate.tags ?? []).join(" "),
+    candidate.summary ?? "",
+    candidate.documentSnippet ?? ""
+  ].join(" "));
+  const exactRole = /\b(?:apuntador|verificador(?: de (?:mercaderia|contenedores?|cargas?))?|controlador de (?:deposito|stock|mercaderia|cargas?)|administrativ[oa] (?:de|en) (?:deposito|logistica)|auxiliar administrativ[oa] (?:de|en) (?:deposito|logistica)|auxiliar de deposito)\b/.test(role);
+  const exactExperience = /\b(?:apuntador|verificador(?: de (?:mercaderia|contenedores?|cargas?))?|control (?:documental|de documentacion|de remitos|de cargas?|de contenedores?)|pesaje de (?:mercaderia|cargas?|contenedores?)|administrativ[oa] (?:de|en) (?:deposito|logistica))\b/.test(evidence);
+  const operationalRole = /\b(?:auxiliar|operari[oa]|peon|recepcionista|expedicion|despacho|deposito|almacen|stock|inventario|carga|descarga)\b/.test(role);
+  const managerialRole = /\b(?:director(?:a)?|gerente|jefe|supervisor(?:a)?|coordinador(?:a)?|ingenier[oa])\b/.test(role);
+
+  if (exactRole) return 4;
+  if (exactExperience && !managerialRole) return 3;
+  if (operationalRole && !managerialRole) return 2;
+  if (managerialRole) return -1;
+  return 1;
+}
+
 function hasAmbulanceDriverEvidence(candidate: TalentCandidateResult) {
   const role = normalizeSearchValue(candidate.currentRole ?? "");
   if (/\b(?:chofer|conductor)\s+de\s+ambulancia\b|\bambulanciero\b/.test(role)) return true;
@@ -383,6 +411,7 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
       const profileMatches = conceptCoverage.concepts.filter((concept) => conceptMatchesProfile(candidate, interpreted, concept)).length;
       const profileRatio = conceptCoverage.required ? profileMatches / conceptCoverage.required : 0;
       const hasContact = Boolean(candidate.email?.length || candidate.phone?.length);
+      const warehouseFit = administrativeWarehouseFit(candidate, interpreted);
       const seniorityMatch = interpreted.seniority
         ? normalizeSearchValue(candidateHaystack(candidate)).includes(normalizeSearchValue(interpreted.seniority))
         : true;
@@ -398,6 +427,7 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
         - (locationMatch.confidence === "unknown" ? 5 : 0)
         + recencyBonus(candidate.latestSourceAt)
         + basicProfileSuitability(candidate, interpreted).bonus
+        + (warehouseFit >= 4 ? 18 : warehouseFit === 3 ? 12 : warehouseFit === 2 ? 6 : warehouseFit < 0 ? -16 : 0)
       )));
       const primaryAligned = primaryRoleMatches(candidate, interpreted);
       const exactSpecializedRole = isAmbulanceDriverQuery(interpreted) && primaryAligned;
@@ -417,12 +447,14 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
         score,
         matchReason: explainCandidateMatch({ ...candidate, score }, interpreted),
         matchCoverage: conceptCoverage,
-        primaryRoleAligned: primaryAligned
+        primaryRoleAligned: primaryAligned,
+        warehouseFit
       };
     })
-    .sort((a, b) => Number(b.primaryRoleAligned) - Number(a.primaryRoleAligned)
+    .sort((a, b) => b.warehouseFit - a.warehouseFit
+      || Number(b.primaryRoleAligned) - Number(a.primaryRoleAligned)
       || (b.matchCoverage?.ratio ?? 0) - (a.matchCoverage?.ratio ?? 0)
       || b.score - a.score
       || b.qualityScore - a.qualityScore)
-    .map(({ matchCoverage, primaryRoleAligned, ...candidate }) => candidate);
+    .map(({ matchCoverage, primaryRoleAligned, warehouseFit, ...candidate }) => candidate);
 }
