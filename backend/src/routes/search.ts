@@ -37,8 +37,10 @@ function normalizeSearchText(value: string) {
 function expandedSearchTerms(query: string) {
   const normalizedQuery = normalizeSearchText(query);
   const ignoredWords = new Set(["busco", "buscar", "buscando", "estoy", "necesito", "persona", "alguien", "perfil", "candidato", "candidata", "con", "sin", "para", "experiencia", "experiencias", "tener", "tenga", "que", "una", "uno", "trabajar", "necesita", "necesitan", "requiere", "requieren", "especifica", "especifico", "preciso", "sean", "alrededores", "hombre", "hombres", "mujer", "mujeres"]);
-  const words = normalizedQuery.split(/[^\p{L}\p{N}]+/u)
-    .filter((word) => word.length >= 3 && !ignoredWords.has(word));
+  const words = [...new Set(
+    normalizedQuery.split(/[^\p{L}\p{N}]+/u)
+      .filter((word) => word.length >= 3 && !ignoredWords.has(word))
+  )];
   const extras: Record<string, string[]> = {
     vendedor: ["ventas", "comercial", "ejecutivo comercial"],
     vendedora: ["ventas", "comercial", "ejecutiva comercial"],
@@ -125,9 +127,15 @@ function expandedSearchTerms(query: string) {
   const geographicTerms = knownUruguayLocationNames()
     .filter((location) => normalizedQuery.includes(normalizePlaceName(location)))
     .flatMap((location) => nearbyUruguayLocations(location));
-  const terms = [...new Set([...words, ...words.flatMap((word) => extras[word] ?? []), ...geographicTerms].map(normalizeSearchText))]
+  const isRichQuery = words.length >= 10;
+  const baseWords = words.slice(0, isRichQuery ? 16 : 12);
+  const semanticExpansions = isRichQuery
+    ? []
+    : baseWords.flatMap((word) => (extras[word] ?? []).slice(0, 4));
+  const maxTerms = isRichQuery ? 18 : 28;
+  const terms = [...new Set([...baseWords, ...semanticExpansions, ...geographicTerms].map(normalizeSearchText))]
     .filter(Boolean);
-  return terms.length ? terms : [normalizedQuery];
+  return terms.length ? terms.slice(0, maxTerms) : [normalizedQuery];
 }
 
 function expandedWebsearchQuery(query: string) {

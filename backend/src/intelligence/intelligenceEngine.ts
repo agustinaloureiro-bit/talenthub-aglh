@@ -10,13 +10,33 @@ function retrievalSignals(query: string) {
     "perfil", "candidato", "candidata", "con", "sin", "para", "experiencia", "experiencias",
     "tener", "tenga", "que", "una", "uno", "trabajar", "necesita", "necesitan", "requiere",
     "requieren", "especifica", "especifico", "sean", "alrededores", "hombre", "hombres",
-    "mujer", "mujeres"
+    "mujer", "mujeres", "tareas", "tarea", "implican", "responsable", "proceso", "controlando",
+    "horario", "lunes", "martes", "miercoles", "miércoles", "jueves", "viernes", "sabado",
+    "sábado", "domingo", "algun", "algún", "desde", "hasta", "remuneracion", "remuneración"
   ]);
   return query
     .split(/\s+/)
     .map((word) => word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
-    .filter((word) => word.length >= 2 && !ignoredWords.has(word.toLowerCase()))
-    .join(" ");
+    .filter((word) => word.length >= 3 && !ignoredWords.has(word.toLowerCase()));
+}
+
+function compactRetrievalQuery(query: string, understoodConcepts: string[]) {
+  const normalizedConcepts = understoodConcepts
+    .map((concept) => concept.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const conceptWords = new Set(
+    normalizedConcepts.flatMap((concept) => retrievalSignals(concept).map((word) => word.toLowerCase()))
+  );
+  const residualSignals = retrievalSignals(query)
+    .filter((word) => !conceptWords.has(word.toLowerCase()));
+  const detailedDescription = retrievalSignals(query).length >= 12;
+  const maxResidualSignals = detailedDescription ? 5 : 8;
+  const maxConcepts = detailedDescription ? 10 : 12;
+
+  return [...new Set([
+    ...normalizedConcepts.slice(0, maxConcepts),
+    ...residualSignals.slice(0, maxResidualSignals)
+  ])].join(" ");
 }
 
 export class RecruitmentIntelligenceEngine {
@@ -32,10 +52,7 @@ export class RecruitmentIntelligenceEngine {
       ...interpreted.locations,
       ...interpreted.keywords
     ].filter(Boolean);
-    const retrievalQuery = [...new Set([
-      retrievalSignals(interpreted.normalizedQuery),
-      ...understoodConcepts
-    ].filter(Boolean))].join(" ");
+    const retrievalQuery = compactRetrievalQuery(interpreted.normalizedQuery, understoodConcepts);
     const candidates = await this.fallbackSearch(retrievalQuery, filters);
     let ranked = rerankCandidates(candidates, interpreted)
       .filter((candidate) => candidate.score >= (filters.minScore ?? 0));

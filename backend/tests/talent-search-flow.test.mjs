@@ -90,6 +90,26 @@ test("la recuperacion conserva competencias no catalogadas de la consulta origin
   assert.match(providerQuery, /industrial/i);
 });
 
+test("la recuperacion de una descripcion extensa usa criterios fuertes y descarta ruido operativo", async () => {
+  let providerQuery = "";
+  const engine = new RecruitmentIntelligenceEngine(async (query) => {
+    providerQuery = query;
+    return [];
+  });
+  const description = `Tareas: Apuntador, verificador de contenedores.
+Se requiere experiencia administrativa en depósito.
+Las tareas de un apuntador en un puerto implican ser responsable del proceso de carga y descarga de mercancías y contenedores, controlando el pesaje, la documentación y a los peones de descarga.
+Horario: 8:00 a 18:00, lunes a viernes y algún sábado. VH $259.`;
+
+  await engine.search(description);
+
+  assert.match(providerQuery, /administrativ/i);
+  assert.match(providerQuery, /deposito|depósito/i);
+  assert.match(providerQuery, /carga|contenedor|pesaje|documental/i);
+  assert.doesNotMatch(providerQuery, /\bhorario\b|\blunes\b|\bviernes\b|\bsabado\b|\b259\b/i);
+  assert.ok(providerQuery.length < 300, `consulta de recuperacion demasiado extensa: ${providerQuery.length}`);
+});
+
 test("usa competencias no catalogadas para excluir coincidencias genericas", () => {
   const interpreted = interpretTalentQuery("Busco técnico con experiencia en metrología industrial");
   const ranked = rerankCandidates([
