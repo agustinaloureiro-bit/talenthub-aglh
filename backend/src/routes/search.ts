@@ -202,17 +202,22 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     `WITH search_terms AS MATERIALIZED (
        SELECT plainto_tsquery('spanish', $1) AS exact_query,
          websearch_to_tsquery('spanish', $2) AS broad_query
-     ), document_hits AS MATERIALIZED (
-       SELECT DISTINCT ON (d.candidate_id)
-         d.candidate_id AS id,
-         d.id AS document_id,
-         0.02 + ts_rank_cd(to_tsvector('spanish', ${documentText}), search_terms.broad_query)
-           + CASE WHEN to_tsvector('spanish', ${documentText}) @@ search_terms.exact_query THEN 1 ELSE 0 END AS rank
+     ), document_candidates AS MATERIALIZED (
+       SELECT d.id, d.candidate_id
        FROM documents d
        JOIN candidates c ON c.id=d.candidate_id
        CROSS JOIN search_terms
        WHERE ${candidateFilter}
          AND to_tsvector('spanish', ${documentText}) @@ search_terms.broad_query
+       LIMIT 2400
+     ), document_hits AS MATERIALIZED (
+       SELECT DISTINCT ON (d.candidate_id)
+         d.candidate_id AS id,
+         d.id AS document_id,
+         0.02 + ts_rank_cd(to_tsvector('spanish', ${documentText}), search_terms.broad_query) AS rank
+       FROM document_candidates dc
+       JOIN documents d ON d.id=dc.id
+       CROSS JOIN search_terms
        ORDER BY
          d.candidate_id,
          rank DESC,
