@@ -149,7 +149,12 @@ const CONCEPT_PATTERNS: Array<{ pattern: RegExp; skill: string }> = [
   { pattern: /negoci|cierre de ventas|desarrollo de clientes|manejo de cuentas/i, skill: "negociacion" },
   { pattern: /resolver problemas|resoluci[oó]n de problemas|anal[ií]tic|pensamiento cr[ií]tico/i, skill: "resolucion de problemas" },
   { pattern: /adaptab|flexib|trabajo bajo presi[oó]n|entorno din[aá]mico/i, skill: "adaptabilidad" },
-  { pattern: /trabajo en equipo|colaboraci[oó]n|colaborativ/i, skill: "trabajo en equipo" }
+  { pattern: /trabajo en equipo|colaboraci[oó]n|colaborativ/i, skill: "trabajo en equipo" },
+  { pattern: /\b(?:carga\s+y\s+descarga|carga\/descarga|cargar\s+y\s+descargar)\b/i, skill: "carga y descarga" },
+  { pattern: /\b(?:control|verificaci[oó]n)\s+(?:de\s+)?(?:stock|inventario|mercader[ií]a|contenedores?)\b/i, skill: "control de mercaderia" },
+  { pattern: /\b(?:remitos?|documentaci[oó]n|control documental)\b/i, skill: "control documental" },
+  { pattern: /\b(?:pesaje|balanza|control de peso)\b/i, skill: "pesaje" },
+  { pattern: /\b(?:puerto|portuari[oa]|contenedores?)\b/i, skill: "operativa portuaria" }
 ];
 
 function normalizeHint(value: string) {
@@ -174,6 +179,20 @@ function findHints(query: string, hints: string[]) {
   return [...unique.values()];
 }
 
+function isDetailedJobDescription(query: string) {
+  const normalized = normalizeHint(query);
+  return normalized.length >= 180
+    || /\b(?:tareas?|funciones?|responsabilidades?|horario|requisitos?)\s*:/.test(normalized)
+    || normalized.split(/[.;\n]+/).filter((part) => part.trim().length > 20).length >= 3;
+}
+
+function isAdministrativeWarehouseDescription(query: string) {
+  const normalized = normalizeHint(query);
+  const hasWarehouse = /\b(?:deposito|almacen|logistica|stock|inventario|mercaderia|contenedores?|carga|descarga|puerto|pesaje)\b/.test(normalized);
+  const hasAdministrativeControl = /\b(?:administrativ|documentaci|documental|remitos?|verific|control|pesaje|apuntador)\b/.test(normalized);
+  return isDetailedJobDescription(query) && hasWarehouse && hasAdministrativeControl;
+}
+
 function requiredGroupsForQuery(
   query: string,
   roles: string[],
@@ -183,6 +202,18 @@ function requiredGroupsForQuery(
 ) {
   const normalized = normalizeHint(query);
   const groups = [...roles, ...skills, ...languages, ...industries].map((concept) => [concept]);
+  if (isAdministrativeWarehouseDescription(query)) {
+    return [
+      [
+        "administrativo", "administrativa", "administracion", "control documental",
+        "documentacion", "remito", "remitos", "verificador", "apuntador", "pesaje"
+      ],
+      [
+        "deposito", "almacen", "logistica", "stock", "inventario", "mercaderia",
+        "carga", "descarga", "contenedor", "contenedores", "puerto"
+      ]
+    ];
+  }
   if (/\b(chofer|conductor|ambulanciero)\b/.test(normalized) && /\b(ambulancia|emergencia movil|traslado de pacientes)\b/.test(normalized)) {
     return [
       ["chofer", "conductor", "driver", "ambulanciero"],
@@ -233,7 +264,11 @@ function residualKeywords(query: string, knownConcepts: string[]) {
     "cerca", "alrededores", "vivir", "vive", "viva", "residir", "residente", "residentes",
     "manejo", "conocimiento", "conocimientos", "nivel", "buen", "buena", "muy", "del", "las",
     "los", "como", "hombre", "hombres", "mujer", "mujeres", "organizada", "organizado",
-    "coordinar", "equipo", "equipos", "tratar", "clientes", "zona"
+    "coordinar", "equipo", "equipos", "tratar", "clientes", "zona",
+    "tarea", "tareas", "funcion", "funciones", "implica", "implican", "responsable",
+    "responsables", "proceso", "procesos", "controlando", "horario", "lunes", "martes",
+    "miercoles", "jueves", "viernes", "sabado", "sabados", "domingo", "domingos",
+    "algun", "alguna", "requerido", "requerida", "pesos"
   ]);
   const knownTokens = new Set(knownConcepts
     .flatMap((concept) => normalizeHint(concept).split(/[^\p{L}\p{N}]+/u))
@@ -245,7 +280,11 @@ function residualKeywords(query: string, knownConcepts: string[]) {
 
 export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   const normalizedQuery = query.replace(/\s+/g, " ").trim();
-  const roles = findHints(normalizedQuery, ROLE_HINTS);
+  const detectedRoles = findHints(normalizedQuery, ROLE_HINTS);
+  const roles = [...new Set([
+    ...detectedRoles,
+    ...(isAdministrativeWarehouseDescription(normalizedQuery) ? ["auxiliar de deposito"] : [])
+  ])];
   const skills = [...new Set([
     ...findHints(normalizedQuery, SKILL_HINTS),
     ...CONCEPT_PATTERNS.filter(({ pattern }) => pattern.test(normalizedQuery)).map(({ skill }) => skill)

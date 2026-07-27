@@ -91,6 +91,34 @@ const goldenSearches = [
     expected: ["deposito-completo"]
   },
   {
+    name: "descripción extensa de apuntador recupera experiencia administrativa de depósito",
+    query: `Tareas: Apuntador, verificador de contenedores.
+Se requiere experiencia administrativa en depósito.
+Las tareas de un apuntador en un puerto implican ser responsable del proceso de carga y descarga de mercancías y contenedores, controlando el pesaje, la documentación y a los peones de descarga.
+Horario: 8:00 a 18:00, lunes a viernes y algún sábado.`,
+    candidates: [
+      candidate("administrativo-deposito", {
+        currentRole: "Auxiliar administrativo de depósito",
+        tags: ["logistica", "control de stock"],
+        documentSnippet: "Control documental de remitos, recepción y despacho de mercadería, inventario y tareas administrativas en depósito."
+      }),
+      candidate("control-cargas", {
+        currentRole: "Verificador de mercadería",
+        tags: ["deposito", "logistica"],
+        documentSnippet: "Verificación de carga y descarga, pesaje, documentación y control de contenedores en terminal de cargas."
+      }),
+      candidate("administrativo-general", {
+        currentRole: "Auxiliar administrativo",
+        documentSnippet: "Recepción, agenda, atención telefónica y archivo de oficina."
+      }),
+      candidate("deposito-sin-control", {
+        currentRole: "Peón de depósito",
+        documentSnippet: "Carga y descarga manual de mercadería."
+      })
+    ],
+    expected: ["control-cargas", "administrativo-deposito"]
+  },
+  {
     name: "ubicación estricta en Prado descarta residencias incompatibles",
     query: "Busco un operario de fábrica que viva cerca del Prado",
     candidates: [

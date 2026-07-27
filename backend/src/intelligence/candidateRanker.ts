@@ -44,6 +44,13 @@ const EQUIVALENT_TERMS: Record<string, string[]> = {
   gastronomia: ["gastonomia", "restaurante", "cocina", "mozo", "moza", "atencion al cliente"],
   gastonomia: ["gastronomia", "restaurante", "cocina", "mozo", "moza"],
   logistica: ["logistica y produccion", "logistica y produccion", "deposito", "almacen"],
+  deposito: ["deposito", "almacen", "logistica", "stock", "inventario", "auxiliar de deposito", "operario de deposito"],
+  "carga y descarga": ["carga", "descarga", "mercaderia", "contenedores", "deposito", "logistica", "peon"],
+  "control de mercaderia": ["control de stock", "inventario", "verificacion", "mercaderia", "contenedores", "recepcion", "despacho"],
+  "control documental": ["documentacion", "documentos", "remitos", "facturas", "archivo", "control administrativo"],
+  pesaje: ["balanza", "control de peso", "pesaje de mercaderia"],
+  "operativa portuaria": ["puerto", "portuario", "contenedores", "terminal de cargas", "deposito", "logistica"],
+  apuntador: ["verificador", "controlador de deposito", "auxiliar de deposito", "control de mercaderia", "administrativo de deposito"],
   seleccion: ["reclutamiento", "recursos humanos", "rrhh"],
   liderazgo: ["lider", "jefe", "supervisor", "coordinador", "encargado", "gerente", "team leader", "manejo de equipos", "personal a cargo"],
   organizacion: ["organizacion", "planificacion", "coordinacion", "gestion del tiempo", "seguimiento"],
@@ -170,6 +177,15 @@ function requestedConcepts(interpreted: InterpretedTalentQuery) {
 function satisfiesResidualKeywords(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   if (!interpreted.keywords.length) return true;
   const haystack = candidateHaystack(candidate);
+  const normalizedQuery = normalizeSearchValue(interpreted.originalQuery);
+  const detailedDescription = normalizedQuery.length >= 180
+    || /\b(?:tareas?|funciones?|responsabilidades?|horario|requisitos?)\s*:/.test(normalizedQuery)
+    || normalizedQuery.split(/[.;\n]+/).filter((part) => part.trim().length > 20).length >= 3;
+  if (detailedDescription) {
+    if (interpreted.requiredGroups.length) return true;
+    const matched = interpreted.keywords.filter((keyword) => includesAny(haystack, [keyword])).length;
+    return matched >= Math.min(2, interpreted.keywords.length);
+  }
   return interpreted.keywords.every((keyword) => includesAny(haystack, [keyword]));
 }
 
