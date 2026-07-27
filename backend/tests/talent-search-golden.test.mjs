@@ -124,9 +124,14 @@ Horario: 8:00 a 18:00, lunes a viernes y algún sábado.`,
         currentRole: "Director/Gerente de Logística",
         tags: ["logistica", "deposito"],
         documentSnippet: "Dirección integral de logística, control documental, inventario, carga y descarga de mercadería."
+      }),
+      candidate("apuntador-secundario", {
+        currentRole: "Contabilidad",
+        tags: ["administracion", "logistica"],
+        documentSnippet: "Experiencia como administrativo logístico y apuntador, controlando documentación, cargas y contenedores."
       })
     ],
-    expected: ["control-cargas", "administrativo-deposito", "supervisor-logistica", "director-logistica"]
+    expected: ["control-cargas", "apuntador-secundario", "administrativo-deposito", "supervisor-logistica", "director-logistica"]
   },
   {
     name: "ubicación estricta en Prado descarta residencias incompatibles",

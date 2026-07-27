@@ -210,7 +210,7 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
          AND c.search_vector @@ search_terms.broad_query
          AND EXISTS (SELECT 1 FROM documents available_doc WHERE available_doc.candidate_id=c.id)
        ORDER BY rank DESC, c.quality_score DESC, c.updated_at DESC
-       LIMIT 800
+       LIMIT 400
      )
      SELECT c.*,
       coalesce(src.source_count, 0)::int AS source_count,
@@ -220,7 +220,7 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
       primary_doc.id AS primary_document_id,
       primary_doc.mime_type AS primary_document_mime_type,
       primary_doc.source_type AS primary_document_source_type,
-      left(coalesce(primary_doc.raw_text, ''), 12000) AS document_snippet,
+      left(coalesce(primary_doc.raw_text, ''), 8000) AS document_snippet,
       src.latest_source_at,
       top_matches.rank
      FROM top_matches

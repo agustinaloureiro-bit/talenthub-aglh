@@ -218,12 +218,14 @@ function administrativeWarehouseFit(candidate: TalentCandidateResult, interprete
     candidate.documentSnippet ?? ""
   ].join(" "));
   const exactRole = /\b(?:apuntador|verificador(?: de (?:mercaderia|contenedores?|cargas?))?|controlador de (?:deposito|stock|mercaderia|cargas?)|administrativ[oa] (?:de|en) (?:deposito|logistica)|auxiliar administrativ[oa] (?:de|en) (?:deposito|logistica)|auxiliar de deposito)\b/.test(role);
-  const exactExperience = /\b(?:apuntador|verificador(?: de (?:mercaderia|contenedores?|cargas?))?|control (?:documental|de documentacion|de remitos|de cargas?|de contenedores?)|pesaje de (?:mercaderia|cargas?|contenedores?)|administrativ[oa] (?:de|en) (?:deposito|logistica))\b/.test(evidence);
+  const targetExperience = /\b(?:apuntador|verificador(?: de (?:mercaderia|contenedores?|cargas?))?|control (?:de cargas?|de contenedores?)|pesaje de (?:mercaderia|cargas?|contenedores?))\b/.test(evidence);
+  const relatedExperience = /\b(?:control (?:documental|de documentacion|de remitos)|administrativ[oa] (?:de|en) (?:deposito|logistica)|auxiliar administrativ[oa] (?:de|en) (?:deposito|logistica))\b/.test(evidence);
   const operationalRole = /\b(?:auxiliar|operari[oa]|peon|recepcionista|expedicion|despacho|deposito|almacen|stock|inventario|carga|descarga)\b/.test(role);
   const managerialRole = /\b(?:director(?:a)?|gerente|jefe|supervisor(?:a)?|coordinador(?:a)?|ingenier[oa])\b/.test(role);
 
-  if (exactRole) return 4;
-  if (exactExperience && !managerialRole) return 3;
+  if (targetExperience) return 6;
+  if (exactRole) return 5;
+  if (relatedExperience && !managerialRole) return 4;
   if (operationalRole && !managerialRole) return 2;
   if (managerialRole) return -1;
   return 1;
@@ -427,7 +429,7 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
         - (locationMatch.confidence === "unknown" ? 5 : 0)
         + recencyBonus(candidate.latestSourceAt)
         + basicProfileSuitability(candidate, interpreted).bonus
-        + (warehouseFit >= 4 ? 18 : warehouseFit === 3 ? 12 : warehouseFit === 2 ? 6 : warehouseFit < 0 ? -16 : 0)
+        + (warehouseFit >= 6 ? 24 : warehouseFit === 5 ? 20 : warehouseFit === 4 ? 14 : warehouseFit === 2 ? 6 : warehouseFit < 0 ? -16 : 0)
       )));
       const primaryAligned = primaryRoleMatches(candidate, interpreted);
       const exactSpecializedRole = isAmbulanceDriverQuery(interpreted) && primaryAligned;
