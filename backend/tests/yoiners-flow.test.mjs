@@ -32,6 +32,66 @@ test("rechaza registros Yoiners sin CV o sin nombre de persona", async () => {
   assert.equal(yoinersCandidateFromTalent({ _id: "2", full_name: "Oferta Auxiliar", talent_cv: "https://files.yoiners.com/offer.pdf" }), null);
 });
 
+test("solo permite descargar CVs desde servidores esperados de Yoiners", async () => {
+  const { isAllowedYoinersCvUrl } = await import("../dist/services/yoinersClient.js");
+  assert.equal(isAllowedYoinersCvUrl("https://files.yoiners.com/cv.pdf"), true);
+  assert.equal(isAllowedYoinersCvUrl("https://candidate-files.s3.amazonaws.com/cv.pdf"), true);
+  assert.equal(isAllowedYoinersCvUrl("http://files.yoiners.com/cv.pdf"), false);
+  assert.equal(isAllowedYoinersCvUrl("https://example.com/cv.pdf"), false);
+});
+
+test("TalentHub descarga el CV de Yoiners con la sesion guardada", async () => {
+  const { downloadYoinersCv } = await import("../dist/services/yoinersClient.js");
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    return new Response("%PDF-1.4 CV", {
+      status: 200,
+      headers: { "content-type": "application/pdf" }
+    });
+  };
+
+  try {
+    const { response, configUpdate } = await downloadYoinersCv({
+      yoinersAccessToken: "saved-token",
+      yoinersUserId: "saved-user",
+      yoinersRole: "COMPANY",
+      yoinersCompanyId: "company-1"
+    }, "https://files.yoiners.com/cv.pdf");
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "application/pdf");
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].init.headers.Authorization, "bearer saved-token");
+    assert.equal(configUpdate.sessionStatus, "connected");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("no envia dos mecanismos de autenticacion a los enlaces firmados de Amazon", async () => {
+  const { downloadYoinersCv } = await import("../dist/services/yoinersClient.js");
+  const originalFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (url, init = {}) => {
+    request = { url: String(url), init };
+    return new Response("%PDF-1.4 CV", { status: 200, headers: { "content-type": "application/pdf" } });
+  };
+
+  try {
+    const { response } = await downloadYoinersCv({
+      yoinersAccessToken: "saved-token",
+      yoinersUserId: "saved-user",
+      yoinersRole: "COMPANY",
+      yoinersCompanyId: "company-1"
+    }, "https://yoiners-bucket.s3.amazonaws.com/cv.pdf?X-Amz-Signature=signed");
+    assert.equal(response.status, 200);
+    assert.equal(request.init.headers.Authorization, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("reutiliza una sesión exportada de Cookie-Editor", async () => {
   const { yoinersSessionFromConfig } = await import("../dist/services/yoinersClient.js");
   const session = yoinersSessionFromConfig({

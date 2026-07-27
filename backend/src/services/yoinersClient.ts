@@ -4,6 +4,10 @@ const YOINERS_API_BASE = "https://yoiners-backend.herokuapp.com/api/v1/execute";
 const YOINERS_WEB_BASE = "https://www.yoiners.com";
 const YOINERS_BACKEND_BASE = "https://yoiners-backend.herokuapp.com";
 const KNOWN_HEAD_IDS_LIMIT = 300;
+const YOINERS_CV_HOSTS = new Set([
+  "yoiners-backend.herokuapp.com",
+  "files.yoiners.com"
+]);
 
 type JsonObject = Record<string, unknown>;
 
@@ -74,6 +78,59 @@ export function yoinersSessionFromConfig(config: JsonObject) {
     userId: text(config.yoinersUserId ?? config.userId ?? exported.userid),
     role: text(config.yoinersRole ?? config.role ?? exported.userrole).toUpperCase(),
     companyId: text(config.yoinersCompanyId ?? config.companyId ?? exported.usercompanyid)
+  };
+}
+
+export function isAllowedYoinersCvUrl(value: unknown) {
+  try {
+    const url = new URL(text(value));
+    return url.protocol === "https:"
+      && (YOINERS_CV_HOSTS.has(url.hostname) || url.hostname.endsWith(".amazonaws.com"));
+  } catch {
+    return false;
+  }
+}
+
+export async function downloadYoinersCv(config: JsonObject, value: unknown) {
+  const url = text(value);
+  if (!isAllowedYoinersCvUrl(url)) {
+    const error = new Error("El CV de Yoiners no tiene una dirección permitida.") as Error & { status?: number };
+    error.status = 400;
+    throw error;
+  }
+
+  let session = await resolveAccountContext(await resolveSession(config), config);
+  const targetHost = new URL(url).hostname;
+  const request = (token: string) => fetch(url, {
+    headers: {
+      ...(targetHost.endsWith(".amazonaws.com") ? {} : { Authorization: `bearer ${token}` }),
+      Accept: "application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/octet-stream"
+    },
+    redirect: "follow"
+  });
+
+  let response = await request(session.token);
+  if (response.status === 401 || response.status === 403) {
+    session = await refreshYoiners({
+      ...config,
+      yoinersRefreshToken: session.refreshToken,
+      yoinersUserId: session.userId
+    }) ?? await loginYoiners(config);
+    session = await resolveAccountContext(session, config);
+    response = await request(session.token);
+  }
+
+  return {
+    response,
+    configUpdate: {
+      yoinersAccessToken: session.token,
+      yoinersRefreshToken: session.refreshToken || null,
+      yoinersUserId: session.userId,
+      yoinersRole: session.role || null,
+      yoinersCompanyId: session.companyId || null,
+      sessionStatus: response.ok ? "connected" : "error",
+      sessionRefreshedAt: new Date().toISOString()
+    }
   };
 }
 

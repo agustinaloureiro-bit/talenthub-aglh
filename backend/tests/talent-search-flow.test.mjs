@@ -262,6 +262,58 @@ test("interpreta barrio y sistemas como criterios buscables", () => {
   assert.ok(interpreted.mustHave.includes("pocitos"));
 });
 
+test("no exige que el nombre del lugar de trabajo aparezca en el CV", () => {
+  const interpreted = interpretTalentQuery("Busco un administrativo para Zona America, tiene que vivir por Carrasco o alrededores. Experiencia en facturacion.");
+
+  assert.deepEqual(interpreted.roles, ["administrativo"]);
+  assert.ok(interpreted.skills.includes("facturacion"));
+  assert.ok(interpreted.locations.includes("carrasco"));
+  assert.deepEqual(interpreted.keywords, []);
+  assert.equal(interpreted.locationStrict, true);
+});
+
+test("Carrasco incluye barrios cercanos en una distancia laboral razonable", () => {
+  const sanJose = evaluateUruguayProximity("San Jose de Carrasco", "Carrasco");
+  const maldonado = evaluateUruguayProximity("Maldonado", "Carrasco");
+
+  assert.equal(sanJose?.matches, true);
+  assert.equal(maldonado?.matches, false);
+});
+
+test("si falta un domicilio preciso muestra perfiles laborales compatibles sin incluir residencias incompatibles", () => {
+  const interpreted = interpretTalentQuery("Busco un administrativo para Zona America, tiene que vivir por Carrasco o alrededores. Experiencia en facturacion.");
+  const ranked = rerankCandidates([
+    {
+      id: "montevideo-sin-barrio",
+      fullName: "Laura Administrativa",
+      currentRole: "Auxiliar administrativo",
+      city: "Montevideo",
+      tags: ["facturacion"],
+      qualityScore: 70,
+      documentCount: 1,
+      documentSnippet: "Auxiliar administrativa con experiencia en facturacion y tareas de oficina.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "maldonado",
+      fullName: "Maria Facturacion",
+      currentRole: "Administrativa",
+      city: "Maldonado",
+      tags: ["facturacion"],
+      qualityScore: 85,
+      documentCount: 1,
+      documentSnippet: "Domicilio: Maldonado. Experiencia administrativa y facturacion.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.deepEqual(ranked.map((candidate) => candidate.id), ["montevideo-sin-barrio"]);
+  assert.ok(ranked[0].score < 70);
+  assert.match(ranked[0].matchReason, /confirmar el barrio/i);
+});
+
 test("interpreta supermercado sin experiencia como perfil operativo y expande Ciudad de la Costa", () => {
   const interpreted = interpretTalentQuery("Estoy buscando hombres para trabajar en un supermercado. No necesitan tener experiencia específica. Deben ser de Ciudad de la Costa o alrededores.");
 
@@ -906,4 +958,17 @@ test("permite ordenar los resultados compatibles por fecha del CV", async () => 
 
   const result = await engine.search("ingeniero", { sort: "recent" });
   assert.equal(result.data[0].id, "nuevo");
+});
+
+test("permite ordenar resultados compatibles por antiguedad y nombre", async () => {
+  const engine = new RecruitmentIntelligenceEngine(async () => [
+    { id: "zoe", fullName: "Zoe Ingeniería", currentRole: "Ingeniera", tags: ["ingenieria"], qualityScore: 80, documentCount: 1, documentSnippet: "Ingeniera industrial.", latestSourceAt: "2026-07-20T00:00:00Z", score: 0, matchReason: "" },
+    { id: "ana", fullName: "Ana Ingeniería", currentRole: "Ingeniera", tags: ["ingenieria"], qualityScore: 80, documentCount: 1, documentSnippet: "Ingeniera industrial.", latestSourceAt: "2023-01-01T00:00:00Z", score: 0, matchReason: "" }
+  ]);
+
+  const oldest = await engine.search("ingeniero", { sort: "oldest" });
+  const alphabetical = await engine.search("ingeniero", { sort: "name" });
+
+  assert.equal(oldest.data[0].id, "ana");
+  assert.equal(alphabetical.data[0].id, "ana");
 });

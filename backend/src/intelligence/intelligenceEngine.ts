@@ -45,6 +45,14 @@ export class RecruitmentIntelligenceEngine {
         const right = b.latestSourceAt ? Date.parse(b.latestSourceAt) : 0;
         return right - left || b.score - a.score;
       });
+    } else if (filters.sort === "oldest") {
+      ranked = ranked.sort((a, b) => {
+        const left = a.latestSourceAt ? Date.parse(a.latestSourceAt) : Number.POSITIVE_INFINITY;
+        const right = b.latestSourceAt ? Date.parse(b.latestSourceAt) : Number.POSITIVE_INFINITY;
+        return left - right || b.score - a.score;
+      });
+    } else if (filters.sort === "name") {
+      ranked = ranked.sort((a, b) => a.fullName.localeCompare(b.fullName, "es") || b.score - a.score);
     }
 
     return {

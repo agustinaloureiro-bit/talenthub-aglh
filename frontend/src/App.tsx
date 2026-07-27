@@ -12,6 +12,7 @@ type TalentFinderSnapshot = {
   source: string;
   location: string;
   contact: string;
+  document: string;
   minScore: number;
   activeOnly: boolean;
   recency: string;
@@ -27,7 +28,7 @@ type TalentFinderSnapshot = {
 };
 
 function readTalentFinderSnapshot(): TalentFinderSnapshot {
-  const empty: TalentFinderSnapshot = { query: "", seniority: "", source: "", location: "", contact: "", minScore: 0, activeOnly: true, recency: "", sort: "relevance", results: [], totalResults: 0, currentPage: 1, searchStatus: "", hasSearched: false, interpretedTerms: [], ignoredCriteria: [] };
+  const empty: TalentFinderSnapshot = { query: "", seniority: "", source: "", location: "", contact: "", document: "", minScore: 0, activeOnly: true, recency: "", sort: "relevance", results: [], totalResults: 0, currentPage: 1, searchStatus: "", hasSearched: false, interpretedTerms: [], ignoredCriteria: [] };
   try {
     const stored = window.sessionStorage.getItem(TALENT_FINDER_STATE_KEY);
     if (!stored) return empty;
@@ -301,6 +302,7 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
   const [status, setStatus] = useState("active");
   const [recency, setRecency] = useState("");
   const [sort, setSort] = useState("updated");
+  const [previewCandidate, setPreviewCandidate] = useState<Candidate | null>(null);
   const [page, setPage] = useState(0);
   const [showForm, setShowForm] = useState(false);
   const [showImport, setShowImport] = useState(false);
@@ -352,7 +354,7 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
     { key: "document", type: "select", options: [{ value: "", label: "Cualquier CV" }, { value: "pdf", label: "CV en PDF" }, { value: "word", label: "CV en Word" }] },
     { key: "status", type: "select", options: [{ value: "active", label: "Base confiable" }, { value: "needs_review", label: "Requieren revisión" }] },
     { key: "recency", type: "select", options: recencyOptions },
-    { key: "sort", type: "select", options: [{ value: "updated", label: "Actualizados recientemente" }, { value: "recent", label: "CV más recientes" }, { value: "oldest", label: "CV más antiguos" }, { value: "name", label: "Nombre A-Z" }] }
+    { key: "sort", type: "select", options: [{ value: "updated", label: "Actualizados recientemente" }, { value: "recent", label: "CV más recientes" }, { value: "oldest", label: "CV más antiguos" }, { value: "quality", label: "Datos más completos" }, { value: "name", label: "Nombre A-Z" }, { value: "name_desc", label: "Nombre Z-A" }] }
   ];
   return (
     <PagePad>
@@ -374,9 +376,10 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
       {showForm && <CandidateForm onSaved={() => { setShowForm(false); load(); }} />}
       <div className="grid gap-3">
         {!loading && !error && items.length === 0 && <Empty text="No hay candidatos cargados. Crea el primero o conecta una integracion real." />}
-        {items.map((c) => <CandidateRow key={c.id} candidate={c} onView={onView} />)}
+        {items.map((c) => <CandidateRow key={c.id} candidate={c} onView={onView} onPreview={c.primaryDocumentId ? () => setPreviewCandidate(c) : undefined} />)}
       </div>
       {!error && meta && meta.total > meta.limit && <div className="mt-4 flex items-center justify-between"><button className="btn-ghost" disabled={page === 0 || loading} onClick={() => load(page - 1)}>Anterior</button><span className="text-sm text-slate-500">Página {page + 1} de {Math.ceil(meta.total / meta.limit)}</span><button className="btn-ghost" disabled={meta.offset + meta.returned >= meta.total || loading} onClick={() => load(page + 1)}>Siguiente</button></div>}
+      {previewCandidate && <CvPreviewModal candidate={previewCandidate} onClose={() => setPreviewCandidate(null)} onView={() => { const id = previewCandidate.id; setPreviewCandidate(null); onView(id); }} />}
     </PagePad>
   );
 }
@@ -489,6 +492,7 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
   const [source, setSource] = useState(snapshot.source);
   const [location, setLocation] = useState(snapshot.location);
   const [contact, setContact] = useState(snapshot.contact);
+  const [document, setDocument] = useState(snapshot.document);
   const [minScore, setMinScore] = useState(snapshot.minScore);
   const [activeOnly, setActiveOnly] = useState(snapshot.activeOnly);
   const [recency, setRecency] = useState(snapshot.recency);
@@ -505,8 +509,8 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
 
   useEffect(() => {
     const previous = readTalentFinderSnapshot();
-    window.sessionStorage.setItem(TALENT_FINDER_STATE_KEY, JSON.stringify({ query, seniority, source, location, contact, minScore, activeOnly, recency, sort, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms, ignoredCriteria, scrollY: previous.scrollY ?? 0 }));
-  }, [query, seniority, source, location, contact, minScore, activeOnly, recency, sort, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms, ignoredCriteria]);
+    window.sessionStorage.setItem(TALENT_FINDER_STATE_KEY, JSON.stringify({ query, seniority, source, location, contact, document, minScore, activeOnly, recency, sort, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms, ignoredCriteria, scrollY: previous.scrollY ?? 0 }));
+  }, [query, seniority, source, location, contact, document, minScore, activeOnly, recency, sort, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms, ignoredCriteria]);
 
   useEffect(() => {
     if (!snapshot.scrollY) return;
@@ -531,7 +535,7 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
     }
     setSearchStatus("Buscando en los candidatos ya procesados...");
     try {
-      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[]; locations?: string[]; ignoredCriteria?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean } }>("/search/talent", { method: "POST", timeoutMs: 20_000, body: JSON.stringify({ query, page, pageSize: 50, filters: { seniority: seniority || undefined, source: source ? [source] : undefined, location: location || undefined, contact: contact || undefined, minScore: minScore || undefined, activeOnly, recency: recency || undefined, sort } }) });
+      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[]; locations?: string[]; ignoredCriteria?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean } }>("/search/talent", { method: "POST", timeoutMs: 20_000, body: JSON.stringify({ query, page, pageSize: 50, filters: { seniority: seniority || undefined, source: source ? [source] : undefined, location: location || undefined, contact: contact || undefined, document: document || undefined, minScore: minScore || undefined, activeOnly, recency: recency || undefined, sort } }) });
       setResults((previous) => append
         ? [...new Map([...previous, ...response.data].map((candidate) => [candidate.id, candidate])).values()]
         : response.data);
@@ -559,6 +563,7 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
     location: (value) => setLocation(String(value)),
     seniority: (value) => setSeniority(String(value)),
     contact: (value) => setContact(String(value)),
+    document: (value) => setDocument(String(value)),
     minScore: (value) => setMinScore(Number(value)),
     recency: (value) => setRecency(String(value)),
     sort: (value) => setSort(String(value))
@@ -568,9 +573,10 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
     { key: "location", type: "text", placeholder: "Ciudad o país" },
     { key: "seniority", type: "select", options: seniorityOptions },
     { key: "contact", type: "select", options: contactOptions },
+    { key: "document", type: "select", options: [{ value: "", label: "Cualquier CV" }, { value: "pdf", label: "CV en PDF" }, { value: "word", label: "CV en Word" }] },
     { key: "minScore", type: "select", parse: Number, options: [{ value: "0", label: "Toda coincidencia" }, { value: "60", label: "60% o más" }, { value: "70", label: "70% o más" }, { value: "80", label: "80% o más" }, { value: "90", label: "90% o más" }] },
     { key: "recency", type: "select", options: recencyOptions },
-    { key: "sort", type: "select", options: [{ value: "relevance", label: "Mayor compatibilidad" }, { value: "recent", label: "CV más recientes" }] }
+    { key: "sort", type: "select", options: [{ value: "relevance", label: "Mayor compatibilidad" }, { value: "recent", label: "CV más recientes" }, { value: "oldest", label: "CV más antiguos" }, { value: "name", label: "Nombre A-Z" }] }
   ];
   return (
     <PagePad>
@@ -579,9 +585,9 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
         <textarea className="field min-h-28" placeholder="Ejemplo: auxiliar administrativo con experiencia en facturación y atención al cliente" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") run(1, false); }} />
         <FilterControls
           fields={finderFields}
-          values={{ source, location, seniority, contact, minScore, recency, sort }}
+          values={{ source, location, seniority, contact, document, minScore, recency, sort }}
           onChange={(key, value) => filterSetters[key]?.(value)}
-          className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-7"
+          className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8"
         />
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)} /> Solo activos</label>
@@ -591,7 +597,7 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
       {searchStatus && <div className="mb-3 rounded-md border border-slate-200 bg-white p-3 text-sm text-slate-600">{searchStatus}</div>}
       {hasSearched && ignoredCriteria.length > 0 && <div className="mb-3 rounded-md border border-slate-200 bg-white p-3 text-sm text-slate-600">Los criterios personales sensibles no se usan para filtrar candidatos. El ranking se basa en ubicación, experiencia y adecuación laboral.</div>}
       {hasSearched && interpretedTerms.length > 0 && <div className="mb-3 flex flex-wrap items-center gap-2 border-y border-slate-200 bg-white px-3 py-3 text-sm"><span className="font-semibold text-slate-600">La búsqueda entendió:</span>{interpretedTerms.map((term) => <span key={term} className="rounded-full bg-teal/10 px-2 py-1 text-xs font-semibold text-teal">{term}</span>)}</div>}
-      {hasSearched && <div className="mb-3 text-sm text-slate-500">Mostrando {results.length} de {totalResults} candidatos relacionados · {sort === "recent" ? "ordenados por fecha del CV" : "ordenados por compatibilidad, priorizando actividad reciente entre perfiles similares"}</div>}
+      {hasSearched && <div className="mb-3 text-sm text-slate-500">Mostrando {results.length} de {totalResults} candidatos relacionados · {sort === "recent" ? "CV más recientes primero" : sort === "oldest" ? "CV más antiguos primero" : sort === "name" ? "orden alfabético" : "ordenados por compatibilidad, priorizando actividad reciente entre perfiles similares"}</div>}
       <div className="grid gap-3">{!hasSearched && <Empty text="Escribí lo que necesitás para calcular la compatibilidad sobre los CVs." />}{hasSearched && !loading && results.length === 0 && <Empty text="La búsqueda no encontró candidatos con evidencia suficiente en los CVs disponibles." />}{results.map((c) => {
         const candidate = { ...c, sourceCount: c.sourceCount ?? 0, documentCount: c.documentCount ?? 0, primaryDocumentName: c.primaryDocumentName ?? null, email: c.email ?? [], phone: c.phone ?? [], languages: [], strengths: [], weaknesses: [], status: "active" } as Candidate;
         return <CandidateRow key={c.id} candidate={candidate} onView={openCandidateFromResults} onPreview={candidate.primaryDocumentId ? () => setPreviewCandidate(candidate) : undefined} reason={c.matchReason} matchScore={c.score} />;

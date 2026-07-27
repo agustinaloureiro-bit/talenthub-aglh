@@ -26,7 +26,7 @@ const PLACES: UruguayPlace[] = [
   { name: "Parque Batlle", department: "Montevideo", latitude: -34.8955, longitude: -56.1530, searchRadiusKm: 5 },
   { name: "Buceo", department: "Montevideo", latitude: -34.8977, longitude: -56.1294, searchRadiusKm: 5 },
   { name: "Malvin", aliases: ["Malvín"], department: "Montevideo", latitude: -34.8932, longitude: -56.1002, searchRadiusKm: 5 },
-  { name: "Carrasco", department: "Montevideo", latitude: -34.8859, longitude: -56.0584, searchRadiusKm: 6 },
+  { name: "Carrasco", department: "Montevideo", latitude: -34.8859, longitude: -56.0584, searchRadiusKm: 10 },
   { name: "Centro", department: "Montevideo", latitude: -34.9055, longitude: -56.1910, searchRadiusKm: 5 },
   { name: "Cordon", aliases: ["Cordón"], department: "Montevideo", latitude: -34.9002, longitude: -56.1782, searchRadiusKm: 5 },
   { name: "Ciudad Vieja", department: "Montevideo", latitude: -34.9061, longitude: -56.2053, searchRadiusKm: 5 },

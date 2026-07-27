@@ -5,6 +5,7 @@ import { asyncHandler } from "../middleware/errors.js";
 import { requireRole } from "../middleware/auth.js";
 import { analyzeCvText } from "../services/cvAnalysis.js";
 import { downloadBuscojobsCv } from "../services/buscojobsClient.js";
+import { downloadYoinersCv } from "../services/yoinersClient.js";
 import { extractCvCandidateEvidence } from "../services/cvCandidateEnrichment.js";
 
 export const candidatesRouter = Router();
@@ -58,6 +59,10 @@ function mapCandidate(row: any) {
     sourceTypes: row.source_types ?? [],
     documentCount: Number(row.document_count ?? 0),
     primaryDocumentName: row.primary_document_name ?? null,
+    primaryDocumentId: row.primary_document_id ?? null,
+    primaryDocumentMimeType: row.primary_document_mime_type ?? null,
+    primaryDocumentSourceType: row.primary_document_source_type ?? null,
+    documentSnippet: row.document_snippet ?? null,
     status: row.status,
     createdAt: row.created_at,
     lastSeenAt: row.last_seen_at ?? row.updated_at,
@@ -483,7 +488,7 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
   const seniority = String(req.query.seniority ?? "").trim();
   const document = String(req.query.document ?? "").trim();
   const recency = String(req.query.recency ?? "").trim();
-  const sort = ["recent", "oldest", "name"].includes(String(req.query.sort)) ? String(req.query.sort) : "updated";
+  const sort = ["recent", "oldest", "name", "name_desc", "quality"].includes(String(req.query.sort)) ? String(req.query.sort) : "updated";
   const status = String(req.query.status ?? "active") === "needs_review" ? "needs_review" : "active";
   const limit = Math.max(10, Math.min(100, Number(req.query.limit ?? 50) || 50));
   const offset = Math.max(0, Number(req.query.offset ?? 0) || 0);
@@ -524,7 +529,15 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
   }
   if (location) {
     params.push(`%${location}%`);
-    where += ` AND (coalesce(city,'') ILIKE $${params.length} OR coalesce(country,'') ILIKE $${params.length})`;
+    where += ` AND (
+      coalesce(city,'') ILIKE $${params.length}
+      OR coalesce(country,'') ILIKE $${params.length}
+      OR EXISTS (
+        SELECT 1 FROM documents location_doc
+        WHERE location_doc.candidate_id=candidates.id
+          AND coalesce(location_doc.raw_text,'') ILIKE $${params.length}
+      )
+    )`;
   }
   if (seniority) {
     params.push(seniority);
@@ -548,6 +561,10 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
       ? "latest_source_at ASC NULLS LAST, updated_at DESC"
       : sort === "name"
         ? "full_name ASC, updated_at DESC"
+        : sort === "name_desc"
+          ? "full_name DESC, updated_at DESC"
+          : sort === "quality"
+            ? "quality_score DESC, updated_at DESC"
         : "updated_at DESC";
 
   const rowParams = [...params, limit, offset];
@@ -556,6 +573,10 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
       `SELECT candidates.*,
         (SELECT count(*)::int FROM documents d WHERE d.candidate_id = candidates.id) AS document_count,
         (SELECT d.file_name FROM documents d WHERE d.candidate_id = candidates.id ORDER BY d.is_primary_cv DESC, d.created_at DESC LIMIT 1) AS primary_document_name,
+        (SELECT d.id FROM documents d WHERE d.candidate_id = candidates.id ORDER BY d.is_primary_cv DESC, d.created_at DESC LIMIT 1) AS primary_document_id,
+        (SELECT d.mime_type FROM documents d WHERE d.candidate_id = candidates.id ORDER BY d.is_primary_cv DESC, d.created_at DESC LIMIT 1) AS primary_document_mime_type,
+        (SELECT d.source_type FROM documents d WHERE d.candidate_id = candidates.id ORDER BY d.is_primary_cv DESC, d.created_at DESC LIMIT 1) AS primary_document_source_type,
+        (SELECT left(d.raw_text, 5000) FROM documents d WHERE d.candidate_id = candidates.id ORDER BY d.is_primary_cv DESC, d.created_at DESC LIMIT 1) AS document_snippet,
         (SELECT array_agg(DISTINCT cs.source_type ORDER BY cs.source_type) FROM candidate_sources cs WHERE cs.candidate_id=candidates.id) AS source_types,
         (SELECT max(cs.source_created_at) FROM candidate_sources cs WHERE cs.candidate_id=candidates.id AND cs.is_active=true) AS latest_source_at
        FROM candidates ${where}
@@ -616,7 +637,12 @@ candidatesRouter.get("/:id", asyncHandler(async (req, res) => {
     q("SELECT * FROM candidate_education WHERE candidate_id=$1 ORDER BY end_year DESC NULLS LAST", [req.params.id]),
     q(`SELECT id, candidate_id, type, file_name, file_url, file_hash, mime_type, size_bytes, raw_text,
               ai_summary, source_type, source_id, source_path, created_at, processed_at, is_primary_cv,
-              (file_data IS NOT NULL) AS has_stored_file
+              (
+                file_data IS NOT NULL
+                OR coalesce(file_url, '') ~ '^https://'
+                OR coalesce(source_path, '') ~ '^https://'
+                OR coalesce(raw_text, '') <> ''
+              ) AS has_stored_file
        FROM documents
        WHERE candidate_id=$1
        ORDER BY is_primary_cv DESC, created_at DESC`, [req.params.id]),
@@ -687,6 +713,21 @@ candidatesRouter.get("/:id/documents/:documentId/download", asyncHandler(async (
     const buffer = Buffer.from(await response.arrayBuffer());
     res.setHeader("content-type", response.headers.get("content-type") || document.mime_type || "application/pdf");
     res.setHeader("content-disposition", downloadContentDisposition(document.file_name, "cv-buscojobs.pdf"));
+    return res.send(buffer);
+  }
+
+  if (document.source_type === "yoiners") {
+    const externalUrl = isHttpUrl(document.file_url) ? document.file_url : document.source_path;
+    if (!externalUrl) return res.status(404).json({ error: "El CV de Yoiners no tiene una referencia descargable." });
+    const integration = await q<{ config: Record<string, unknown> }>("SELECT config FROM integrations WHERE id='yoiners' LIMIT 1");
+    const { response, configUpdate } = await downloadYoinersCv(integration.rows[0]?.config ?? {}, externalUrl);
+    if (Object.keys(configUpdate).length) {
+      await q("UPDATE integrations SET config=config || $1::jsonb, updated_at=now() WHERE id='yoiners'", [JSON.stringify(configUpdate)]);
+    }
+    if (!response.ok) return res.status(502).json({ error: "Yoiners no devolvió el CV. TalentHub renovó la sesión; probá sincronizar esa fuente." });
+    const buffer = Buffer.from(await response.arrayBuffer());
+    res.setHeader("content-type", response.headers.get("content-type") || document.mime_type || "application/pdf");
+    res.setHeader("content-disposition", downloadContentDisposition(document.file_name, "cv-yoiners.pdf"));
     return res.send(buffer);
   }
 

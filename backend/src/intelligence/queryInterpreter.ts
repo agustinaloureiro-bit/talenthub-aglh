@@ -221,6 +221,9 @@ function ignoredSensitiveCriteria(query: string) {
 }
 
 function residualKeywords(query: string, knownConcepts: string[]) {
+  const queryWithoutWorkplace = query
+    .replace(/\b(?:para|en)\s+(?:la\s+)?zona\s+[^,.;]+/giu, " ")
+    .replace(/\b(?:lugar|zona|ubicacion|ubicación)\s+de\s+trabajo\s*:\s*[^,.;]+/giu, " ");
   const ignoredWords = new Set([
     "busco", "buscar", "buscando", "estoy", "necesito", "preciso", "persona", "alguien",
     "perfil", "candidato", "candidata", "con", "sin", "para", "por", "experiencia",
@@ -230,12 +233,12 @@ function residualKeywords(query: string, knownConcepts: string[]) {
     "cerca", "alrededores", "vivir", "vive", "viva", "residir", "residente", "residentes",
     "manejo", "conocimiento", "conocimientos", "nivel", "buen", "buena", "muy", "del", "las",
     "los", "como", "hombre", "hombres", "mujer", "mujeres", "organizada", "organizado",
-    "coordinar", "equipo", "equipos", "tratar", "clientes"
+    "coordinar", "equipo", "equipos", "tratar", "clientes", "zona"
   ]);
   const knownTokens = new Set(knownConcepts
     .flatMap((concept) => normalizeHint(concept).split(/[^\p{L}\p{N}]+/u))
     .filter(Boolean));
-  return [...new Set(normalizeHint(query)
+  return [...new Set(normalizeHint(queryWithoutWorkplace)
     .split(/[^\p{L}\p{N}]+/u)
     .filter((word) => word.length >= 4 && !ignoredWords.has(word) && !knownTokens.has(word)))];
 }

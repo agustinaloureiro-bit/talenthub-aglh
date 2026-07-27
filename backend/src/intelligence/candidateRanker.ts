@@ -266,9 +266,6 @@ function candidateLocationMatch(candidate: TalentCandidateResult, interpreted: I
   if (!residence) return { matches: !interpreted.locationStrict, distanceKm: null, confidence: "unknown" as const };
 
   for (const requestedLocation of interpreted.locations) {
-    const proximity = evaluateUruguayProximity(residence, requestedLocation);
-    if (proximity?.matches) return { matches: true, distanceKm: proximity.distanceKm, confidence: "nearby" as const };
-
     const candidatePlace = findUruguayPlace(residence);
     const requestedPlace = findUruguayPlace(requestedLocation);
     const candidateIsBroadMontevideo = candidatePlace
@@ -278,6 +275,9 @@ function candidateLocationMatch(candidate: TalentCandidateResult, interpreted: I
     if (candidateIsBroadMontevideo) {
       return { matches: !interpreted.locationStrict, distanceKm: null, confidence: "broad" as const };
     }
+
+    const proximity = evaluateUruguayProximity(residence, requestedLocation);
+    if (proximity?.matches) return { matches: true, distanceKm: proximity.distanceKm, confidence: "nearby" as const };
   }
 
   const fallbackMatch = interpreted.locationGroups
@@ -322,6 +322,10 @@ export function explainCandidateMatch(candidate: TalentCandidateResult, interpre
     else if (locationMatch.confidence === "broad") reasons.push("vive en Montevideo, pero el barrio no está declarado");
     else if (locationMatch.confidence === "unknown") reasons.push("ubicación pendiente de verificar");
     else reasons.push("ubicación solicitada");
+  } else if (interpreted.locations.length && locationMatch.confidence === "broad") {
+    reasons.push("vive en Montevideo, pero falta confirmar el barrio");
+  } else if (interpreted.locations.length && locationMatch.confidence === "unknown") {
+    reasons.push("ubicación pendiente de verificar");
   }
   if (interpreted.seniority && normalizeSearchValue(haystack).includes(normalizeSearchValue(interpreted.seniority))) reasons.push("seniority compatible");
   const matched = resultCoverage.matchedConcepts.length ? resultCoverage.matchedConcepts.join(", ") : "coincidencia textual parcial";
@@ -330,12 +334,25 @@ export function explainCandidateMatch(candidate: TalentCandidateResult, interpre
 }
 
 export function rerankCandidates(candidates: TalentCandidateResult[], interpreted: InterpretedTalentQuery) {
-  return candidates
+  const qualified = candidates
     .filter((candidate) => isCredibleCandidateName(candidate.fullName))
     .filter((candidate) => satisfiesRequiredGroups(candidate, interpreted))
     .filter((candidate) => satisfiesResidualKeywords(candidate, interpreted))
-    .filter((candidate) => candidateLocationMatch(candidate, interpreted).matches)
-    .filter((candidate) => basicProfileSuitability(candidate, interpreted).allowed)
+    .filter((candidate) => basicProfileSuitability(candidate, interpreted).allowed);
+  const hasVerifiedLocationMatch = qualified.some((candidate) => {
+    const location = candidateLocationMatch(candidate, interpreted);
+    return location.matches && !["unknown", "broad"].includes(location.confidence);
+  });
+  const allowUnverifiedLocationFallback = interpreted.locationStrict
+    && interpreted.locations.length > 0
+    && !hasVerifiedLocationMatch;
+
+  return qualified
+    .filter((candidate) => {
+      const location = candidateLocationMatch(candidate, interpreted);
+      return location.matches
+        || (allowUnverifiedLocationFallback && ["unknown", "broad"].includes(location.confidence));
+    })
     .map((candidate) => {
       const locationMatch = candidateLocationMatch(candidate, interpreted);
       const conceptCoverage = coverage(candidate, interpreted);
@@ -368,11 +385,16 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
       )));
       const primaryAligned = primaryRoleMatches(candidate, interpreted);
       const exactSpecializedRole = isAmbulanceDriverQuery(interpreted) && primaryAligned;
-      const score = exactSpecializedRole
+      const roleScore = exactSpecializedRole
         ? Math.max(98, rawScore)
         : interpreted.roles.length > 0 && !primaryAligned
           ? Math.min(69, rawScore)
           : rawScore;
+      const locationVerified = !interpreted.locations.length
+        || (locationMatch.matches && !["unknown", "broad"].includes(locationMatch.confidence));
+      const score = interpreted.locationStrict && !locationVerified
+        ? Math.min(69, roleScore)
+        : roleScore;
       return {
         ...candidate,
         matchDistanceKm: locationMatch.distanceKm,

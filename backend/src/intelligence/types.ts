@@ -3,10 +3,11 @@ export type TalentSearchFilters = {
   seniority?: string;
   location?: string;
   contact?: "email" | "phone" | "both";
+  document?: "pdf" | "word";
   minScore?: number;
   activeOnly?: boolean;
   recency?: "7d" | "30d" | "90d" | "365d";
-  sort?: "relevance" | "recent";
+  sort?: "relevance" | "recent" | "oldest" | "name";
 };
 
 export type InterpretedTalentQuery = {

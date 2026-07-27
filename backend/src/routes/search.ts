@@ -18,10 +18,11 @@ const searchSchema = z.object({
     seniority: z.string().optional(),
     location: z.string().trim().max(100).optional(),
     contact: z.enum(["email", "phone", "both"]).optional(),
+    document: z.enum(["pdf", "word"]).optional(),
     minScore: z.number().min(0).max(100).optional(),
     activeOnly: z.boolean().optional(),
     recency: z.enum(["7d", "30d", "90d", "365d"]).optional(),
-    sort: z.enum(["relevance", "recent"]).optional()
+    sort: z.enum(["relevance", "recent", "oldest", "name"]).optional()
   }).default({})
 });
 
@@ -156,6 +157,8 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
   if (filters.contact === "email") candidateFilter += " AND cardinality(coalesce(c.email, '{}'::text[])) > 0";
   if (filters.contact === "phone") candidateFilter += " AND cardinality(coalesce(c.phone, '{}'::text[])) > 0";
   if (filters.contact === "both") candidateFilter += " AND cardinality(coalesce(c.email, '{}'::text[])) > 0 AND cardinality(coalesce(c.phone, '{}'::text[])) > 0";
+  if (filters.document === "pdf") candidateFilter += " AND EXISTS (SELECT 1 FROM documents format_doc WHERE format_doc.candidate_id=c.id AND (format_doc.mime_type ILIKE '%pdf%' OR format_doc.file_name ILIKE '%.pdf'))";
+  if (filters.document === "word") candidateFilter += " AND EXISTS (SELECT 1 FROM documents format_doc WHERE format_doc.candidate_id=c.id AND (format_doc.mime_type ILIKE '%word%' OR format_doc.file_name ILIKE '%.doc' OR format_doc.file_name ILIKE '%.docx'))";
   const recencyDays = filters.recency ? { "7d": 7, "30d": 30, "90d": 90, "365d": 365 }[filters.recency] : null;
   if (recencyDays) {
     params.push(new Date(Date.now() - recencyDays * 86_400_000).toISOString());
