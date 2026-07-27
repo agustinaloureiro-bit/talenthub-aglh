@@ -197,54 +197,19 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     params.push(new Date(Date.now() - recencyDays * 86_400_000).toISOString());
     candidateFilter += ` AND EXISTS (SELECT 1 FROM candidate_sources recent_source WHERE recent_source.candidate_id=c.id AND recent_source.is_active=true AND recent_source.source_created_at >= $${params.length}::timestamptz)`;
   }
-  const documentText = "coalesce(d.raw_text,'') || ' ' || coalesce(d.file_name,'')";
   const { rows } = await qWithTimeout(
     `WITH search_terms AS MATERIALIZED (
        SELECT plainto_tsquery('spanish', $1) AS exact_query,
          websearch_to_tsquery('spanish', $2) AS broad_query
-     ), document_candidates AS MATERIALIZED (
-       SELECT d.id, d.candidate_id
-       FROM documents d
-       JOIN candidates c ON c.id=d.candidate_id
-       CROSS JOIN search_terms
-       WHERE ${candidateFilter}
-         AND to_tsvector('spanish', ${documentText}) @@ search_terms.broad_query
-       LIMIT 2400
-     ), document_hits AS MATERIALIZED (
-       SELECT DISTINCT ON (d.candidate_id)
-         d.candidate_id AS id,
-         d.id AS document_id,
-         0.02 + ts_rank_cd(to_tsvector('spanish', ${documentText}), search_terms.broad_query) AS rank
-       FROM document_candidates dc
-       JOIN documents d ON d.id=dc.id
-       CROSS JOIN search_terms
-       ORDER BY
-         d.candidate_id,
-         rank DESC,
-         d.is_primary_cv DESC,
-         d.created_at DESC
-     ), candidate_hits AS (
+     ), top_matches AS MATERIALIZED (
        SELECT c.id,
          0.02 + ts_rank_cd(c.search_vector, search_terms.broad_query)
            + CASE WHEN c.search_vector @@ search_terms.exact_query THEN 1 ELSE 0 END AS rank
        FROM candidates c CROSS JOIN search_terms
        WHERE ${candidateFilter}
          AND c.search_vector @@ search_terms.broad_query
-
-       UNION ALL
-
-       SELECT id, rank
-       FROM document_hits
-     ), matched AS (
-       SELECT id, max(rank) AS rank
-       FROM candidate_hits
-       GROUP BY id
-     ), top_matches AS (
-       SELECT m.id, m.rank
-       FROM matched m
-       JOIN candidates c ON c.id=m.id
-       WHERE EXISTS (SELECT 1 FROM documents available_doc WHERE available_doc.candidate_id=c.id)
-       ORDER BY m.rank DESC, c.quality_score DESC, c.updated_at DESC
+         AND EXISTS (SELECT 1 FROM documents available_doc WHERE available_doc.candidate_id=c.id)
+       ORDER BY rank DESC, c.quality_score DESC, c.updated_at DESC
        LIMIT 800
      )
      SELECT c.*,
@@ -255,30 +220,11 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
       primary_doc.id AS primary_document_id,
       primary_doc.mime_type AS primary_document_mime_type,
       primary_doc.source_type AS primary_document_source_type,
-      concat_ws(
-        E'\n\n',
-        nullif(left(coalesce(primary_doc.raw_text, ''), 5000), ''),
-        CASE
-          WHEN matched_doc.id IS NULL OR matched_doc.id = primary_doc.id
-            THEN nullif(substring(coalesce(primary_doc.raw_text, '') FROM 5001 FOR 5000), '')
-          ELSE nullif(concat(
-            'EVIDENCIA EN OTRO DOCUMENTO: ',
-            coalesce(matched_doc.file_name, 'CV'),
-            E'\n',
-            ts_headline(
-              'spanish',
-              coalesce(matched_doc.raw_text, ''),
-              search_terms.broad_query,
-              'MaxFragments=12, MinWords=8, MaxWords=55, FragmentDelimiter=" ... "'
-            )
-          ), '')
-        END
-      ) AS document_snippet,
+      left(coalesce(primary_doc.raw_text, ''), 12000) AS document_snippet,
       src.latest_source_at,
       top_matches.rank
      FROM top_matches
      JOIN candidates c ON c.id=top_matches.id
-     CROSS JOIN search_terms
      LEFT JOIN LATERAL (
        SELECT
          d.id,
@@ -292,8 +238,6 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
        ORDER BY d.is_primary_cv DESC, d.created_at DESC
        LIMIT 1
      ) primary_doc ON true
-     LEFT JOIN document_hits matched_hit ON matched_hit.id = c.id
-     LEFT JOIN documents matched_doc ON matched_doc.id = matched_hit.document_id
      LEFT JOIN LATERAL (
        SELECT count(DISTINCT source_type)::int AS source_count,
          array_agg(DISTINCT source_type ORDER BY source_type) AS source_types,
