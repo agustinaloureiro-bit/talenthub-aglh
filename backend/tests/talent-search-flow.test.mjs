@@ -92,8 +92,10 @@ test("la recuperacion conserva competencias no catalogadas de la consulta origin
 
 test("la recuperacion de una descripcion extensa usa criterios fuertes y descarta ruido operativo", async () => {
   let providerQuery = "";
-  const engine = new RecruitmentIntelligenceEngine(async (query) => {
+  let retrievalPlan;
+  const engine = new RecruitmentIntelligenceEngine(async (query, _filters, plan) => {
     providerQuery = query;
+    retrievalPlan = plan;
     return [];
   });
   const description = `Tareas: Apuntador, verificador de contenedores.
@@ -108,6 +110,9 @@ Horario: 8:00 a 18:00, lunes a viernes y algún sábado. VH $259.`;
   assert.match(providerQuery, /carga|contenedor|pesaje|documental/i);
   assert.doesNotMatch(providerQuery, /\bhorario\b|\blunes\b|\bviernes\b|\bsabado\b|\b259\b/i);
   assert.ok(providerQuery.length < 300, `consulta de recuperacion demasiado extensa: ${providerQuery.length}`);
+  assert.equal(retrievalPlan.requiredGroups.length, 2);
+  assert.ok(retrievalPlan.requiredGroups[0].some((term) => /administrativ|documental|verificador/i.test(term)));
+  assert.ok(retrievalPlan.requiredGroups[1].some((term) => /deposito|carga|contenedor/i.test(term)));
 });
 
 test("usa competencias no catalogadas para excluir coincidencias genericas", () => {

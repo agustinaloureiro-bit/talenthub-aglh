@@ -2,7 +2,14 @@ import { interpretTalentQuery } from "./queryInterpreter.js";
 import { rerankCandidates } from "./candidateRanker.js";
 import type { TalentCandidateResult, TalentSearchFilters, TalentSearchResult } from "./types.js";
 
-export type CandidateSearchProvider = (query: string, filters?: TalentSearchFilters) => Promise<TalentCandidateResult[]>;
+export type CandidateRetrievalPlan = {
+  requiredGroups?: string[][];
+};
+export type CandidateSearchProvider = (
+  query: string,
+  filters?: TalentSearchFilters,
+  plan?: CandidateRetrievalPlan
+) => Promise<TalentCandidateResult[]>;
 
 function retrievalSignals(query: string) {
   const ignoredWords = new Set([
@@ -53,7 +60,9 @@ export class RecruitmentIntelligenceEngine {
       ...interpreted.keywords
     ].filter(Boolean);
     const retrievalQuery = compactRetrievalQuery(interpreted.normalizedQuery, understoodConcepts);
-    const candidates = await this.fallbackSearch(retrievalQuery, filters);
+    const candidates = await this.fallbackSearch(retrievalQuery, filters, {
+      requiredGroups: interpreted.requiredGroups
+    });
     let ranked = rerankCandidates(candidates, interpreted)
       .filter((candidate) => candidate.score >= (filters.minScore ?? 0));
     if (filters.sort === "recent") {

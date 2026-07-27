@@ -3,6 +3,7 @@ import { z } from "zod";
 import { q, qWithTimeout } from "../db/pool.js";
 import { asyncHandler } from "../middleware/errors.js";
 import { RecruitmentIntelligenceEngine } from "../intelligence/intelligenceEngine.js";
+import type { CandidateRetrievalPlan } from "../intelligence/intelligenceEngine.js";
 import type { TalentSearchFilters } from "../intelligence/types.js";
 import { extractCvResidence } from "../services/cvAnalysis.js";
 import { knownUruguayLocationNames, nearbyUruguayLocations, normalizePlaceName } from "../intelligence/uruguayGeography.js";
@@ -144,6 +145,17 @@ function expandedWebsearchQuery(query: string) {
     .join(" OR ");
 }
 
+function plannedWebsearchQuery(query: string, plan?: CandidateRetrievalPlan) {
+  const groups = (plan?.requiredGroups ?? [])
+    .map((group) => [...new Set(group.map(normalizeSearchText).filter(Boolean))].slice(0, 8))
+    .filter((group) => group.length > 0)
+    .slice(0, 4);
+  if (groups.length < 2) return expandedWebsearchQuery(query);
+  return groups
+    .map((group) => `(${group.map((term) => `"${term.replace(/"/g, " ")}"`).join(" OR ")})`)
+    .join(" AND ");
+}
+
 function cleanResultContacts(values: unknown, maxItems: number) {
   const list = Array.isArray(values) ? values : [];
   return [...new Set(list.map((item) => String(item ?? "").replace(/\s+/g, " ").trim()).filter(Boolean))].slice(0, maxItems);
@@ -159,8 +171,8 @@ function cleanResultSummary(value: unknown) {
   return text.length > 420 ? `${text.slice(0, 420).trim()}...` : text;
 }
 
-export async function findCandidates(query: string, filters: TalentSearchFilters = {}) {
-  const params: unknown[] = [query, expandedWebsearchQuery(query)];
+export async function findCandidates(query: string, filters: TalentSearchFilters = {}, plan?: CandidateRetrievalPlan) {
+  const params: unknown[] = [query, plannedWebsearchQuery(query, plan)];
   let candidateFilter = "c.duplicate_of IS NULL";
   if (filters.activeOnly !== false) candidateFilter += " AND c.status='active'";
   if (filters.seniority) {
