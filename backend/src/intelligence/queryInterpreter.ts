@@ -162,9 +162,12 @@ function normalizeHint(value: string) {
 }
 
 function findHints(query: string, hints: string[]) {
-  const normalized = normalizeHint(query);
+  const normalized = ` ${normalizeHint(query).replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
   const matches = hints
-    .filter((hint) => normalized.includes(normalizeHint(hint)))
+    .filter((hint) => {
+      const normalizedHint = normalizeHint(hint).replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+      return normalized.includes(` ${normalizedHint} `);
+    })
     .sort((left, right) => normalizeHint(right).length - normalizeHint(left).length);
   const filtered = matches.filter((hint, index) => !matches.slice(0, index).some((longer) => {
     const normalizedHint = normalizeHint(hint);
@@ -242,8 +245,10 @@ function basicProfileRequested(query: string) {
 function strictLocationRequested(query: string) {
   const normalized = normalizeHint(query);
   return /\b(?:tiene que|debe|deben|preciso que|necesito que)\s+(?:vivir|viva|vivan|ser|sean|residir)\b/.test(normalized)
+    || /\bque\s+(?:viva|vivan|resida|residan)\b/.test(normalized)
     || /\b(?:vivir|residir)\s+cerca\b/.test(normalized)
-    || /\bresidentes?\s+de\b/.test(normalized);
+    || /\bresidentes?\s+de\b/.test(normalized)
+    || /\bde\s+[^,.;\n]{2,60}\s+o\s+alrededores\b/.test(normalized);
 }
 
 function ignoredSensitiveCriteria(query: string) {
@@ -253,6 +258,7 @@ function ignoredSensitiveCriteria(query: string) {
 
 function residualKeywords(query: string, knownConcepts: string[]) {
   const queryWithoutWorkplace = query
+    .replace(/^\s*(?:cliente|empresa|horarios?|jornada|periodo\s+de\s+trabajo|modalidad|valor\s+hora|salario|sueldo|remuneracion|remuneración)\s*:\s*.*$/gimu, " ")
     .replace(/\b(?:para|en)\s+(?:la\s+)?zona\s+[^,.;]+/giu, " ")
     .replace(/\b(?:lugar|zona|ubicacion|ubicación)\s+de\s+trabajo\s*:\s*[^,.;]+/giu, " ");
   const ignoredWords = new Set([
@@ -268,7 +274,9 @@ function residualKeywords(query: string, knownConcepts: string[]) {
     "tarea", "tareas", "funcion", "funciones", "implica", "implican", "responsable",
     "responsables", "proceso", "procesos", "controlando", "horario", "lunes", "martes",
     "miercoles", "jueves", "viernes", "sabado", "sabados", "domingo", "domingos",
-    "algun", "alguna", "requerido", "requerida", "pesos"
+    "algun", "alguna", "requerido", "requerida", "pesos", "cliente", "empresa",
+    "jornada", "periodo", "modalidad", "valor", "hora", "horas", "nominal",
+    "salario", "sueldo", "remuneracion", "convocatoria", "demanda", "partir"
   ]);
   const knownTokens = new Set(knownConcepts
     .flatMap((concept) => normalizeHint(concept).split(/[^\p{L}\p{N}]+/u))

@@ -13,9 +13,12 @@ function normalizeSearchValue(value: string) {
 export function isCredibleCandidateName(value: string) {
   const name = String(value ?? "").replace(/\s+/g, " ").trim();
   if (name.length < 4 || name.length > 90 || /[@\d]|https?:|www\.|:/.test(name)) return false;
+  if (/\b(?:nombre|nombres|apellido|apellidos|sitio|website|site)\b/i.test(name)) return false;
   const words = name.split(" ").filter(Boolean);
   if (words.length < 2 || words.length > 8) return false;
   if (!words.every((word) => /^[\p{L}'-]+$/u.test(word))) return false;
+  const place = findUruguayPlace(name);
+  if (place && normalizePlaceName(place.name) === normalizePlaceName(name)) return false;
   const genericRoleWords = new Set([
     "administrativo", "administrativa", "auxiliar", "ayudante", "chofer", "conductor",
     "contable", "deposito", "encargado", "encargada", "experiencia", "fabrica", "general",
@@ -395,6 +398,7 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
 
   return qualified
     .filter((candidate) => {
+      if (!interpreted.locationStrict) return true;
       const location = candidateLocationMatch(candidate, interpreted);
       return location.matches
         || (allowUnverifiedLocationFallback && ["unknown", "broad"].includes(location.confidence));

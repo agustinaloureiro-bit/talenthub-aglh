@@ -12,6 +12,8 @@ export type CandidateSearchProvider = (
 ) => Promise<TalentCandidateResult[]>;
 
 function retrievalSignals(query: string) {
+  const profileQuery = query
+    .replace(/^\s*(?:cliente|empresa|horarios?|jornada|periodo\s+de\s+trabajo|modalidad|valor\s+hora|salario|sueldo|remuneracion|remuneración)\s*:\s*.*$/gimu, " ");
   const ignoredWords = new Set([
     "busco", "buscar", "buscando", "estoy", "necesito", "preciso", "persona", "alguien",
     "perfil", "candidato", "candidata", "con", "sin", "para", "experiencia", "experiencias",
@@ -19,12 +21,16 @@ function retrievalSignals(query: string) {
     "requieren", "especifica", "especifico", "sean", "alrededores", "hombre", "hombres",
     "mujer", "mujeres", "tareas", "tarea", "implican", "responsable", "proceso", "controlando",
     "horario", "lunes", "martes", "miercoles", "miércoles", "jueves", "viernes", "sabado",
-    "sábado", "domingo", "algun", "algún", "desde", "hasta", "remuneracion", "remuneración"
+    "sábado", "domingo", "algun", "algún", "desde", "hasta", "remuneracion", "remuneración",
+    "cliente", "empresa", "jornada", "periodo", "modalidad", "valor", "hora", "horas",
+    "nominal", "salario", "sueldo", "convocatoria", "demanda", "partir"
   ]);
-  return query
+  return profileQuery
     .split(/\s+/)
     .map((word) => word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
-    .filter((word) => word.length >= 3 && !ignoredWords.has(word.toLowerCase()));
+    .filter((word) => word.length >= 3
+      && !/^\d+(?:[.,:]\d+)?$/.test(word)
+      && !ignoredWords.has(word.toLowerCase()));
 }
 
 function compactRetrievalQuery(query: string, understoodConcepts: string[]) {

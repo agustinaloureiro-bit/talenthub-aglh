@@ -115,6 +115,64 @@ Horario: 8:00 a 18:00, lunes a viernes y algún sábado. VH $259.`;
   assert.ok(retrievalPlan.requiredGroups[1].some((term) => /deposito|carga|contenedor/i.test(term)));
 });
 
+test("valor hora nominal no se interpreta como experiencia en nomina", async () => {
+  const description = `Cliente: Logisfashion
+Tareas: Carga y descarga, Montevideo Shopping y Punta Carretas Shopping.
+Horarios: A partir de las 7:00am
+Periodo de trabajo: a convocatoria según demanda
+Valor hora nominal: $216`;
+  const interpreted = interpretTalentQuery(description);
+
+  assert.ok(interpreted.skills.includes("carga y descarga"));
+  assert.ok(!interpreted.skills.some((skill) => /n[oó]mina/i.test(skill)));
+  assert.ok(!interpreted.requiredGroups.flat().some((term) => /n[oó]mina/i.test(term)));
+  assert.equal(interpreted.locationStrict, false);
+  assert.deepEqual(interpreted.keywords, []);
+
+  let providerQuery = "";
+  const engine = new RecruitmentIntelligenceEngine(async (query) => {
+    providerQuery = query;
+    return [];
+  });
+  await engine.search(description);
+
+  assert.match(providerQuery, /carga y descarga/i);
+  assert.doesNotMatch(providerQuery, /logisfashion|nominal|216|convocatoria|demanda/i);
+});
+
+test("un lugar de trabajo no excluye perfiles compatibles de otros barrios", () => {
+  const interpreted = interpretTalentQuery(`Tareas: Carga y descarga, Montevideo Shopping y Punta Carretas Shopping.
+Horario: A partir de las 7:00am.`);
+  const ranked = rerankCandidates([
+    {
+      id: "centro",
+      fullName: "Mario Deposito",
+      currentRole: "Auxiliar de depósito",
+      city: "Centro",
+      tags: ["logistica"],
+      qualityScore: 70,
+      documentCount: 1,
+      documentSnippet: "Experiencia en carga y descarga de mercadería.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "canelones",
+      fullName: "Pedro Operario",
+      currentRole: "Operario de depósito",
+      city: "Las Piedras",
+      tags: ["deposito"],
+      qualityScore: 65,
+      documentCount: 1,
+      documentSnippet: "Carga y descarga, preparación de pedidos y movimiento de mercadería.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.deepEqual(ranked.map((candidate) => candidate.id).sort(), ["canelones", "centro"]);
+});
+
 test("usa competencias no catalogadas para excluir coincidencias genericas", () => {
   const interpreted = interpretTalentQuery("Busco técnico con experiencia en metrología industrial");
   const ranked = rerankCandidates([
@@ -695,6 +753,13 @@ test("excluye cargos genericos usados como nombre de persona", () => {
   assert.equal(isCredibleCandidateName("Operario práctico"), false);
   assert.equal(isCredibleCandidateName("Auxiliar administrativa"), false);
   assert.equal(isCredibleCandidateName("Mario Pereira"), true);
+});
+
+test("excluye marcadores, sitios y ubicaciones usados como nombre de persona", () => {
+  assert.equal(isCredibleCandidateName("Nelson Sebastián APELLIDOS"), false);
+  assert.equal(isCredibleCandidateName("Mrbet Site"), false);
+  assert.equal(isCredibleCandidateName("LA BLANQUEADA"), false);
+  assert.equal(isCredibleCandidateName("Pilar Carrasco"), true);
 });
 
 test("genera un nombre de descarga valido para archivos con acentos combinados", () => {
