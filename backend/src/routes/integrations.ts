@@ -3507,9 +3507,26 @@ integrationsRouter.get("/", asyncHandler(async (_req, res) => {
     q("SELECT source_type, extracted_name, reason, source_url, created_at FROM rejected_imports ORDER BY created_at DESC LIMIT 30"),
     q(
       `SELECT source_type,
-              count(*)::int AS total,
+              count(*)::int AS total_documents,
               count(*) FILTER (WHERE length(coalesce(raw_text,'')) >= 80)::int AS searchable,
-              count(*) FILTER (WHERE processed_at IS NULL)::int AS pending,
+              count(*) FILTER (
+                WHERE processed_at IS NULL
+                  AND length(coalesce(raw_text,'')) < 80
+                  AND (
+                    source_type <> 'gmail'
+                    OR file_data IS NOT NULL
+                  )
+              )::int AS pending,
+              count(*) FILTER (
+                WHERE processed_at IS NOT NULL
+                  AND length(coalesce(raw_text,'')) < 80
+              )::int AS unreadable,
+              count(*) FILTER (
+                WHERE processed_at IS NULL
+                  AND source_type = 'gmail'
+                  AND file_data IS NULL
+                  AND length(coalesce(raw_text,'')) < 80
+              )::int AS unavailable,
               count(*) FILTER (WHERE extraction_started_at IS NOT NULL AND processed_at IS NULL)::int AS processing,
               count(*) FILTER (
                 WHERE processed_at IS NULL

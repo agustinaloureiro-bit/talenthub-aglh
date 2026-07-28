@@ -839,9 +839,10 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
           </div>
           <div className="mt-3 grid gap-3 md:grid-cols-4">
             {data.meta.documentBackfill.map((row: any) => {
-              const total = Number(row.total ?? 0);
               const searchable = Number(row.searchable ?? 0);
-              const percent = total > 0 ? Math.round((searchable / total) * 100) : 100;
+              const pending = Number(row.pending ?? 0);
+              const processable = searchable + pending;
+              const percent = processable > 0 ? Math.round((searchable / processable) * 100) : 100;
               return (
                 <div key={row.source_type} className="rounded-md border border-slate-200 p-3">
                   <div className="flex items-center justify-between text-sm">
@@ -852,8 +853,10 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
                     <div className="h-full bg-teal-500" style={{ width: `${percent}%` }} />
                   </div>
                   <div className="mt-2 text-xs text-slate-500">
-                    {searchable.toLocaleString()} legibles · {Number(row.pending ?? 0).toLocaleString()} pendientes
+                    {searchable.toLocaleString()} legibles · {pending.toLocaleString()} pendientes
                     {Number(row.retrying ?? 0) > 0 ? ` · ${Number(row.retrying).toLocaleString()} reintentando` : ""}
+                    {Number(row.unreadable ?? 0) > 0 ? ` · ${Number(row.unreadable).toLocaleString()} requieren OCR` : ""}
+                    {Number(row.unavailable ?? 0) > 0 ? ` · ${Number(row.unavailable).toLocaleString()} sin archivo disponible` : ""}
                   </div>
                 </div>
               );
