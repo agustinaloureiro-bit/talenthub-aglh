@@ -13,7 +13,7 @@ import { extractDocumentText } from "../services/documentText.js";
 import { selectCandidateEmails } from "../services/candidateIdentity.js";
 import { extractCvCandidateEvidence, humanCandidateField } from "../services/cvCandidateEnrichment.js";
 import { loginAglh, syncAglh } from "../services/aglhClient.js";
-import { syncYoiners } from "../services/yoinersClient.js";
+import { downloadYoinersCv, syncYoiners } from "../services/yoinersClient.js";
 import {
   buscojobsAuthFromConfig,
   downloadBuscojobsCv,
@@ -3236,7 +3236,8 @@ async function markStaleSyncingIntegrations() {
 async function repairCandidateDocuments(sourceType: string, config: Record<string, unknown>) {
   const { rows } = await q<any>(
     `SELECT c.id AS candidate_id, c.full_name, c.email, c.phone, c.city, c.country, c."current_role", c.ai_tags,
-            d.id AS document_id, d.file_name, d.file_url, d.mime_type, d.raw_text, d.file_data
+            d.id AS document_id, d.file_name, d.file_url, d.mime_type, d.raw_text, d.file_data,
+            d.source_id, d.source_path
      FROM candidates c
      JOIN LATERAL (
        SELECT doc.*
@@ -3244,7 +3245,13 @@ async function repairCandidateDocuments(sourceType: string, config: Record<strin
        WHERE doc.candidate_id=c.id
          AND doc.source_type=$1
          AND (doc.is_primary_cv OR lower(doc.type) IN ('cv','resume','curriculum'))
-         AND (doc.file_data IS NOT NULL OR coalesce(doc.file_url,'') <> '' OR length(coalesce(doc.raw_text,'')) >= 80)
+         AND (
+           doc.file_data IS NOT NULL
+           OR coalesce(doc.file_url,'') <> ''
+           OR coalesce(doc.source_path,'') <> ''
+           OR coalesce(doc.source_id,'') LIKE 'buscojobs:%'
+           OR length(coalesce(doc.raw_text,'')) >= 80
+         )
        ORDER BY doc.is_primary_cv DESC, doc.created_at DESC
        LIMIT 1
      ) d ON true
@@ -3257,9 +3264,11 @@ async function repairCandidateDocuments(sourceType: string, config: Record<strin
   );
   const token = sourceType === "aglh" ? cleanText(config.aglhAccessToken ?? config.accessToken) : "";
   let repaired = 0;
+  const configUpdate: Record<string, unknown> = {};
 
   for (const row of rows) {
     let rawText = cleanText(row.raw_text);
+    let documentBytesAvailable = Boolean(row.file_data);
     if (!rawText) {
       let buffer: Buffer | null = row.file_data
         ? (Buffer.isBuffer(row.file_data) ? row.file_data : Buffer.from(row.file_data))
@@ -3271,10 +3280,43 @@ async function repairCandidateDocuments(sourceType: string, config: Record<strin
           });
           if (response.ok) {
             const size = Number(response.headers.get("content-length") || 0);
-            if (!size || size <= MAX_STORED_CV_BYTES) buffer = Buffer.from(await response.arrayBuffer());
+            if (!size || size <= MAX_STORED_CV_BYTES) {
+              buffer = Buffer.from(await response.arrayBuffer());
+              documentBytesAvailable = buffer.length > 0;
+            }
           }
         } catch {
           buffer = null;
+        }
+      }
+      if (!buffer && sourceType === "yoiners") {
+        const externalUrl = cleanText(row.file_url ?? row.source_path);
+        if (externalUrl) {
+          try {
+            const result = await downloadYoinersCv({ ...config, ...configUpdate }, externalUrl);
+            Object.assign(configUpdate, result.configUpdate);
+            if (result.response.ok) {
+              buffer = Buffer.from(await result.response.arrayBuffer());
+              documentBytesAvailable = buffer.length > 0;
+            }
+          } catch {
+            buffer = null;
+          }
+        }
+      }
+      if (!buffer && sourceType === "buscojobs") {
+        const [, offerId, postulationId] = cleanText(row.source_id).split(":");
+        if (offerId && postulationId) {
+          try {
+            const result = await downloadBuscojobsCv({ ...config, ...configUpdate }, offerId, postulationId);
+            Object.assign(configUpdate, result.configUpdate);
+            if (result.response.ok) {
+              buffer = Buffer.from(await result.response.arrayBuffer());
+              documentBytesAvailable = buffer.length > 0;
+            }
+          } catch {
+            buffer = null;
+          }
         }
       }
       if (buffer?.length && buffer.length <= MAX_STORED_CV_BYTES) {
@@ -3284,7 +3326,11 @@ async function repairCandidateDocuments(sourceType: string, config: Record<strin
     const evidence = extractCvCandidateEvidence(rawText, row.full_name);
     const analysis = evidence.analysis;
     if (!analysis.hasReadableText) {
-      await q("UPDATE documents SET processed_at=now() WHERE id=$1", [row.document_id]);
+      // Only close the item when bytes were actually read. Authentication or
+      // network failures must remain retryable on the next synchronization.
+      if (documentBytesAvailable) {
+        await q("UPDATE documents SET processed_at=now() WHERE id=$1", [row.document_id]);
+      }
       continue;
     }
 
@@ -3320,7 +3366,7 @@ async function repairCandidateDocuments(sourceType: string, config: Record<strin
     );
     repaired += 1;
   }
-  return repaired;
+  return { repaired, configUpdate };
 }
 
 integrationsRouter.get("/", asyncHandler(async (_req, res) => {
@@ -3502,6 +3548,7 @@ async function syncIntegration(integrationId: string) {
   let unchangedRecords = 0;
   let errors = 0;
   let repairedRecords = 0;
+  let repairConfigUpdate: Record<string, unknown> = {};
 
   if (rowsToImport.length > 0) {
     const candidatesToImport: CandidateImport[] = [];
@@ -3567,23 +3614,28 @@ async function syncIntegration(integrationId: string) {
     message = `${agent?.name ?? integration.rows[0].name} no pudo sincronizar: ${scraperError}`;
   }
 
-  repairedRecords = await repairCandidateDocuments(integrationId, {
+  const repairResult = await repairCandidateDocuments(integrationId, {
       ...config,
       ...(scraperResult?.configUpdate ?? {})
   });
+  repairedRecords = repairResult.repaired;
+  repairConfigUpdate = repairResult.configUpdate;
   if (repairedRecords > 0) {
     message = `${message} Reanalizados desde el CV: ${repairedRecords} perfiles históricos de ${integration.rows[0].name}.`;
     if (status === "warning") status = "success";
   }
 
-  if (scraperResult?.message || scraperResult?.configUpdate) {
-    const resultStatus = status === "error" ? cleanText(scraperResult.configUpdate?.sessionStatus) || "error" : "connected";
+  if (scraperResult?.message || scraperResult?.configUpdate || Object.keys(repairConfigUpdate).length) {
+    const resultStatus = status === "error" ? cleanText(scraperResult?.configUpdate?.sessionStatus) || "error" : "connected";
     await q(
       "UPDATE integrations SET config=config || $1::jsonb, updated_at=now() WHERE id=$2",
       [JSON.stringify({
-        ...(scraperResult.configUpdate ?? {}),
+        ...(scraperResult?.configUpdate ?? {}),
+        ...repairConfigUpdate,
         sessionStatus: resultStatus,
-        sessionLastError: status === "error" ? (scraperResult.configUpdate?.sessionLastError ?? scraperResult.message) : null,
+        sessionLastError: status === "error"
+          ? (scraperResult?.configUpdate?.sessionLastError ?? scraperResult?.message ?? message)
+          : null,
         lastAgentMessage: message,
         syncEngineVersion: SYNC_ENGINE_VERSION
       }), integrationId]
