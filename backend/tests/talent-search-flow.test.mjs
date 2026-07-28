@@ -129,6 +129,76 @@ Horario: 8:00 a 18:00, lunes a viernes y algún sábado. VH $259.`;
   assert.ok(retrievalPlan.requiredGroups[1].some((term) => /deposito|carga|contenedor/i.test(term)));
 });
 
+test("interpreta una descripcion extensa de refrigeracion industrial sin convertir el aviso entero en requisitos", async () => {
+  const description = `Maquinista de Refrigeración
+Responsabilidades:
+- Garantizar el correcto funcionamiento de los sistemas de refrigeración industrial.
+- Realizar mantenimiento preventivo y correctivo de las máquinas de frío.
+- Detectar y reparar posibles fugas.
+Requisitos:
+- Formación técnica en refrigeración, aire acondicionado o mecánica industrial.
+- Experiencia mínima de 1 año.
+Se valorará especialmente Freón, NH3, amoníaco, electricidad y soldadura.
+Zona: Las Piedras (se valorará vivir en la zona o zonas cercanas).`;
+  const interpreted = interpretTalentQuery(description);
+
+  assert.ok(interpreted.roles.some((role) => /refrigeraci[oó]n|frigorista/i.test(role)));
+  assert.ok(interpreted.skills.includes("refrigeracion industrial"));
+  assert.ok(interpreted.skills.includes("mantenimiento industrial"));
+  assert.ok(interpreted.skills.includes("refrigerantes industriales"));
+  assert.ok(interpreted.locations.some((location) => /las piedras/i.test(location)));
+  assert.equal(interpreted.locationStrict, false);
+  assert.equal(interpreted.requiredGroups.length, 2);
+  assert.ok(interpreted.requiredGroups[0].some((term) => /refrigeracion|frigorista/i.test(term)));
+  assert.ok(interpreted.requiredGroups[1].some((term) => /mantenimiento/i.test(term)));
+  assert.ok(!interpreted.keywords.some((term) => /garantizar|responsabilidades|requisitos|secundaria|deseable/i.test(term)));
+
+  let providerQuery = "";
+  const engine = new RecruitmentIntelligenceEngine(async (query) => {
+    providerQuery = query;
+    return [];
+  });
+  await engine.search(description);
+  assert.match(providerQuery, /refrigeracion industrial/i);
+  assert.match(providerQuery, /mantenimiento/i);
+  assert.doesNotMatch(providerQuery, /responsabilidades|garantizar|requisitos|secundaria/i);
+  assert.ok(providerQuery.length < 300);
+});
+
+test("refrigeracion industrial exige experiencia especializada y prioriza evidencia tecnica", () => {
+  const interpreted = interpretTalentQuery(`Maquinista de Refrigeración.
+Experiencia en mantenimiento preventivo y correctivo de sistemas de refrigeración industrial.
+Se valora Freón, NH3, electricidad y soldadura. Zona Las Piedras.`);
+  const ranked = rerankCandidates([
+    {
+      id: "generico",
+      fullName: "Mario Mantenimiento",
+      currentRole: "Auxiliar de mantenimiento",
+      city: "Las Piedras",
+      tags: ["mantenimiento"],
+      qualityScore: 95,
+      documentCount: 1,
+      documentSnippet: "Mantenimiento general, pintura y lubricación.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "frigorista",
+      fullName: "Luis Pereira",
+      currentRole: "Técnico frigorista",
+      city: "La Paz",
+      tags: ["refrigeracion industrial", "electricidad", "soldadura"],
+      qualityScore: 70,
+      documentCount: 1,
+      documentSnippet: "Mantenimiento preventivo y correctivo de cámaras frigoríficas y equipos de frío con Freón y amoníaco.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.deepEqual(ranked.map((candidate) => candidate.id), ["frigorista"]);
+});
+
 test("valor hora nominal no se interpreta como experiencia en nomina", async () => {
   const description = `Cliente: Logisfashion
 Tareas: Carga y descarga, Montevideo Shopping y Punta Carretas Shopping.

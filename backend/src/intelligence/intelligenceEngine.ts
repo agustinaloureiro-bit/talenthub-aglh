@@ -23,7 +23,13 @@ function retrievalSignals(query: string) {
     "horario", "lunes", "martes", "miercoles", "miércoles", "jueves", "viernes", "sabado",
     "sábado", "domingo", "algun", "algún", "desde", "hasta", "remuneracion", "remuneración",
     "cliente", "empresa", "jornada", "periodo", "modalidad", "valor", "hora", "horas",
-    "nominal", "salario", "sueldo", "convocatoria", "demanda", "partir"
+    "nominal", "salario", "sueldo", "convocatoria", "demanda", "partir",
+    "responsabilidad", "responsabilidades", "garantizar", "correcto", "funcionamiento",
+    "realizar", "efectuar", "ejecutar", "general", "generales", "diaria", "diarias",
+    "registrar", "detectar", "reparar", "posible", "posibles", "requisito", "requisitos",
+    "secundaria", "completa", "equivalente", "formacion", "formación", "deseable",
+    "areas", "áreas", "afines", "minima", "mínima", "minimo", "mínimo", "anos", "años",
+    "valora", "valorara", "valorará", "especialmente", "niveles", "consumos"
   ]);
   return profileQuery
     .split(/\s+/)

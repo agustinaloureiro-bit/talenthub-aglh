@@ -171,6 +171,60 @@ function cleanResultSummary(value: unknown) {
   return text.length > 420 ? `${text.slice(0, 420).trim()}...` : text;
 }
 
+async function findCandidatesFromProfileIndex(candidateFilter: string, params: unknown[]) {
+  return qWithTimeout(
+    `WITH search_terms AS MATERIALIZED (
+       SELECT websearch_to_tsquery('spanish', $2) AS broad_query,
+         websearch_to_tsquery('spanish', $3) AS fallback_query
+     ), top_matches AS MATERIALIZED (
+       SELECT c.id,
+         0.02
+           + ts_rank_cd(c.search_vector, search_terms.broad_query)
+           + (ts_rank_cd(c.search_vector, search_terms.fallback_query) * 0.35) AS rank
+       FROM candidates c CROSS JOIN search_terms
+       WHERE ${candidateFilter}
+         AND (
+           c.search_vector @@ search_terms.broad_query
+           OR c.search_vector @@ search_terms.fallback_query
+         )
+         AND EXISTS (SELECT 1 FROM documents available_doc WHERE available_doc.candidate_id=c.id)
+       ORDER BY rank DESC, c.quality_score DESC, c.updated_at DESC
+       LIMIT 500
+     )
+     SELECT c.*,
+       coalesce(src.source_count, 0)::int AS source_count,
+       coalesce(src.source_types, '{}'::text[]) AS source_types,
+       coalesce(primary_doc.document_count, 0)::int AS document_count,
+       primary_doc.file_name AS primary_document_name,
+       primary_doc.id AS primary_document_id,
+       primary_doc.mime_type AS primary_document_mime_type,
+       primary_doc.source_type AS primary_document_source_type,
+       left(coalesce(primary_doc.raw_text, ''), 8000) AS document_snippet,
+       src.latest_source_at,
+       top_matches.rank
+     FROM top_matches
+     JOIN candidates c ON c.id=top_matches.id
+     LEFT JOIN LATERAL (
+       SELECT d.id, d.file_name, d.mime_type, d.source_type, d.raw_text,
+         count(*) OVER ()::int AS document_count
+       FROM documents d
+       WHERE d.candidate_id=c.id
+       ORDER BY d.is_primary_cv DESC, d.created_at DESC
+       LIMIT 1
+     ) primary_doc ON true
+     LEFT JOIN LATERAL (
+       SELECT count(DISTINCT source_type)::int AS source_count,
+         array_agg(DISTINCT source_type ORDER BY source_type) AS source_types,
+         max(cs.source_created_at) AS latest_source_at
+       FROM candidate_sources cs
+       WHERE cs.candidate_id=c.id AND cs.is_active=true
+     ) src ON true
+     ORDER BY top_matches.rank DESC, c.quality_score DESC, c.updated_at DESC`,
+    params,
+    5_000
+  );
+}
+
 export async function findCandidates(query: string, filters: TalentSearchFilters = {}, plan?: CandidateRetrievalPlan) {
   const params: unknown[] = [query, plannedWebsearchQuery(query, plan), expandedWebsearchQuery(query)];
   let candidateFilter = "c.duplicate_of IS NULL";
@@ -197,7 +251,9 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     params.push(new Date(Date.now() - recencyDays * 86_400_000).toISOString());
     candidateFilter += ` AND EXISTS (SELECT 1 FROM candidate_sources recent_source WHERE recent_source.candidate_id=c.id AND recent_source.is_active=true AND recent_source.source_created_at >= $${params.length}::timestamptz)`;
   }
-  const { rows } = await qWithTimeout(
+  let rows;
+  try {
+    ({ rows } = await qWithTimeout(
      `WITH search_terms AS MATERIALIZED (
        SELECT plainto_tsquery('spanish', $1) AS exact_query,
          websearch_to_tsquery('spanish', $2) AS broad_query,
@@ -218,56 +274,50 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
          AND EXISTS (SELECT 1 FROM documents available_doc WHERE available_doc.candidate_id=c.id)
        ORDER BY rank DESC, c.quality_score DESC, c.updated_at DESC
        LIMIT 400
+     ), raw_document_matches AS MATERIALIZED (
+       SELECT c.id,
+         0.04
+           + ts_rank_cd(
+               to_tsvector('spanish'::regconfig, coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')),
+               search_terms.broad_query
+             )
+           + (
+               ts_rank_cd(
+                 to_tsvector('spanish'::regconfig, coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')),
+                 search_terms.fallback_query
+               ) * 0.35
+             ) AS rank,
+         d.id AS matched_document_id,
+         d.is_primary_cv,
+         d.created_at,
+         c.quality_score,
+         c.updated_at
+       FROM documents d
+       JOIN candidates c ON c.id=d.candidate_id
+       CROSS JOIN search_terms
+       WHERE ${candidateFilter}
+         AND (
+           to_tsvector('spanish'::regconfig, coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')) @@ search_terms.broad_query
+           OR to_tsvector('spanish'::regconfig, coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')) @@ search_terms.fallback_query
+         )
+       ORDER BY rank DESC, c.quality_score DESC, c.updated_at DESC
+       LIMIT 1200
      ), document_matches AS MATERIALIZED (
        SELECT document_ranked.id,
          document_ranked.rank,
          document_ranked.matched_document_id
        FROM (
-         SELECT DISTINCT ON (c.id)
-           c.id,
-           0.04
-             + ts_rank_cd(
-                 to_tsvector(
-                   'spanish'::regconfig,
-                   coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')
-                 ),
-                 search_terms.broad_query
-               )
-             + (
-                 ts_rank_cd(
-                   to_tsvector(
-                     'spanish'::regconfig,
-                     coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')
-                   ),
-                   search_terms.fallback_query
-                 ) * 0.35
-               )
-             + CASE
-                 WHEN to_tsvector(
-                   'spanish'::regconfig,
-                   coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')
-                 ) @@ search_terms.exact_query
-                 THEN 1
-                 ELSE 0
-               END AS rank,
-           d.id AS matched_document_id,
-           c.quality_score,
-           c.updated_at
-         FROM documents d
-         JOIN candidates c ON c.id=d.candidate_id
-         CROSS JOIN search_terms
-         WHERE ${candidateFilter}
-           AND (
-             to_tsvector(
-               'spanish'::regconfig,
-               coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')
-             ) @@ search_terms.broad_query
-             OR to_tsvector(
-               'spanish'::regconfig,
-               coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')
-             ) @@ search_terms.fallback_query
-           )
-         ORDER BY c.id, rank DESC, d.is_primary_cv DESC, d.created_at DESC
+         SELECT DISTINCT ON (raw_document_matches.id)
+           raw_document_matches.id,
+           raw_document_matches.rank,
+           raw_document_matches.matched_document_id,
+           raw_document_matches.quality_score,
+           raw_document_matches.updated_at
+         FROM raw_document_matches
+         ORDER BY raw_document_matches.id,
+           raw_document_matches.rank DESC,
+           raw_document_matches.is_primary_cv DESC,
+           raw_document_matches.created_at DESC
        ) document_ranked
        ORDER BY document_ranked.rank DESC, document_ranked.quality_score DESC, document_ranked.updated_at DESC
        LIMIT 400
@@ -324,8 +374,12 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
      ) src ON true
      ORDER BY top_matches.rank DESC, c.quality_score DESC, c.updated_at DESC`,
     params,
-    9_000
-  );
+      8_000
+    ));
+  } catch (error: any) {
+    if (error?.code !== "57014") throw error;
+    ({ rows } = await findCandidatesFromProfileIndex(candidateFilter, params));
+  }
   return rows.map((row) => {
     const cvResidence = extractCvResidence(row.document_snippet ?? "");
     return {

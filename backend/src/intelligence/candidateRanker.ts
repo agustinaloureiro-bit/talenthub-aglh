@@ -31,6 +31,13 @@ export function isCredibleCandidateName(value: string) {
 }
 
 const EQUIVALENT_TERMS: Record<string, string[]> = {
+  "maquinista de refrigeracion": ["tecnico en refrigeracion", "tecnico frigorista", "frigorista", "refrigeracion industrial", "operador de sala de maquinas"],
+  "tecnico en refrigeracion": ["maquinista de refrigeracion", "tecnico frigorista", "frigorista", "refrigeracion industrial", "aire acondicionado"],
+  "tecnico frigorista": ["frigorista", "tecnico en refrigeracion", "refrigeracion industrial"],
+  frigorista: ["tecnico frigorista", "tecnico en refrigeracion", "refrigeracion industrial"],
+  "refrigeracion industrial": ["refrigeracion", "frigorista", "sistemas de refrigeracion", "equipos de frio", "maquinas de frio", "camara de frio", "camaras frigorificas", "aire acondicionado", "hvac"],
+  "mantenimiento industrial": ["mantenimiento preventivo", "mantenimiento correctivo", "mantenimiento de equipos", "mantenimiento de maquinas", "reparacion de equipos"],
+  "refrigerantes industriales": ["freon", "nh3", "amoniaco", "gas refrigerante", "gases refrigerantes"],
   "auxiliar administrativo": ["administrativo", "administrativa", "asistente administrativo", "asistente administrativa", "back office"],
   "chofer de ambulancia": ["conductor de ambulancia", "ambulanciero", "traslado de pacientes", "emergencia movil"],
   "conductor de ambulancia": ["chofer de ambulancia", "ambulanciero", "traslado de pacientes", "emergencia movil"],
@@ -209,6 +216,27 @@ function isAdministrativeWarehouseQuery(interpreted: InterpretedTalentQuery) {
   return interpreted.requiredGroups.length > 1
     && concepts.some((concept) => ["auxiliar de deposito", "apuntador", "control documental", "control de mercaderia"].includes(concept))
     && interpreted.requiredGroups.some((group) => group.some((value) => /\b(?:deposito|almacen|logistica|stock|mercaderia|contenedor|puerto)\b/.test(normalizeSearchValue(value))));
+}
+
+function isIndustrialRefrigerationQuery(interpreted: InterpretedTalentQuery) {
+  return [...interpreted.roles, ...interpreted.skills]
+    .some((concept) => /\b(?:refrigeracion|frigorista|maquinas? de frio|refrigerantes industriales)\b/.test(normalizeSearchValue(concept)));
+}
+
+function industrialRefrigerationFit(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
+  if (!isIndustrialRefrigerationQuery(interpreted)) return 0;
+  const role = normalizeSearchValue(candidate.currentRole ?? "");
+  const evidence = normalizeSearchValue(candidateHaystack(candidate));
+  const specializedRole = /\b(?:maquinista de refrigeracion|tecnico (?:en|de) refrigeracion|tecnico frigorista|frigorista|refrigerista)\b/.test(role);
+  const industrialCold = /\b(?:refrigeracion industrial|sistemas? de refrigeracion|maquinas? de frio|equipos? de frio|generacion de frio|camaras? frigorificas?)\b/.test(evidence);
+  const refrigerants = /\b(?:freon|nh3|amoniaco|gases? refrigerantes?)\b/.test(evidence);
+  const maintenance = /\b(?:mantenimiento (?:industrial|preventivo|correctivo)|reparacion de (?:equipos|maquinas|sistemas))\b/.test(evidence);
+  if (specializedRole && industrialCold && maintenance) return 6;
+  if (specializedRole && maintenance) return 5;
+  if (industrialCold && maintenance) return 4;
+  if (industrialCold) return 3;
+  if (refrigerants && maintenance) return 3;
+  return 0;
 }
 
 function administrativeWarehouseFit(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
@@ -418,6 +446,7 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
       const profileRatio = conceptCoverage.required ? profileMatches / conceptCoverage.required : 0;
       const hasContact = Boolean(candidate.email?.length || candidate.phone?.length);
       const warehouseFit = administrativeWarehouseFit(candidate, interpreted);
+      const refrigerationFit = industrialRefrigerationFit(candidate, interpreted);
       const seniorityMatch = interpreted.seniority
         ? normalizeSearchValue(candidateHaystack(candidate)).includes(normalizeSearchValue(interpreted.seniority))
         : true;
@@ -434,6 +463,7 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
         + recencyBonus(candidate.latestSourceAt)
         + basicProfileSuitability(candidate, interpreted).bonus
         + (warehouseFit >= 6 ? 24 : warehouseFit === 5 ? 20 : warehouseFit === 4 ? 14 : warehouseFit === 2 ? 6 : warehouseFit < 0 ? -16 : 0)
+        + (refrigerationFit >= 6 ? 24 : refrigerationFit === 5 ? 20 : refrigerationFit === 4 ? 16 : refrigerationFit === 3 ? 10 : 0)
       )));
       const primaryAligned = primaryRoleMatches(candidate, interpreted);
       const exactSpecializedRole = isAmbulanceDriverQuery(interpreted) && primaryAligned;
@@ -454,13 +484,15 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
         matchReason: explainCandidateMatch({ ...candidate, score }, interpreted),
         matchCoverage: conceptCoverage,
         primaryRoleAligned: primaryAligned,
-        warehouseFit
+        warehouseFit,
+        refrigerationFit
       };
     })
-    .sort((a, b) => b.warehouseFit - a.warehouseFit
+    .sort((a, b) => b.refrigerationFit - a.refrigerationFit
+      || b.warehouseFit - a.warehouseFit
       || Number(b.primaryRoleAligned) - Number(a.primaryRoleAligned)
       || (b.matchCoverage?.ratio ?? 0) - (a.matchCoverage?.ratio ?? 0)
       || b.score - a.score
       || b.qualityScore - a.qualityScore)
-    .map(({ matchCoverage, primaryRoleAligned, warehouseFit, ...candidate }) => candidate);
+    .map(({ matchCoverage, primaryRoleAligned, warehouseFit, refrigerationFit, ...candidate }) => candidate);
 }

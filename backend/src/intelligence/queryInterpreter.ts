@@ -16,6 +16,13 @@ const SENIORITY_PATTERNS: Array<[RegExp, string]> = [
 ];
 
 const ROLE_HINTS = [
+  "maquinista de refrigeracion",
+  "maquinista de refrigeración",
+  "tecnico en refrigeracion",
+  "técnico en refrigeración",
+  "tecnico frigorista",
+  "técnico frigorista",
+  "frigorista",
   "chofer de ambulancia",
   "conductor de ambulancia",
   "ambulanciero",
@@ -80,6 +87,21 @@ const ROLE_HINTS = [
 const LOCATION_HINTS = [...new Set(knownUruguayLocationNames().map(normalizeHint))];
 
 const SKILL_HINTS = [
+  "refrigeracion industrial",
+  "refrigeración industrial",
+  "aire acondicionado",
+  "mecanica industrial",
+  "mecánica industrial",
+  "mantenimiento preventivo",
+  "mantenimiento correctivo",
+  "electricidad industrial",
+  "electricidad",
+  "soldadura",
+  "amoniaco",
+  "amoníaco",
+  "nh3",
+  "freon",
+  "freón",
   "mejora continua",
   "lean",
   "six sigma",
@@ -143,6 +165,9 @@ const SKILL_HINTS = [
 ];
 
 const CONCEPT_PATTERNS: Array<{ pattern: RegExp; skill: string }> = [
+  { pattern: /\b(?:refrigeraci[oó]n industrial|sistemas? de refrigeraci[oó]n|m[aá]quinas? de fr[ií]o|generaci[oó]n de fr[ií]o|equipos? de fr[ií]o|frigorista)\b/i, skill: "refrigeracion industrial" },
+  { pattern: /\b(?:mantenimiento (?:preventivo|correctivo)|mantenimiento de (?:m[aá]quinas|equipos|sistemas)|mantenimiento industrial)\b/i, skill: "mantenimiento industrial" },
+  { pattern: /\b(?:fre[oó]n|nh3|amon[ií]aco|gases? refrigerantes?)\b/i, skill: "refrigerantes industriales" },
   { pattern: /lider|jefatura|supervis|coordinar (?:un |el )?equipo|manejo de (?:personal|equipos)|personas a cargo/i, skill: "liderazgo" },
   { pattern: /organizad|planific|ordenad|gesti[oó]n del tiempo|seguimiento de tareas/i, skill: "organizacion" },
   { pattern: /comunicaci[oó]n|buen trato|trat(?:o|ar) con (?:el |los )?clientes?|relaciones interpersonales/i, skill: "comunicacion" },
@@ -196,6 +221,11 @@ function isAdministrativeWarehouseDescription(query: string) {
   return isDetailedJobDescription(query) && hasWarehouse && hasAdministrativeControl;
 }
 
+function isIndustrialRefrigerationDescription(query: string) {
+  const normalized = normalizeHint(query);
+  return /\b(?:refrigeracion industrial|sistemas? de refrigeracion|maquinas? de frio|generacion de frio|frigorista|freon|nh3|amoniaco)\b/.test(normalized);
+}
+
 function requiredGroupsForQuery(
   query: string,
   roles: string[],
@@ -205,6 +235,19 @@ function requiredGroupsForQuery(
 ) {
   const normalized = normalizeHint(query);
   const groups = [...roles, ...skills, ...languages, ...industries].map((concept) => [concept]);
+  if (isIndustrialRefrigerationDescription(query)) {
+    return [
+      [
+        "maquinista de refrigeracion", "tecnico en refrigeracion", "tecnico frigorista",
+        "frigorista", "refrigeracion industrial", "sistemas de refrigeracion",
+        "maquinas de frio", "equipos de frio", "generacion de frio", "aire acondicionado"
+      ],
+      [
+        "mantenimiento industrial", "mantenimiento preventivo", "mantenimiento correctivo",
+        "mantenimiento de equipos", "mantenimiento de maquinas", "reparacion"
+      ]
+    ];
+  }
   if (isAdministrativeWarehouseDescription(query)) {
     return [
       [
@@ -276,14 +319,21 @@ function residualKeywords(query: string, knownConcepts: string[]) {
     "miercoles", "jueves", "viernes", "sabado", "sabados", "domingo", "domingos",
     "algun", "alguna", "requerido", "requerida", "pesos", "cliente", "empresa",
     "jornada", "periodo", "modalidad", "valor", "hora", "horas", "nominal",
-    "salario", "sueldo", "remuneracion", "convocatoria", "demanda", "partir"
+    "salario", "sueldo", "remuneracion", "convocatoria", "demanda", "partir",
+    "responsabilidad", "responsabilidades", "garantizar", "correcto", "funcionamiento",
+    "realizar", "efectuar", "ejecutar", "general", "generales", "diaria", "diarias",
+    "registrar", "detectar", "reparar", "posible", "posibles", "requisito", "requisitos",
+    "secundaria", "completa", "equivalente", "formacion", "tecnica", "tecnico",
+    "profesional", "deseable", "areas", "afines", "minima", "minimo", "anos", "valora",
+    "valorara", "especialmente", "sistemas", "maquinas", "niveles", "consumos"
   ]);
   const knownTokens = new Set(knownConcepts
     .flatMap((concept) => normalizeHint(concept).split(/[^\p{L}\p{N}]+/u))
     .filter(Boolean));
-  return [...new Set(normalizeHint(queryWithoutWorkplace)
+  const keywords = [...new Set(normalizeHint(queryWithoutWorkplace)
     .split(/[^\p{L}\p{N}]+/u)
     .filter((word) => word.length >= 4 && !ignoredWords.has(word) && !knownTokens.has(word)))];
+  return keywords.slice(0, isDetailedJobDescription(query) ? 8 : 20);
 }
 
 export function interpretTalentQuery(query: string): InterpretedTalentQuery {
@@ -291,6 +341,7 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   const detectedRoles = findHints(normalizedQuery, ROLE_HINTS);
   const roles = [...new Set([
     ...detectedRoles,
+    ...(isIndustrialRefrigerationDescription(normalizedQuery) && detectedRoles.length === 0 ? ["tecnico en refrigeracion"] : []),
     ...(isAdministrativeWarehouseDescription(normalizedQuery) ? ["auxiliar de deposito"] : [])
   ])];
   const skills = [...new Set([
