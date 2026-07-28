@@ -241,6 +241,30 @@ Prioridad:
 - Pruebas end-to-end con PostgreSQL efimero y navegador en CI.
 - Presupuesto de rendimiento y pruebas de carga.
 
+## 8.1 Backfill durable implementado y validado
+
+El 28/7 se implemento la primera cola durable para recuperar el texto de los CV
+historicos sin almacenar nuevamente sus binarios:
+
+- reclamo atomico de documentos con `FOR UPDATE SKIP LOCKED`;
+- estado persistente de intento, inicio, proximo reintento y ultimo error;
+- recuperacion automatica de reclamos abandonados;
+- reintentos exponenciales para errores transitorios;
+- procesamiento continuo en lotes chicos para respetar los limites de Render;
+- avance visible por fuente en Integraciones.
+
+La validacion se hizo contra la base real, no solo con mocks. El primer hallazgo
+fue que los CV de AGLH alojados en Amazon S3 recibian por error el token Bearer
+de la API de AGLH. Amazon rechazaba esa combinacion con HTTP 400. Al separar la
+autorizacion de API de la descarga publica de objetos, tres lotes consecutivos
+de AGLH recuperaron 22 CV legibles (antes recuperaban 0). Yoiners y Buscojobs
+tambien procesaron lotes reales sin errores de descarga.
+
+Esta mejora resuelve la infraestructura del backfill, pero no convierte por si
+sola todos los documentos historicos en resultados inmediatos: Render debe
+recorrer la cola restante. Los PDF que sean solamente imagen requieren una
+etapa de OCR posterior; se marcan como no legibles y nunca se inventa contenido.
+
 ## 9. Automatizaciones diferenciales
 
 - Avisar cuando un candidato historico vuelve a ser relevante.

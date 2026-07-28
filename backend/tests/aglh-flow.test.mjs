@@ -122,6 +122,18 @@ test("AGLH incremental establece una referencia inicial sin recorrer todo otra v
   assert.deepEqual(result.headIds, ["aglh:first", "aglh:second"]);
 });
 
+test("los CV AGLH alojados en Amazon se reconocen como almacenamiento externo", async () => {
+  const { remoteCvAuthorizationHeaders } = await import("../dist/routes/integrations.js");
+  assert.equal(
+    remoteCvAuthorizationHeaders("https://aglh-bucket.s3.amazonaws.com/talent/persona/cv.pdf", "saved-token"),
+    undefined
+  );
+  assert.deepEqual(
+    remoteCvAuthorizationHeaders("https://api.aglh.com.uy/cv/persona", "saved-token"),
+    { Authorization: "bearer saved-token" }
+  );
+});
+
 test("AGLH usa solo la ventana reciente despues de completar el historico", async () => {
   const { syncAglh } = await import("../dist/services/aglhClient.js");
   const originalFetch = globalThis.fetch;

@@ -10,7 +10,7 @@ import { requireAuth } from "./middleware/auth.js";
 import { errorHandler } from "./middleware/errors.js";
 import { authRouter } from "./routes/auth.js";
 import { candidatesRouter } from "./routes/candidates.js";
-import { integrationsPublicRouter, integrationsRouter } from "./routes/integrations.js";
+import { integrationsPublicRouter, integrationsRouter, startDocumentBackfillWorker } from "./routes/integrations.js";
 import { settingsRouter } from "./routes/settings.js";
 import { searchRouter } from "./routes/search.js";
 import { usersRouter } from "./routes/users.js";
@@ -60,4 +60,5 @@ app.use(errorHandler);
 
 app.listen(config.port, () => {
   console.log(`Talent Hub API listening on ${config.port}`);
+  startDocumentBackfillWorker();
 });

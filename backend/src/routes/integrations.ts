@@ -38,6 +38,8 @@ const CANDIDATE_IMPORT_CONCURRENCY = 10;
 const DEFAULT_GMAIL_QUERY = "has:attachment (filename:pdf OR filename:doc OR filename:docx OR filename:rtf OR filename:txt) newer_than:3650d";
 const MAX_STORED_CV_BYTES = 8 * 1024 * 1024;
 const CV_REPAIR_BATCH = 30;
+const CV_BACKGROUND_BATCH = Math.max(1, Number(process.env.CV_BACKGROUND_BATCH ?? 8) || 8);
+const CV_BACKGROUND_INTERVAL_MS = Math.max(5_000, Number(process.env.CV_BACKGROUND_INTERVAL_MS ?? 15_000) || 15_000);
 
 function gmailAfterDate(value: unknown) {
   const date = new Date(cleanText(value));
@@ -194,6 +196,16 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
         reject(error);
       });
   });
+}
+
+export function remoteCvAuthorizationHeaders(value: unknown, token: string) {
+  try {
+    const host = new URL(cleanText(value)).hostname;
+    if (host.endsWith(".amazonaws.com")) return undefined;
+  } catch {
+    return token ? { Authorization: `bearer ${token}` } : undefined;
+  }
+  return token ? { Authorization: `bearer ${token}` } : undefined;
 }
 
 function decodeHtml(value: string) {
@@ -3233,59 +3245,110 @@ async function markStaleSyncingIntegrations() {
   );
 }
 
-async function repairCandidateDocuments(sourceType: string, config: Record<string, unknown>) {
-  const { rows } = await q<any>(
-    `SELECT c.id AS candidate_id, c.full_name, c.email, c.phone, c.city, c.country, c."current_role", c.ai_tags,
-            d.id AS document_id, d.file_name, d.file_url, d.mime_type, d.raw_text, d.file_data,
-            d.source_id, d.source_path
-     FROM candidates c
-     JOIN LATERAL (
-       SELECT doc.*
-       FROM documents doc
-       WHERE doc.candidate_id=c.id
-         AND doc.source_type=$1
-         AND (doc.is_primary_cv OR lower(doc.type) IN ('cv','resume','curriculum'))
-         AND (
-           doc.file_data IS NOT NULL
-           OR coalesce(doc.file_url,'') <> ''
-           OR coalesce(doc.source_path,'') <> ''
-           OR coalesce(doc.source_id,'') LIKE 'buscojobs:%'
-           OR length(coalesce(doc.raw_text,'')) >= 80
-         )
-       ORDER BY doc.is_primary_cv DESC, doc.created_at DESC
-       LIMIT 1
-     ) d ON true
-     WHERE c.duplicate_of IS NULL
-       AND c.status='active'
-       AND d.processed_at IS NULL
-     ORDER BY (d.raw_text IS NOT NULL) DESC, d.created_at DESC
-     LIMIT $2`,
-    [sourceType, CV_REPAIR_BATCH]
+async function markDocumentExtractionRetry(documentId: string, attempts: number, error: unknown) {
+  const retryMinutes = Math.min(360, Math.max(1, 2 ** Math.min(8, Math.max(0, attempts - 1))));
+  const message = cleanText((error as Error)?.message ?? error).slice(0, 500) || "No se pudo leer el documento remoto.";
+  await q(
+    `UPDATE documents
+     SET extraction_started_at=NULL,
+         extraction_last_error=$1,
+         extraction_next_attempt_at=now() + make_interval(mins => $2)
+     WHERE id=$3`,
+    [message, retryMinutes, documentId]
   );
-  const token = sourceType === "aglh" ? cleanText(config.aglhAccessToken ?? config.accessToken) : "";
+}
+
+async function repairCandidateDocuments(sourceType: string, config: Record<string, unknown>, batchSize = CV_REPAIR_BATCH) {
+  const { rows } = await q<any>(
+    `WITH picked AS (
+       SELECT d.id
+       FROM documents d
+       JOIN candidates c ON c.id=d.candidate_id
+       WHERE d.source_type=$1
+         AND c.duplicate_of IS NULL
+         AND c.status='active'
+         AND d.processed_at IS NULL
+         AND (d.is_primary_cv OR lower(d.type) IN ('cv','resume','curriculum'))
+         AND (
+           $1 <> 'gmail'
+           OR d.file_data IS NOT NULL
+           OR length(coalesce(d.raw_text,'')) >= 80
+         )
+         AND (
+           d.file_data IS NOT NULL
+           OR coalesce(d.file_url,'') <> ''
+           OR coalesce(d.source_path,'') <> ''
+           OR coalesce(d.source_id,'') LIKE 'buscojobs:%'
+           OR length(coalesce(d.raw_text,'')) >= 80
+         )
+         AND (d.extraction_next_attempt_at IS NULL OR d.extraction_next_attempt_at <= now())
+         AND (d.extraction_started_at IS NULL OR d.extraction_started_at < now() - interval '10 minutes')
+       ORDER BY (length(coalesce(d.raw_text,'')) >= 80) DESC, d.created_at DESC
+       LIMIT $2
+       FOR UPDATE OF d SKIP LOCKED
+     ), claimed AS (
+       UPDATE documents d
+       SET extraction_started_at=now(),
+           extraction_attempts=d.extraction_attempts + 1,
+           extraction_last_error=NULL
+       FROM picked
+       WHERE d.id=picked.id
+       RETURNING d.*
+     )
+     SELECT c.id AS candidate_id, c.full_name, c.email, c.phone, c.city, c.country, c."current_role", c.ai_tags,
+            d.id AS document_id, d.file_name, d.file_url, d.mime_type, d.raw_text, d.file_data,
+            d.source_id, d.source_path, d.extraction_attempts
+     FROM claimed d
+     JOIN candidates c ON c.id=d.candidate_id
+     ORDER BY (length(coalesce(d.raw_text,'')) >= 80) DESC, d.created_at DESC`,
+    [sourceType, batchSize]
+  );
+  let token = sourceType === "aglh" ? cleanText(config.aglhAccessToken ?? config.accessToken) : "";
   let repaired = 0;
+  let failed = 0;
   const configUpdate: Record<string, unknown> = {};
 
   for (const row of rows) {
     let rawText = cleanText(row.raw_text);
     let documentBytesAvailable = Boolean(row.file_data);
+    let downloadError = "";
     if (!rawText) {
       let buffer: Buffer | null = row.file_data
         ? (Buffer.isBuffer(row.file_data) ? row.file_data : Buffer.from(row.file_data))
         : null;
       if (!buffer && row.file_url && sourceType === "aglh") {
         try {
-          const response = await fetch(String(row.file_url), {
-            headers: token ? { Authorization: `bearer ${token}` } : undefined
+          const targetHost = new URL(String(row.file_url)).hostname;
+          const objectStorageUrl = targetHost.endsWith(".amazonaws.com");
+          let response = await fetch(String(row.file_url), {
+            headers: remoteCvAuthorizationHeaders(row.file_url, token)
           });
+          if (!objectStorageUrl && (response.status === 401 || response.status === 403)) {
+            const session = await loginAglh({ ...config, ...configUpdate });
+            token = session.token;
+            Object.assign(configUpdate, {
+              aglhAccessToken: session.token,
+              aglhRefreshToken: session.refreshToken || null,
+              sessionStatus: "connected",
+              sessionRefreshedAt: new Date().toISOString()
+            });
+            response = await fetch(String(row.file_url), {
+              headers: { Authorization: `bearer ${token}` }
+            });
+          }
           if (response.ok) {
             const size = Number(response.headers.get("content-length") || 0);
             if (!size || size <= MAX_STORED_CV_BYTES) {
               buffer = Buffer.from(await response.arrayBuffer());
               documentBytesAvailable = buffer.length > 0;
+            } else {
+              downloadError = `El CV supera el limite de ${MAX_STORED_CV_BYTES} bytes.`;
             }
+          } else {
+            downloadError = `AGLH respondió HTTP ${response.status} al descargar el CV.`;
           }
-        } catch {
+        } catch (error) {
+          downloadError = cleanText((error as Error)?.message ?? error);
           buffer = null;
         }
       }
@@ -3298,8 +3361,11 @@ async function repairCandidateDocuments(sourceType: string, config: Record<strin
             if (result.response.ok) {
               buffer = Buffer.from(await result.response.arrayBuffer());
               documentBytesAvailable = buffer.length > 0;
+            } else {
+              downloadError = `Yoiners respondió HTTP ${result.response.status} al descargar el CV.`;
             }
-          } catch {
+          } catch (error) {
+            downloadError = cleanText((error as Error)?.message ?? error);
             buffer = null;
           }
         }
@@ -3313,8 +3379,11 @@ async function repairCandidateDocuments(sourceType: string, config: Record<strin
             if (result.response.ok) {
               buffer = Buffer.from(await result.response.arrayBuffer());
               documentBytesAvailable = buffer.length > 0;
+            } else {
+              downloadError = `Buscojobs respondió HTTP ${result.response.status} al descargar el CV.`;
             }
-          } catch {
+          } catch (error) {
+            downloadError = cleanText((error as Error)?.message ?? error);
             buffer = null;
           }
         }
@@ -3326,10 +3395,23 @@ async function repairCandidateDocuments(sourceType: string, config: Record<strin
     const evidence = extractCvCandidateEvidence(rawText, row.full_name);
     const analysis = evidence.analysis;
     if (!analysis.hasReadableText) {
-      // Only close the item when bytes were actually read. Authentication or
-      // network failures must remain retryable on the next synchronization.
       if (documentBytesAvailable) {
-        await q("UPDATE documents SET processed_at=now() WHERE id=$1", [row.document_id]);
+        await q(
+          `UPDATE documents
+           SET processed_at=now(),
+               extraction_started_at=NULL,
+               extraction_next_attempt_at=NULL,
+               extraction_last_error='El archivo no contiene texto legible.'
+           WHERE id=$1`,
+          [row.document_id]
+        );
+      } else {
+        failed += 1;
+        await markDocumentExtractionRetry(
+          row.document_id,
+          Number(row.extraction_attempts ?? 1),
+          downloadError || "La fuente no entregó bytes para este CV."
+        );
       }
       continue;
     }
@@ -3361,30 +3443,110 @@ async function repairCandidateDocuments(sourceType: string, config: Record<strin
       [emails, phones, city, country, currentRole, analysis.years, tags, JSON.stringify(analysis.languages), analysis.summary, row.candidate_id]
     );
     await q(
-      "UPDATE documents SET raw_text=$1, ai_summary=$2, processed_at=now() WHERE id=$3",
+      `UPDATE documents
+       SET raw_text=$1,
+           ai_summary=$2,
+           processed_at=now(),
+           extraction_started_at=NULL,
+           extraction_next_attempt_at=NULL,
+           extraction_last_error=NULL
+       WHERE id=$3`,
       [rawText, analysis.summary, row.document_id]
     );
     repaired += 1;
   }
-  return { repaired, configUpdate };
+  return { repaired, failed, attempted: rows.length, configUpdate };
 }
 
 integrationsRouter.get("/", asyncHandler(async (_req, res) => {
   await ensureDefaultIntegrations();
   await removeCookieCandidates();
   await markStaleSyncingIntegrations();
-  const [integrations, logs, rejected] = await Promise.all([
+  const [integrations, logs, rejected, documentBackfill] = await Promise.all([
     q("SELECT * FROM integrations WHERE id <> 'drive' ORDER BY name"),
     q("SELECT * FROM sync_logs WHERE integration_id <> 'drive' ORDER BY started_at DESC LIMIT 20"),
-    q("SELECT source_type, extracted_name, reason, source_url, created_at FROM rejected_imports ORDER BY created_at DESC LIMIT 30")
+    q("SELECT source_type, extracted_name, reason, source_url, created_at FROM rejected_imports ORDER BY created_at DESC LIMIT 30"),
+    q(
+      `SELECT source_type,
+              count(*)::int AS total,
+              count(*) FILTER (WHERE length(coalesce(raw_text,'')) >= 80)::int AS searchable,
+              count(*) FILTER (WHERE processed_at IS NULL)::int AS pending,
+              count(*) FILTER (WHERE extraction_started_at IS NOT NULL AND processed_at IS NULL)::int AS processing,
+              count(*) FILTER (
+                WHERE processed_at IS NULL
+                  AND extraction_next_attempt_at > now()
+              )::int AS retrying
+       FROM documents
+       WHERE source_type IN ('aglh','yoiners','buscojobs','gmail')
+         AND (is_primary_cv OR lower(type) IN ('cv','resume','curriculum'))
+       GROUP BY source_type
+       ORDER BY source_type`
+    )
   ]);
   res.json({
     data: integrations.rows.map((row) => ({ ...row, config: maskConfig(row.config) })),
     logs: logs.rows,
     rejected: rejected.rows,
-    meta: { syncEngineVersion: SYNC_ENGINE_VERSION }
+    meta: {
+      syncEngineVersion: SYNC_ENGINE_VERSION,
+      documentBackfill: documentBackfill.rows
+    }
   });
 }));
+
+let documentBackfillRunning = false;
+let documentBackfillTimer: NodeJS.Timeout | null = null;
+
+async function runDocumentBackfillCycle() {
+  if (documentBackfillRunning) return;
+  documentBackfillRunning = true;
+  try {
+    const integrations = await q<any>(
+      `SELECT id, config
+       FROM integrations
+       WHERE id IN ('aglh','yoiners','buscojobs','gmail')
+         AND status <> 'not_configured'
+       ORDER BY CASE id WHEN 'aglh' THEN 1 WHEN 'yoiners' THEN 2 WHEN 'buscojobs' THEN 3 ELSE 4 END`
+    );
+    await Promise.all(
+      integrations.rows.map(async (integration) => {
+        const result = await repairCandidateDocuments(
+          integration.id,
+          integration.config ?? {},
+          CV_BACKGROUND_BATCH
+        );
+        if (Object.keys(result.configUpdate).length > 0) {
+          await q(
+            "UPDATE integrations SET config=config || $1::jsonb, updated_at=now() WHERE id=$2",
+            [JSON.stringify(result.configUpdate), integration.id]
+          );
+        }
+        if (result.attempted > 0) {
+          console.log("document backfill batch", {
+            source: integration.id,
+            attempted: result.attempted,
+            repaired: result.repaired,
+            failed: result.failed
+          });
+        }
+      })
+    );
+  } catch (error) {
+    console.error("document backfill cycle failed", error);
+  } finally {
+    documentBackfillRunning = false;
+  }
+}
+
+export function startDocumentBackfillWorker() {
+  if (documentBackfillTimer || process.env.NODE_ENV === "test") return;
+  const schedule = () => {
+    void runDocumentBackfillCycle();
+  };
+  documentBackfillTimer = setInterval(schedule, CV_BACKGROUND_INTERVAL_MS);
+  documentBackfillTimer.unref();
+  setTimeout(schedule, 5_000).unref();
+}
 
 integrationsRouter.patch("/:id", requireRole("admin"), asyncHandler(async (req, res) => {
   if (req.params.id === "drive") return res.status(404).json({ error: "Google Drive ya no forma parte de TalentHub." });

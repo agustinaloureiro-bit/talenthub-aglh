@@ -831,6 +831,36 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
         Guarda solo cuentas propias y fuentes donde tengas permiso de extraccion. Los valores sensibles quedan ocultos despues de guardarlos.
       </div>
       {data.meta?.syncEngineVersion && <div className="mb-4 rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-500">Motor de sincronizacion: {data.meta.syncEngineVersion}</div>}
+      {Array.isArray(data.meta?.documentBackfill) && data.meta.documentBackfill.length > 0 && (
+        <div className="mb-4 rounded-lg border border-slate-200 bg-white p-4">
+          <div className="font-semibold text-slate-900">Lectura histórica de CV</div>
+          <div className="mt-1 text-sm text-slate-600">
+            Este proceso avanza automáticamente mientras TalentHub está activo. Las búsquedas siguen disponibles.
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-4">
+            {data.meta.documentBackfill.map((row: any) => {
+              const total = Number(row.total ?? 0);
+              const searchable = Number(row.searchable ?? 0);
+              const percent = total > 0 ? Math.round((searchable / total) * 100) : 100;
+              return (
+                <div key={row.source_type} className="rounded-md border border-slate-200 p-3">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="font-semibold capitalize">{row.source_type}</span>
+                    <span className="text-slate-500">{percent}%</span>
+                  </div>
+                  <div className="mt-2 h-2 overflow-hidden rounded bg-slate-100">
+                    <div className="h-full bg-teal-500" style={{ width: `${percent}%` }} />
+                  </div>
+                  <div className="mt-2 text-xs text-slate-500">
+                    {searchable.toLocaleString()} legibles · {Number(row.pending ?? 0).toLocaleString()} pendientes
+                    {Number(row.retrying ?? 0) > 0 ? ` · ${Number(row.retrying).toLocaleString()} reintentando` : ""}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       <div className="mb-4 grid gap-3 md:grid-cols-3">
         <InfoMetric label="Fuentes listas" value={readyCount} />
         <InfoMetric label="Fuentes con accion pendiente" value={errorCount} />
