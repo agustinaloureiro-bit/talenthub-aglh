@@ -4,8 +4,22 @@ import test from "node:test";
 const { interpretTalentQuery } = await import("../dist/intelligence/queryInterpreter.js");
 const { isCredibleCandidateName, rerankCandidates } = await import("../dist/intelligence/candidateRanker.js");
 const { RecruitmentIntelligenceEngine } = await import("../dist/intelligence/intelligenceEngine.js");
-const { downloadContentDisposition } = await import("../dist/routes/candidates.js");
+const { candidateDirectorySearchOrder, downloadContentDisposition } = await import("../dist/routes/candidates.js");
 const { evaluateUruguayProximity, nearbyUruguayLocations } = await import("../dist/intelligence/uruguayGeography.js");
+
+test("el directorio prioriza el nombre antes que menciones conceptuales del CV", () => {
+  const order = candidateDirectorySearchOrder(7);
+  const exactName = order.indexOf("candidates.full_name");
+  const summary = order.indexOf("candidates.ai_summary");
+  const cvFallback = order.indexOf("ELSE 30");
+
+  assert.ok(exactName >= 0);
+  assert.ok(summary > exactName);
+  assert.ok(cvFallback > summary);
+  assert.match(order, /trim\(\$7::text\)/);
+  assert.match(order, /THEN 0/);
+  assert.match(order, /THEN 20/);
+});
 
 test("interpreta abogado con ingles como rol e idioma", () => {
   const interpreted = interpretTalentQuery("Necesito un abogado con inglés.");

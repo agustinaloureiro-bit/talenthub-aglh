@@ -79,23 +79,51 @@ function isAllowedExternalDocumentUrl(value: unknown) {
   }
 }
 
-function expandedSearchTerms(query: string) {
-  const words = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 3);
-  const extras: Record<string, string[]> = {
-    vendedor: ["ventas", "comercial", "ejecutivo comercial"],
-    vendedora: ["ventas", "comercial", "ejecutiva comercial"],
-    ventas: ["vendedor", "vendedora", "comercial"],
-    comercial: ["ventas", "vendedor", "vendedora"],
-    ingeniero: ["ingenieria", "ingeniería", "engineer"],
-    ingeniera: ["ingenieria", "ingeniería", "engineer"],
-    desarrollador: ["developer", "programador", "software"],
-    desarrolladora: ["developer", "programadora", "software"],
-    rrhh: ["recursos humanos", "talento", "seleccion", "selección"],
-    seleccion: ["selección", "reclutamiento", "recursos humanos"],
-    selección: ["seleccion", "reclutamiento", "recursos humanos"]
-  };
-  return [...new Set([query, ...words, ...words.flatMap((word) => extras[word] ?? [])])]
-    .map((term) => `%${term}%`);
+function normalizedDirectoryFieldSql(field: string) {
+  return `lower(translate(coalesce(${field}, ''), 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN'))`;
+}
+
+export function candidateDirectorySearchOrder(searchParam: number) {
+  const normalizedName = normalizedDirectoryFieldSql("candidates.full_name");
+  const normalizedRole = normalizedDirectoryFieldSql(`candidates."current_role"`);
+  const normalizedCity = normalizedDirectoryFieldSql("candidates.city");
+  const normalizedQuery = `lower(translate(trim($${searchParam}::text), 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN'))`;
+
+  return `CASE
+    WHEN ${normalizedName} = ${normalizedQuery} THEN 0
+    WHEN ${normalizedName} LIKE ${normalizedQuery} || ' %' THEN 1
+    WHEN ${normalizedName} LIKE '% ' || ${normalizedQuery}
+      OR ${normalizedName} LIKE '% ' || ${normalizedQuery} || ' %' THEN 2
+    WHEN ${normalizedName} LIKE '%' || ${normalizedQuery} || '%' THEN 3
+    WHEN EXISTS (
+      SELECT 1 FROM unnest(coalesce(candidates.email, '{}'::text[])) mail
+      WHERE lower(mail) = ${normalizedQuery}
+    ) OR EXISTS (
+      SELECT 1 FROM unnest(coalesce(candidates.phone, '{}'::text[])) tel
+      WHERE regexp_replace(tel, '[^0-9]', '', 'g') = regexp_replace($${searchParam}::text, '[^0-9]', '', 'g')
+        AND regexp_replace($${searchParam}::text, '[^0-9]', '', 'g') <> ''
+    ) THEN 4
+    WHEN EXISTS (
+      SELECT 1 FROM unnest(coalesce(candidates.email, '{}'::text[])) mail
+      WHERE lower(mail) LIKE '%' || ${normalizedQuery} || '%'
+    ) OR EXISTS (
+      SELECT 1 FROM unnest(coalesce(candidates.phone, '{}'::text[])) tel
+      WHERE tel ILIKE '%' || $${searchParam}::text || '%'
+    ) THEN 5
+    WHEN ${normalizedRole} = ${normalizedQuery} THEN 6
+    WHEN ${normalizedRole} LIKE ${normalizedQuery} || ' %'
+      OR ${normalizedRole} LIKE '% ' || ${normalizedQuery} || ' %'
+      OR ${normalizedRole} LIKE '% ' || ${normalizedQuery} THEN 7
+    WHEN ${normalizedCity} = ${normalizedQuery} THEN 8
+    WHEN EXISTS (
+      SELECT 1 FROM unnest(coalesce(candidates.ai_tags, '{}'::text[])) tag
+      WHERE lower(translate(tag, 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN')) = ${normalizedQuery}
+    ) THEN 9
+    WHEN ${normalizedRole} LIKE '%' || ${normalizedQuery} || '%'
+      OR ${normalizedCity} LIKE '%' || ${normalizedQuery} || '%' THEN 10
+    WHEN coalesce(candidates.ai_summary, '') ILIKE '%' || $${searchParam}::text || '%' THEN 20
+    ELSE 30
+  END`;
 }
 
 const excludeFalseGmailCandidatesSql = `NOT (
@@ -154,67 +182,6 @@ const excludeFalseGmailCandidatesSql = `NOT (
   )
 )
 AND lower(trim(coalesce(candidates.full_name, ''))) !~ '(preparaci[oó]n|entrega de|[oó]rdenes|experiencia en|responsable de|tareas de|funciones|perfil profesional|objetivo laboral|curr[ií]culum|curriculum vitae|postulaci[oó]n|futuras vacantes)'`;
-
-async function cleanupFalseGmailCandidates() {
-  await q(
-    `DELETE FROM candidates c
-     WHERE c.duplicate_of IS NULL
-       AND (
-         EXISTS (
-           SELECT 1
-           FROM candidate_sources cs
-           WHERE cs.candidate_id = c.id
-             AND cs.source_type = 'gmail'
-         )
-         OR 'gmail' = ANY(coalesce(c.ai_tags, '{}'::text[]))
-       )
-       AND (
-         lower(trim(coalesce(c.full_name, ''))) = ANY(ARRAY[
-           'the google cloud team',
-           'google cloud team',
-           'google workspace team',
-           'google team',
-           'microsoft account team',
-           'linkedin notifications'
-         ])
-         OR lower(coalesce(c.current_role, '')) LIKE '%work account access%'
-         OR lower(trim(coalesce(c.full_name, ''))) ~ '^(re|fw|fwd):'
-         OR lower(trim(coalesce(c.full_name, ''))) ~ '\\m(postulame|postularme|postulacion|postulación|futuras vacantes|solicitud de empleo|solicitud de trabajo)\\M'
-         OR (
-           cardinality(coalesce(c.email, '{}'::text[])) = 0
-           AND cardinality(coalesce(c.phone, '{}'::text[])) = 0
-           AND coalesce(c.linkedin_url, '') = ''
-           AND (
-             lower(coalesce(c.ai_summary, '')) LIKE '%your request for work account access%'
-             OR lower(coalesce(c.ai_summary, '')) LIKE '%google cloud%'
-             OR lower(coalesce(c.ai_summary, '')) LIKE '%google workspace%'
-             OR lower(coalesce(c.ai_summary, '')) LIKE '%security alert%'
-             OR lower(coalesce(c.ai_summary, '')) LIKE '%billing%'
-             OR lower(coalesce(c.ai_summary, '')) LIKE '%verification code%'
-             OR lower(coalesce(c.ai_summary, '')) LIKE '%%pdf-1.%'
-             OR lower(coalesce(c.ai_summary, '')) LIKE '%google docs renderer%'
-             OR lower(coalesce(c.ai_summary, '')) LIKE '%comparto%contigo%'
-             OR lower(coalesce(c.ai_summary, '')) LIKE '%shared%with you%'
-           )
-         )
-         OR EXISTS (
-           SELECT 1
-           FROM documents d
-           WHERE d.candidate_id = c.id
-             AND d.source_type = 'gmail'
-             AND (
-               lower(coalesce(d.raw_text, '')) LIKE '%request for work account access%'
-               OR lower(coalesce(d.raw_text, '')) LIKE '%google cloud%'
-               OR lower(coalesce(d.raw_text, '')) LIKE '%%pdf-1.%'
-               OR lower(coalesce(d.raw_text, '')) LIKE '%google docs renderer%'
-               OR lower(coalesce(d.raw_text, '')) LIKE '%comparto%contigo%'
-               OR lower(coalesce(d.raw_text, '')) LIKE '%shared%with you%'
-               OR lower(coalesce(d.file_name, '')) LIKE '%request for work account access%'
-             )
-         )
-       )`
-  );
-}
 
 const importSchema = z.object({
   sourceType: z.string().trim().min(1).default("manual"),
@@ -480,7 +447,6 @@ async function upsertImportedCandidate(sourceType: string, candidate: ImportedCa
 
 
 candidatesRouter.get("/", asyncHandler(async (req, res) => {
-  await cleanupFalseGmailCandidates();
   const search = String(req.query.search ?? "");
   const source = String(req.query.source ?? "").trim();
   const contact = String(req.query.contact ?? "").trim();
@@ -494,33 +460,22 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
   const offset = Math.max(0, Number(req.query.offset ?? 0) || 0);
   const params: unknown[] = [];
   params.push(status);
+  let literalSearchOrder = "";
   let where = `WHERE duplicate_of IS NULL AND status=$1 AND ${excludeFalseGmailCandidatesSql} AND EXISTS (SELECT 1 FROM documents visible_doc WHERE visible_doc.candidate_id = candidates.id)`;
   if (search) {
     params.push(`%${search}%`);
-    params.push(expandedSearchTerms(search));
+    params.push(search.trim());
+    literalSearchOrder = candidateDirectorySearchOrder(params.length);
     where += ` AND (
       full_name ILIKE $${params.length - 1}
+      OR ${normalizedDirectoryFieldSql("full_name")} LIKE '%' || lower(translate(trim($${params.length}::text), 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN')) || '%'
       OR coalesce("current_role",'') ILIKE $${params.length - 1}
       OR coalesce(city,'') ILIKE $${params.length - 1}
+      OR coalesce(country,'') ILIKE $${params.length - 1}
       OR coalesce(ai_summary,'') ILIKE $${params.length - 1}
-      OR EXISTS (SELECT 1 FROM unnest(ai_tags) tag WHERE tag ILIKE $${params.length - 1})
-      OR EXISTS (SELECT 1 FROM unnest(email) mail WHERE mail ILIKE $${params.length - 1})
-      OR EXISTS (SELECT 1 FROM unnest(phone) tel WHERE tel ILIKE $${params.length - 1})
-      OR EXISTS (
-        SELECT 1
-        FROM unnest($${params.length}::text[]) term
-        WHERE coalesce(full_name,'') || ' ' || coalesce("current_role",'') || ' ' || coalesce(city,'') || ' ' || coalesce(ai_summary,'') || ' ' || coalesce(array_to_string(ai_tags,' '),'') ILIKE term
-      )
-      OR EXISTS (
-        SELECT 1
-        FROM documents d
-        WHERE d.candidate_id = candidates.id
-          AND (
-            coalesce(d.raw_text,'') ILIKE $${params.length - 1}
-            OR coalesce(d.file_name,'') ILIKE $${params.length - 1}
-            OR EXISTS (SELECT 1 FROM unnest($${params.length}::text[]) term WHERE coalesce(d.raw_text,'') || ' ' || coalesce(d.file_name,'') ILIKE term)
-          )
-      )
+      OR EXISTS (SELECT 1 FROM unnest(coalesce(ai_tags, '{}'::text[])) tag WHERE tag ILIKE $${params.length - 1})
+      OR EXISTS (SELECT 1 FROM unnest(coalesce(email, '{}'::text[])) mail WHERE mail ILIKE $${params.length - 1})
+      OR EXISTS (SELECT 1 FROM unnest(coalesce(phone, '{}'::text[])) tel WHERE tel ILIKE $${params.length - 1})
     )`;
   }
   if (source) {
@@ -555,7 +510,7 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
     where += ` AND EXISTS (SELECT 1 FROM candidate_sources recent_source WHERE recent_source.candidate_id=candidates.id AND recent_source.is_active=true AND recent_source.source_created_at >= $${params.length}::timestamptz)`;
   }
 
-  const orderBy = sort === "recent"
+  const fallbackOrder = sort === "recent"
     ? "latest_source_at DESC NULLS LAST, updated_at DESC"
     : sort === "oldest"
       ? "latest_source_at ASC NULLS LAST, updated_at DESC"
@@ -566,6 +521,9 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
           : sort === "quality"
             ? "quality_score DESC, updated_at DESC"
         : "updated_at DESC";
+  const orderBy = literalSearchOrder
+    ? `${literalSearchOrder} ASC, ${fallbackOrder}`
+    : fallbackOrder;
 
   const rowParams = [...params, limit, offset];
   const [{ rows }, filteredTotal, databaseTotal] = await Promise.all([
