@@ -38,7 +38,8 @@ const CANDIDATE_IMPORT_CONCURRENCY = 10;
 const DEFAULT_GMAIL_QUERY = "has:attachment (filename:pdf OR filename:doc OR filename:docx OR filename:rtf OR filename:txt) newer_than:3650d";
 const MAX_STORED_CV_BYTES = 8 * 1024 * 1024;
 const CV_REPAIR_BATCH = 30;
-const CV_BACKGROUND_BATCH = Math.max(1, Number(process.env.CV_BACKGROUND_BATCH ?? 8) || 8);
+const CV_BACKGROUND_BATCH = Math.max(1, Number(process.env.CV_BACKGROUND_BATCH ?? 48) || 48);
+const CV_BACKGROUND_CONCURRENCY = Math.max(1, Number(process.env.CV_BACKGROUND_CONCURRENCY ?? 6) || 6);
 const CV_BACKGROUND_INTERVAL_MS = Math.max(5_000, Number(process.env.CV_BACKGROUND_INTERVAL_MS ?? 15_000) || 15_000);
 
 function gmailAfterDate(value: unknown) {
@@ -196,6 +197,25 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
         reject(error);
       });
   });
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>
+) {
+  let nextIndex = 0;
+  const runners = Array.from(
+    { length: Math.min(items.length, Math.max(1, concurrency)) },
+    async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        await worker(items[index]);
+      }
+    }
+  );
+  await Promise.all(runners);
 }
 
 export function remoteCvAuthorizationHeaders(value: unknown, token: string) {
@@ -3258,7 +3278,12 @@ async function markDocumentExtractionRetry(documentId: string, attempts: number,
   );
 }
 
-async function repairCandidateDocuments(sourceType: string, config: Record<string, unknown>, batchSize = CV_REPAIR_BATCH) {
+async function repairCandidateDocuments(
+  sourceType: string,
+  config: Record<string, unknown>,
+  batchSize = CV_REPAIR_BATCH,
+  concurrency = 1
+) {
   const { rows } = await q<any>(
     `WITH picked AS (
        SELECT d.id
@@ -3308,7 +3333,7 @@ async function repairCandidateDocuments(sourceType: string, config: Record<strin
   let failed = 0;
   const configUpdate: Record<string, unknown> = {};
 
-  for (const row of rows) {
+  const processRow = async (row: any) => {
     let rawText = cleanText(row.raw_text);
     let documentBytesAvailable = Boolean(row.file_data);
     let downloadError = "";
@@ -3413,7 +3438,7 @@ async function repairCandidateDocuments(sourceType: string, config: Record<strin
           downloadError || "La fuente no entregó bytes para este CV."
         );
       }
-      continue;
+      return;
     }
 
     const emails = unique([...evidence.emails, ...(row.email ?? [])]);
@@ -3454,7 +3479,21 @@ async function repairCandidateDocuments(sourceType: string, config: Record<strin
       [rawText, analysis.summary, row.document_id]
     );
     repaired += 1;
+  };
+
+  const rowsByCandidate = new Map<string, any[]>();
+  for (const row of rows) {
+    const group = rowsByCandidate.get(row.candidate_id) ?? [];
+    group.push(row);
+    rowsByCandidate.set(row.candidate_id, group);
   }
+  await runWithConcurrency(
+    [...rowsByCandidate.values()],
+    concurrency,
+    async (candidateRows) => {
+      for (const row of candidateRows) await processRow(row);
+    }
+  );
   return { repaired, failed, attempted: rows.length, configUpdate };
 }
 
@@ -3513,7 +3552,8 @@ async function runDocumentBackfillCycle() {
         const result = await repairCandidateDocuments(
           integration.id,
           integration.config ?? {},
-          CV_BACKGROUND_BATCH
+          CV_BACKGROUND_BATCH,
+          CV_BACKGROUND_CONCURRENCY
         );
         if (Object.keys(result.configUpdate).length > 0) {
           await q(
