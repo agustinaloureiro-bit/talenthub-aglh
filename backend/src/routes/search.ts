@@ -171,56 +171,157 @@ function cleanResultSummary(value: unknown) {
   return text.length > 420 ? `${text.slice(0, 420).trim()}...` : text;
 }
 
-async function findCandidatesFromProfileIndex(candidateFilter: string, params: unknown[]) {
+type RankedCandidateMatch = {
+  id: string;
+  rank: number;
+  matched_document_id?: string | null;
+};
+
+function mergeRankedMatches(...groups: RankedCandidateMatch[][]) {
+  const merged = new Map<string, RankedCandidateMatch>();
+  for (const match of groups.flat()) {
+    const current = merged.get(match.id);
+    if (!current || Number(match.rank) > Number(current.rank)) {
+      merged.set(match.id, {
+        id: match.id,
+        rank: Number(match.rank) || 0,
+        matched_document_id: match.matched_document_id ?? current?.matched_document_id ?? null
+      });
+    } else if (!current.matched_document_id && match.matched_document_id) {
+      current.matched_document_id = match.matched_document_id;
+    }
+  }
+  return [...merged.values()]
+    .sort((left, right) => right.rank - left.rank)
+    .slice(0, 350);
+}
+
+async function findProfileMatches(candidateFilter: string, params: unknown[], queryParameter: 2 | 3, timeoutMs: number) {
+  const queryExpression = `$${queryParameter}`;
   return qWithTimeout(
     `WITH search_terms AS MATERIALIZED (
-       SELECT websearch_to_tsquery('spanish', $2) AS broad_query,
-         websearch_to_tsquery('spanish', $3) AS fallback_query
-     ), top_matches AS MATERIALIZED (
+       SELECT websearch_to_tsquery('spanish', ${queryExpression}) AS query,
+         $1::text AS original_query,
+         $2::text AS planned_query,
+         $3::text AS broad_query
+     )
        SELECT c.id,
-         0.02
-           + ts_rank_cd(c.search_vector, search_terms.broad_query)
-           + (ts_rank_cd(c.search_vector, search_terms.fallback_query) * 0.35) AS rank
+         0.02 + ts_rank_cd(c.search_vector, search_terms.query) AS rank,
+         NULL::uuid AS matched_document_id
        FROM candidates c CROSS JOIN search_terms
        WHERE ${candidateFilter}
-         AND (
-           c.search_vector @@ search_terms.broad_query
-           OR c.search_vector @@ search_terms.fallback_query
-         )
+         AND c.search_vector @@ search_terms.query
          AND EXISTS (SELECT 1 FROM documents available_doc WHERE available_doc.candidate_id=c.id)
        ORDER BY rank DESC, c.quality_score DESC, c.updated_at DESC
-       LIMIT 500
-     )
-     SELECT c.*,
-       coalesce(src.source_count, 0)::int AS source_count,
-       coalesce(src.source_types, '{}'::text[]) AS source_types,
-       coalesce(primary_doc.document_count, 0)::int AS document_count,
-       primary_doc.file_name AS primary_document_name,
-       primary_doc.id AS primary_document_id,
-       primary_doc.mime_type AS primary_document_mime_type,
-       primary_doc.source_type AS primary_document_source_type,
-       left(coalesce(primary_doc.raw_text, ''), 8000) AS document_snippet,
-       src.latest_source_at,
-       top_matches.rank
-     FROM top_matches
-     JOIN candidates c ON c.id=top_matches.id
-     LEFT JOIN LATERAL (
-       SELECT d.id, d.file_name, d.mime_type, d.source_type, d.raw_text,
-         count(*) OVER ()::int AS document_count
+       LIMIT 500`,
+    params,
+    timeoutMs
+  );
+}
+
+async function findDocumentMatches(candidateFilter: string, params: unknown[]) {
+  return qWithTimeout(
+    `WITH search_terms AS MATERIALIZED (
+       SELECT websearch_to_tsquery('spanish', $2) AS query,
+         $1::text AS original_query,
+         $2::text AS planned_query,
+         $3::text AS broad_query
+     ), raw_matches AS MATERIALIZED (
+       SELECT d.candidate_id AS id,
+         0.04 + ts_rank_cd(
+           to_tsvector('spanish'::regconfig, coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')),
+           search_terms.query
+         ) AS rank,
+         d.id AS matched_document_id,
+         d.is_primary_cv,
+         d.created_at
        FROM documents d
-       WHERE d.candidate_id=c.id
-       ORDER BY d.is_primary_cv DESC, d.created_at DESC
-       LIMIT 1
-     ) primary_doc ON true
-     LEFT JOIN LATERAL (
-       SELECT count(DISTINCT source_type)::int AS source_count,
-         array_agg(DISTINCT source_type ORDER BY source_type) AS source_types,
+       JOIN candidates c ON c.id=d.candidate_id
+       CROSS JOIN search_terms
+       WHERE ${candidateFilter}
+         AND to_tsvector(
+           'spanish'::regconfig,
+           coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')
+         ) @@ search_terms.query
+       ORDER BY rank DESC
+       LIMIT 750
+     ), unique_matches AS MATERIALIZED (
+       SELECT DISTINCT ON (raw_matches.id)
+         raw_matches.id,
+         raw_matches.rank,
+         raw_matches.matched_document_id
+       FROM raw_matches
+       ORDER BY raw_matches.id,
+         raw_matches.rank DESC,
+         raw_matches.is_primary_cv DESC,
+         raw_matches.created_at DESC
+     )
+     SELECT id, rank, matched_document_id
+     FROM unique_matches
+     ORDER BY rank DESC
+     LIMIT 250`,
+    params,
+    2_000
+  );
+}
+
+async function hydrateCandidateMatches(matches: RankedCandidateMatch[]) {
+  if (!matches.length) return { rows: [] as any[] };
+  const ids = matches.map((match) => match.id);
+  const ranks = matches.map((match) => match.rank);
+  const documentIds = matches.map((match) => match.matched_document_id ?? null);
+  return qWithTimeout(
+    `WITH requested AS MATERIALIZED (
+       SELECT *
+       FROM unnest($1::uuid[], $2::double precision[], $3::uuid[])
+         AS match(id, rank, matched_document_id)
+     ), document_counts AS MATERIALIZED (
+       SELECT d.candidate_id, count(*)::int AS document_count
+       FROM documents d
+       WHERE d.candidate_id = ANY($1::uuid[])
+       GROUP BY d.candidate_id
+     ), primary_documents AS MATERIALIZED (
+       SELECT DISTINCT ON (d.candidate_id)
+         d.candidate_id,
+         d.id,
+         d.file_name,
+         d.mime_type,
+         d.source_type,
+         d.raw_text
+       FROM documents d
+       JOIN requested ON requested.id=d.candidate_id
+       ORDER BY d.candidate_id,
+         (d.id=requested.matched_document_id) DESC,
+         d.is_primary_cv DESC,
+         d.created_at DESC
+     ), source_summary AS MATERIALIZED (
+       SELECT cs.candidate_id,
+         count(DISTINCT cs.source_type)::int AS source_count,
+         array_agg(DISTINCT cs.source_type ORDER BY cs.source_type) AS source_types,
          max(cs.source_created_at) AS latest_source_at
        FROM candidate_sources cs
-       WHERE cs.candidate_id=c.id AND cs.is_active=true
-     ) src ON true
-     ORDER BY top_matches.rank DESC, c.quality_score DESC, c.updated_at DESC`,
-    params,
+       WHERE cs.candidate_id = ANY($1::uuid[])
+         AND cs.is_active=true
+       GROUP BY cs.candidate_id
+     )
+     SELECT c.*,
+       coalesce(source_summary.source_count, 0)::int AS source_count,
+       coalesce(source_summary.source_types, '{}'::text[]) AS source_types,
+       coalesce(document_counts.document_count, 0)::int AS document_count,
+       primary_documents.file_name AS primary_document_name,
+       primary_documents.id AS primary_document_id,
+       primary_documents.mime_type AS primary_document_mime_type,
+       primary_documents.source_type AS primary_document_source_type,
+       left(coalesce(primary_documents.raw_text, ''), 8000) AS document_snippet,
+       source_summary.latest_source_at,
+       requested.rank
+     FROM requested
+     JOIN candidates c ON c.id=requested.id
+     LEFT JOIN document_counts ON document_counts.candidate_id=c.id
+     LEFT JOIN primary_documents ON primary_documents.candidate_id=c.id
+     LEFT JOIN source_summary ON source_summary.candidate_id=c.id
+     ORDER BY requested.rank DESC, c.quality_score DESC, c.updated_at DESC`,
+    [ids, ranks, documentIds],
     5_000
   );
 }
@@ -251,135 +352,31 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     params.push(new Date(Date.now() - recencyDays * 86_400_000).toISOString());
     candidateFilter += ` AND EXISTS (SELECT 1 FROM candidate_sources recent_source WHERE recent_source.candidate_id=c.id AND recent_source.is_active=true AND recent_source.source_created_at >= $${params.length}::timestamptz)`;
   }
-  let rows;
+  let plannedMatches: RankedCandidateMatch[] = [];
+  let broadMatches: RankedCandidateMatch[] = [];
+  let documentMatches: RankedCandidateMatch[] = [];
   try {
-    ({ rows } = await qWithTimeout(
-     `WITH search_terms AS MATERIALIZED (
-       SELECT plainto_tsquery('spanish', $1) AS exact_query,
-         websearch_to_tsquery('spanish', $2) AS broad_query,
-         websearch_to_tsquery('spanish', $3) AS fallback_query
-     ), candidate_matches AS MATERIALIZED (
-       SELECT c.id,
-         0.02
-           + ts_rank_cd(c.search_vector, search_terms.broad_query)
-           + (ts_rank_cd(c.search_vector, search_terms.fallback_query) * 0.35)
-           + CASE WHEN c.search_vector @@ search_terms.exact_query THEN 1 ELSE 0 END AS rank,
-         NULL::uuid AS matched_document_id
-       FROM candidates c CROSS JOIN search_terms
-       WHERE ${candidateFilter}
-         AND (
-           c.search_vector @@ search_terms.broad_query
-           OR c.search_vector @@ search_terms.fallback_query
-         )
-         AND EXISTS (SELECT 1 FROM documents available_doc WHERE available_doc.candidate_id=c.id)
-       ORDER BY rank DESC, c.quality_score DESC, c.updated_at DESC
-       LIMIT 400
-     ), raw_document_matches AS MATERIALIZED (
-       SELECT c.id,
-         0.04
-           + ts_rank_cd(
-               to_tsvector('spanish'::regconfig, coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')),
-               search_terms.broad_query
-             )
-           + (
-               ts_rank_cd(
-                 to_tsvector('spanish'::regconfig, coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')),
-                 search_terms.fallback_query
-               ) * 0.35
-             ) AS rank,
-         d.id AS matched_document_id,
-         d.is_primary_cv,
-         d.created_at,
-         c.quality_score,
-         c.updated_at
-       FROM documents d
-       JOIN candidates c ON c.id=d.candidate_id
-       CROSS JOIN search_terms
-       WHERE ${candidateFilter}
-         AND (
-           to_tsvector('spanish'::regconfig, coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')) @@ search_terms.broad_query
-           OR to_tsvector('spanish'::regconfig, coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')) @@ search_terms.fallback_query
-         )
-       ORDER BY rank DESC, c.quality_score DESC, c.updated_at DESC
-       LIMIT 1200
-     ), document_matches AS MATERIALIZED (
-       SELECT document_ranked.id,
-         document_ranked.rank,
-         document_ranked.matched_document_id
-       FROM (
-         SELECT DISTINCT ON (raw_document_matches.id)
-           raw_document_matches.id,
-           raw_document_matches.rank,
-           raw_document_matches.matched_document_id,
-           raw_document_matches.quality_score,
-           raw_document_matches.updated_at
-         FROM raw_document_matches
-         ORDER BY raw_document_matches.id,
-           raw_document_matches.rank DESC,
-           raw_document_matches.is_primary_cv DESC,
-           raw_document_matches.created_at DESC
-       ) document_ranked
-       ORDER BY document_ranked.rank DESC, document_ranked.quality_score DESC, document_ranked.updated_at DESC
-       LIMIT 400
-     ), top_matches AS MATERIALIZED (
-       SELECT combined.id,
-         max(combined.rank) AS rank,
-         (
-           array_agg(combined.matched_document_id ORDER BY combined.rank DESC)
-             FILTER (WHERE combined.matched_document_id IS NOT NULL)
-         )[1] AS matched_document_id
-       FROM (
-         SELECT * FROM candidate_matches
-         UNION ALL
-         SELECT * FROM document_matches
-       ) combined
-       GROUP BY combined.id
-       ORDER BY rank DESC
-       LIMIT 500
-     )
-     SELECT c.*,
-      coalesce(src.source_count, 0)::int AS source_count,
-      coalesce(src.source_types, '{}'::text[]) AS source_types,
-      coalesce(primary_doc.document_count, 0)::int AS document_count,
-      primary_doc.file_name AS primary_document_name,
-      primary_doc.id AS primary_document_id,
-      primary_doc.mime_type AS primary_document_mime_type,
-      primary_doc.source_type AS primary_document_source_type,
-      left(coalesce(primary_doc.raw_text, ''), 8000) AS document_snippet,
-      src.latest_source_at,
-      top_matches.rank
-     FROM top_matches
-     JOIN candidates c ON c.id=top_matches.id
-     LEFT JOIN LATERAL (
-       SELECT
-         d.id,
-         d.file_name,
-         d.mime_type,
-         d.source_type,
-       d.raw_text,
-       count(*) OVER ()::int AS document_count
-       FROM documents d
-       WHERE d.candidate_id = c.id
-       ORDER BY (d.id = top_matches.matched_document_id) DESC,
-         d.is_primary_cv DESC,
-         d.created_at DESC
-       LIMIT 1
-     ) primary_doc ON true
-     LEFT JOIN LATERAL (
-       SELECT count(DISTINCT source_type)::int AS source_count,
-         array_agg(DISTINCT source_type ORDER BY source_type) AS source_types,
-         max(cs.source_created_at) AS latest_source_at
-       FROM candidate_sources cs
-       WHERE cs.candidate_id = c.id AND cs.is_active=true
-     ) src ON true
-     ORDER BY top_matches.rank DESC, c.quality_score DESC, c.updated_at DESC`,
-    params,
-      8_000
-    ));
+    ({ rows: plannedMatches } = await findProfileMatches(candidateFilter, params, 2, 2_500));
   } catch (error: any) {
     if (error?.code !== "57014") throw error;
-    ({ rows } = await findCandidatesFromProfileIndex(candidateFilter, params));
   }
+  if (plannedMatches.length < 120) {
+    try {
+      ({ rows: broadMatches } = await findProfileMatches(candidateFilter, params, 3, 2_500));
+    } catch (error: any) {
+      if (error?.code !== "57014") throw error;
+    }
+  }
+  const profileMatches = mergeRankedMatches(plannedMatches, broadMatches);
+  if (profileMatches.length < 80) {
+    try {
+      ({ rows: documentMatches } = await findDocumentMatches(candidateFilter, params));
+    } catch (error: any) {
+      if (error?.code !== "57014") throw error;
+    }
+  }
+  const matches = mergeRankedMatches(profileMatches, documentMatches);
+  const { rows } = await hydrateCandidateMatches(matches);
   return rows.map((row) => {
     const cvResidence = extractCvResidence(row.document_snippet ?? "");
     return {

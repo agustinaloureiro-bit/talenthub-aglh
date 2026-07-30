@@ -39,6 +39,10 @@ const ROLE_HINTS = [
   "auxiliar administrativo",
   "administrativo",
   "administrativa",
+  "vendedor de terreno",
+  "vendedora de terreno",
+  "venta de terreno",
+  "ventas de terreno",
   "vendedor",
   "vendedora",
   "comercial",
@@ -120,6 +124,11 @@ const SKILL_HINTS = [
   "mantenimiento",
   "compras",
   "ventas",
+  "gestion de cartera",
+  "gestión de cartera",
+  "cartera de clientes",
+  "visitas comerciales",
+  "consumo masivo",
   "atencion al cliente",
   "atención al cliente",
   "gastronomia",
@@ -172,6 +181,9 @@ const CONCEPT_PATTERNS: Array<{ pattern: RegExp; skill: string }> = [
   { pattern: /organizad|planific|ordenad|gesti[oó]n del tiempo|seguimiento de tareas/i, skill: "organizacion" },
   { pattern: /comunicaci[oó]n|buen trato|trat(?:o|ar) con (?:el |los )?clientes?|relaciones interpersonales/i, skill: "comunicacion" },
   { pattern: /negoci|cierre de ventas|desarrollo de clientes|manejo de cuentas/i, skill: "negociacion" },
+  { pattern: /\b(?:ventas?|vendedor(?:a)?)\s+(?:de|en)\s+terreno\b|\bvisitas? comerciales?\b/i, skill: "ventas de terreno" },
+  { pattern: /\b(?:gesti[oó]n|gestionar|desarrollo|desarrollar|manejo|manejar)\s+(?:de\s+)?(?:la\s+)?cartera de clientes\b/i, skill: "gestion de cartera" },
+  { pattern: /\bconsumo masivo\b/i, skill: "consumo masivo" },
   { pattern: /resolver problemas|resoluci[oó]n de problemas|anal[ií]tic|pensamiento cr[ií]tico/i, skill: "resolucion de problemas" },
   { pattern: /adaptab|flexib|trabajo bajo presi[oó]n|entorno din[aá]mico/i, skill: "adaptabilidad" },
   { pattern: /trabajo en equipo|colaboraci[oó]n|colaborativ/i, skill: "trabajo en equipo" },
@@ -226,6 +238,47 @@ function isIndustrialRefrigerationDescription(query: string) {
   return /\b(?:refrigeracion industrial|sistemas? de refrigeracion|maquinas? de frio|generacion de frio|frigorista|freon|nh3|amoniaco)\b/.test(normalized);
 }
 
+function isFieldSalesDescription(query: string) {
+  const normalized = normalizeHint(query);
+  return /\b(?:ventas?|vendedor(?:a)?)\s+(?:de|en)\s+terreno\b|\bvisitas? comerciales?\b/.test(normalized)
+    || (
+      /\b(?:vendedor(?:a)?|comercial|ventas?)\b/.test(normalized)
+      && /\b(?:cartera de clientes|venta directa|canal de reventa|desarrollo de clientes)\b/.test(normalized)
+    );
+}
+
+function optionalConceptsForQuery(query: string, concepts: string[]) {
+  const normalized = normalizeHint(query);
+  const optionalMarker = /\b(?:se valora(?:ra)?|deseable|preferentemente|pueden ser favorables?)\b/;
+  const optionalConcepts = new Set<string>();
+
+  for (const concept of concepts) {
+    const normalizedConcept = normalizeHint(concept);
+    let conceptPosition = normalized.indexOf(normalizedConcept);
+    while (conceptPosition >= 0) {
+      const previousBoundary = Math.max(
+        normalized.lastIndexOf(".", conceptPosition),
+        normalized.lastIndexOf(";", conceptPosition),
+        normalized.lastIndexOf("\n", conceptPosition)
+      );
+      const followingBoundaries = [
+        normalized.indexOf(".", conceptPosition),
+        normalized.indexOf(";", conceptPosition),
+        normalized.indexOf("\n", conceptPosition)
+      ].filter((position) => position >= 0);
+      const followingBoundary = followingBoundaries.length ? Math.min(...followingBoundaries) : normalized.length;
+      const clause = normalized.slice(Math.max(0, previousBoundary + 1), followingBoundary);
+      const precedingContext = normalized.slice(Math.max(0, previousBoundary - 100), conceptPosition);
+      if (optionalMarker.test(clause) || optionalMarker.test(precedingContext)) {
+        optionalConcepts.add(normalizedConcept);
+        break;
+      }
+      conceptPosition = normalized.indexOf(normalizedConcept, conceptPosition + normalizedConcept.length);
+    }
+  }
+  return optionalConcepts;
+}
+
 function requiredGroupsForQuery(
   query: string,
   roles: string[],
@@ -234,7 +287,10 @@ function requiredGroupsForQuery(
   industries: string[]
 ) {
   const normalized = normalizeHint(query);
-  const groups = [...roles, ...skills, ...languages, ...industries].map((concept) => [concept]);
+  const optionalConcepts = optionalConceptsForQuery(query, [...skills, ...industries]);
+  const groups = [...roles, ...skills, ...languages, ...industries]
+    .filter((concept) => !optionalConcepts.has(normalizeHint(concept)))
+    .map((concept) => [concept]);
   if (isIndustrialRefrigerationDescription(query)) {
     return [
       [
@@ -247,6 +303,14 @@ function requiredGroupsForQuery(
         "mantenimiento de equipos", "mantenimiento de maquinas", "reparacion"
       ]
     ];
+  }
+  if (isFieldSalesDescription(query)) {
+    return [[
+      "vendedor de terreno", "vendedora de terreno", "ventas de terreno", "venta de terreno",
+      "vendedor viajante", "preventista", "ejecutivo comercial", "ejecutiva comercial",
+      "representante comercial", "venta directa", "visitas comerciales",
+      "gestion de cartera", "cartera de clientes", "desarrollo de clientes"
+    ]];
   }
   if (isAdministrativeWarehouseDescription(query)) {
     return [
@@ -325,7 +389,11 @@ function residualKeywords(query: string, knownConcepts: string[]) {
     "registrar", "detectar", "reparar", "posible", "posibles", "requisito", "requisitos",
     "secundaria", "completa", "equivalente", "formacion", "tecnica", "tecnico",
     "profesional", "deseable", "areas", "afines", "minima", "minimo", "anos", "valora",
-    "valorara", "especialmente", "sistemas", "maquinas", "niveles", "consumos"
+    "valorara", "especialmente", "sistemas", "maquinas", "niveles", "consumos",
+    "busqueda", "esta", "orientada", "canal", "persona", "sera", "desarrollar",
+    "gestionar", "estructura", "definida", "actividades", "objetivos", "incluyendo",
+    "indicadores", "gestion", "entre", "otros", "consideramos", "perfiles", "pueden",
+    "favorables", "reventa", "trabajando"
   ]);
   const knownTokens = new Set(knownConcepts
     .flatMap((concept) => normalizeHint(concept).split(/[^\p{L}\p{N}]+/u))
@@ -342,6 +410,7 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   const roles = [...new Set([
     ...detectedRoles,
     ...(isIndustrialRefrigerationDescription(normalizedQuery) && detectedRoles.length === 0 ? ["tecnico en refrigeracion"] : []),
+    ...(isFieldSalesDescription(normalizedQuery) ? ["vendedor de terreno"] : []),
     ...(isAdministrativeWarehouseDescription(normalizedQuery) ? ["auxiliar de deposito"] : [])
   ])];
   const skills = [...new Set([
@@ -350,7 +419,7 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   ])];
   const languages = LANGUAGE_PATTERNS.filter(([pattern]) => pattern.test(normalizedQuery)).map(([, language]) => language);
   const seniority = SENIORITY_PATTERNS.find(([pattern]) => pattern.test(normalizedQuery))?.[1] ?? null;
-  const industries = findHints(normalizedQuery, ["supermercado", "industria", "fabrica", "fábrica", "retail", "logistica", "logística", "manufactura", "tecnologia", "tecnología", "gastronomia", "gastronomía", "restaurante"]);
+  const industries = findHints(normalizedQuery, ["supermercado", "industria", "fabrica", "fábrica", "retail", "logistica", "logística", "manufactura", "tecnologia", "tecnología", "gastronomia", "gastronomía", "restaurante", "lubricantes", "consumo masivo"]);
   const locations = findHints(normalizedQuery, LOCATION_HINTS);
   const profileLevel = basicProfileRequested(normalizedQuery) ? "basic" : null;
   const keywords = residualKeywords(normalizedQuery, [...roles, ...skills, ...languages, ...industries, ...locations]);

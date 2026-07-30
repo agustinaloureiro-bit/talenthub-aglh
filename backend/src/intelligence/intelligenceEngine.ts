@@ -29,11 +29,15 @@ function retrievalSignals(query: string) {
     "registrar", "detectar", "reparar", "posible", "posibles", "requisito", "requisitos",
     "secundaria", "completa", "equivalente", "formacion", "formación", "deseable",
     "areas", "áreas", "afines", "minima", "mínima", "minimo", "mínimo", "anos", "años",
-    "valora", "valorara", "valorará", "especialmente", "niveles", "consumos"
+    "valora", "valorara", "valorará", "especialmente", "niveles", "consumos",
+    "busqueda", "búsqueda", "esta", "está", "orientada", "orientado", "canal", "persona",
+    "sera", "será", "estructura", "definida", "actividades", "objetivos", "incluyendo",
+    "indicadores", "entre", "otros", "consideramos", "perfiles", "pueden", "favorables",
+    "un", "trabajando"
   ]);
   return profileQuery
-    .split(/\s+/)
-    .map((word) => word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
+    .split(/[^\p{L}\p{N}]+/u)
+    .map((word) => word.trim())
     .filter((word) => word.length >= 3
       && !/^\d+(?:[.,:]\d+)?$/.test(word)
       && !ignoredWords.has(word.toLowerCase()));

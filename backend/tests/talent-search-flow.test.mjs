@@ -199,6 +199,63 @@ Se valora Freón, NH3, electricidad y soldadura. Zona Las Piedras.`);
   assert.deepEqual(ranked.map((candidate) => candidate.id), ["frigorista"]);
 });
 
+test("una descripcion comercial extensa recupera ventas de terreno sin exigir criterios favorables", async () => {
+  const description = `La búsqueda está orientada a un/a vendedor/a de Terreno para el canal de Reventa de Lubricantes.
+La persona será responsable de desarrollar y gestionar la cartera de clientes, trabajando con una estructura definida de actividades y objetivos, incluyendo indicadores de gestión como visitas comerciales y ventas.
+Consideramos que perfiles con experiencia en consumo masivo pueden ser favorables.`;
+  const interpreted = interpretTalentQuery(description);
+
+  assert.ok(interpreted.roles.some((role) => /vendedor|venta/i.test(role)));
+  assert.ok(interpreted.skills.includes("ventas de terreno"));
+  assert.ok(interpreted.skills.includes("gestion de cartera"));
+  assert.ok(interpreted.skills.includes("consumo masivo"));
+  assert.ok(!interpreted.requiredGroups.flat().some((term) => /consumo masivo/i.test(term)));
+  assert.ok(!interpreted.keywords.some((term) => /busqueda|orientada|estructura|indicadores|favorables/i.test(term)));
+
+  let providerQuery = "";
+  const engine = new RecruitmentIntelligenceEngine(async (query) => {
+    providerQuery = query;
+    return [];
+  });
+  await engine.search(description);
+
+  assert.match(providerQuery, /vendedor|venta/i);
+  assert.match(providerQuery, /terreno/i);
+  assert.doesNotMatch(providerQuery, /busqueda|orientada|estructura|indicadores|favorables/i);
+  assert.ok(providerQuery.length < 260);
+});
+
+test("ventas de terreno prioriza experiencia de campo y cartera sobre venta generica", () => {
+  const interpreted = interpretTalentQuery(`Vendedor de terreno. Gestión de cartera de clientes y visitas comerciales.
+Se valora experiencia en consumo masivo.`);
+  const ranked = rerankCandidates([
+    {
+      id: "campo",
+      fullName: "Martín Pereira",
+      currentRole: "Vendedor de terreno",
+      tags: ["ventas", "gestion de cartera"],
+      qualityScore: 65,
+      documentCount: 1,
+      documentSnippet: "Visitas comerciales, apertura de clientes, venta directa y gestión de cartera.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "mostrador",
+      fullName: "Pedro Rodríguez",
+      currentRole: "Vendedor de salón",
+      tags: ["ventas"],
+      qualityScore: 90,
+      documentCount: 1,
+      documentSnippet: "Atención al público y ventas en mostrador.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.equal(ranked[0]?.id, "campo");
+});
+
 test("valor hora nominal no se interpreta como experiencia en nomina", async () => {
   const description = `Cliente: Logisfashion
 Tareas: Carga y descarga, Montevideo Shopping y Punta Carretas Shopping.
