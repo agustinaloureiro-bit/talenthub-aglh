@@ -3,6 +3,7 @@ import { enrichCandidateFromCv } from "./cvCandidateEnrichment.js";
 import { createHash } from "crypto";
 import { q } from "../db/pool.js";
 import { namesLikelySame, normalizePhoneIdentity } from "./candidateIdentity.js";
+import { candidateNameConfidence, chooseCanonicalCandidateName } from "./candidateName.js";
 
 export type CandidateImportResult = "new" | "updated" | "unchanged" | "skipped";
 
@@ -318,6 +319,10 @@ export async function importCandidate(sourceType: string, candidate: CandidateIm
   let existingId: string | null = null;
   const contentHash = candidateContentHash(candidate);
 
+  const incomingDocumentHashes = (candidate.documents ?? [])
+    .map((document) => cleanDbText(document.fileHash) ?? documentContentHash(documentFileBuffer(document.fileDataBase64), document.rawText))
+    .filter((value): value is string => Boolean(value));
+
   if (candidate.sourceId) {
     const bySource = await q<{ candidate_id: string; content_hash: string | null }>(
       "SELECT candidate_id, content_hash FROM candidate_sources WHERE source_type=$1 AND source_id=$2 LIMIT 1",
@@ -335,6 +340,19 @@ export async function importCandidate(sourceType: string, candidate: CandidateIm
       await q("UPDATE candidates SET last_seen_at=now() WHERE id=$1", [existingId]);
       return "unchanged";
     }
+  }
+
+  if (!existingId && incomingDocumentHashes.length > 0) {
+    const byDocument = await q<{ candidate_id: string }>(
+      `SELECT d.candidate_id
+       FROM documents d
+       JOIN candidates c ON c.id=d.candidate_id
+       WHERE c.duplicate_of IS NULL AND d.file_hash=ANY($1::text[])
+       ORDER BY d.is_primary_cv DESC, d.created_at DESC
+       LIMIT 1`,
+      [incomingDocumentHashes]
+    );
+    existingId = byDocument.rows[0]?.candidate_id ?? null;
   }
 
   if (!existingId && candidate.email.length > 0) {
@@ -367,9 +385,15 @@ export async function importCandidate(sourceType: string, candidate: CandidateIm
   }
 
   if (existingId) {
-    const stillExists = await q<{ id: string }>("SELECT id FROM candidates WHERE id=$1 LIMIT 1", [existingId]);
+    const stillExists = await q<{ id: string; full_name: string }>("SELECT id, full_name FROM candidates WHERE id=$1 LIMIT 1", [existingId]);
     if (!stillExists.rows[0]) {
       existingId = null;
+    } else {
+      candidate.fullName = chooseCanonicalCandidateName(
+        stillExists.rows[0].full_name,
+        candidate.fullName,
+        candidateNameConfidence(candidate.raw)
+      );
     }
   }
 

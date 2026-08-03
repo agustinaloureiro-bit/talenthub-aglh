@@ -61,7 +61,7 @@ Ingles intermedio.`,
   );
 
   assert.ok(candidate);
-  assert.equal(candidate.fullName, "Matias Coppola");
+  assert.equal(candidate.fullName, "Matias Coppola Martinez");
   assert.equal(candidate.documents?.[0]?.fileName, "CV_Matias_Coppola_Actualizado.docx");
   assert.ok(candidate.documents?.[0]?.rawText?.includes("Experiencia en logistica"));
 });
@@ -213,6 +213,27 @@ test("Gmail limpia titulos, sufijos y puntuacion del nombre del CV", async () =>
     assert.ok(candidate, fileName);
     assert.equal(candidate.fullName, expectedName);
   }
+});
+
+test("Gmail prioriza el nombre escrito dentro del CV sobre un archivo mal nombrado", async () => {
+  const { candidateFromFreeText } = await import("../dist/routes/integrations.js");
+  const candidate = candidateFromFreeText(
+    "gmail",
+    `Lucia Fernandez Pereira
+Email lucia.fernandez@example.com
+Telefono 099 222 333
+Experiencia laboral en administracion y ventas.`,
+    {
+      sourceId: "gmail:mismatched-file-name",
+      fileName: "CV_Maria_Garcia.pdf",
+      sender: "Seleccion AGLH <seleccion@aglh.com.uy>"
+    }
+  );
+
+  assert.ok(candidate);
+  assert.equal(candidate.fullName, "Lucia Fernandez Pereira");
+  assert.equal(candidate.raw.identity.nameSource, "cv_heading");
+  assert.equal(candidate.raw.identity.nameConfidence, 95);
 });
 
 test("Gmail repara codificacion mojibake y no usa asuntos como rol", async () => {

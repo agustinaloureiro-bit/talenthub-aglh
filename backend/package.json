@@ -12,6 +12,7 @@
     "reanalyze:candidates": "tsx src/scripts/reanalyzeCandidates.ts",
     "cleanup:generic-names": "tsx src/scripts/rejectGenericCandidateNames.ts",
     "cleanup:storage": "tsx src/scripts/cleanupDatabaseStorage.ts",
+    "repair:identities": "tsx src/scripts/repairCandidateIdentities.ts",
     "validate:product-data": "tsx src/scripts/validateProductData.ts"
   },
   "dependencies": {

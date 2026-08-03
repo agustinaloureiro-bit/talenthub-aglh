@@ -1,6 +1,8 @@
 import "dotenv/config";
 import { pool, q } from "../db/pool.js";
 import { extractCvCandidateEvidence, humanCandidateField } from "../services/cvCandidateEnrichment.js";
+import { extractCandidateNameEvidence, shouldReplaceCandidateName } from "../services/candidateName.js";
+import { candidateNameLooksReal, cleanCandidateNameText } from "../routes/integrations.js";
 
 const batchSize = Math.max(10, Math.min(250, Number(process.argv.find((arg) => arg.startsWith("--batch="))?.split("=")[1] ?? 100)));
 const maxCandidates = Math.max(1, Number(process.argv.find((arg) => arg.startsWith("--limit="))?.split("=")[1] ?? 10000));
@@ -39,6 +41,7 @@ try {
       cursor = row.id;
       reviewed += 1;
       const evidence = extractCvCandidateEvidence(row.raw_text ?? "", row.full_name);
+      const nameEvidence = extractCandidateNameEvidence(row.raw_text ?? "", cleanCandidateNameText, candidateNameLooksReal);
       const analysis = evidence.analysis;
       if (!analysis.hasReadableText) {
         unreadable += 1;
@@ -64,19 +67,35 @@ try {
       const phone = [...new Set([...evidence.phones, ...(row.phone ?? [])])];
       await q(
         `UPDATE candidates SET
-           email=$1,
-           phone=$2,
-           "current_role"=$3,
-           city=$4,
-           country=$5,
-           ai_seniority_years=coalesce($6, ai_seniority_years),
-           ai_tags=$7,
-           ai_languages=case when jsonb_array_length($8::jsonb) > 0 then $8::jsonb else ai_languages end,
-           ai_summary=$9,
-           quality_score=$10,
+           full_name=$1,
+           email=$2,
+           phone=$3,
+           "current_role"=$4,
+           city=$5,
+           country=$6,
+           ai_seniority_years=coalesce($7, ai_seniority_years),
+           ai_tags=$8,
+           ai_languages=case when jsonb_array_length($9::jsonb) > 0 then $9::jsonb else ai_languages end,
+           ai_summary=$10,
+           quality_score=$11,
            updated_at=now()
-         WHERE id=$11`,
-        [email, phone, currentRole, analysis.city ?? existingCity, country, analysis.years, tags, JSON.stringify(analysis.languages), analysis.summary, qualityScore, row.id]
+         WHERE id=$12`,
+        [
+          nameEvidence && shouldReplaceCandidateName(row.full_name, nameEvidence, email, candidateNameLooksReal)
+            ? nameEvidence.value
+            : row.full_name,
+          email,
+          phone,
+          currentRole,
+          analysis.city ?? existingCity,
+          country,
+          analysis.years,
+          tags,
+          JSON.stringify(analysis.languages),
+          analysis.summary,
+          qualityScore,
+          row.id
+        ]
       );
       await q("UPDATE documents SET ai_summary=$1, processed_at=now() WHERE id=$2", [analysis.summary, row.document_id]);
       updated += 1;

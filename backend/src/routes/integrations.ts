@@ -12,6 +12,7 @@ import { analyzeCvText } from "../services/cvAnalysis.js";
 import { extractDocumentText } from "../services/documentText.js";
 import { selectCandidateEmails } from "../services/candidateIdentity.js";
 import { extractCvCandidateEvidence, humanCandidateField } from "../services/cvCandidateEnrichment.js";
+import { emailSupportsCandidateName, extractCandidateNameEvidence, shouldReplaceCandidateName } from "../services/candidateName.js";
 import { loginAglh, syncAglh } from "../services/aglhClient.js";
 import { downloadYoinersCv, syncYoiners } from "../services/yoinersClient.js";
 import {
@@ -847,7 +848,7 @@ function dropDanglingNameInitial(value: string) {
   return cleanText(value);
 }
 
-function cleanCandidateNameText(value: string) {
+export function cleanCandidateNameText(value: string) {
   const cleaned = fixMojibake(cleanText(value))
     .normalize("NFC")
     .replace(/^(re|fw|fwd)\s*:\s*/i, "")
@@ -1028,7 +1029,8 @@ function documentSummary(content: string, fallbackRole: string) {
 }
 
 export function candidateFromFreeText(sourceType: string, text: string, options: { sourceId?: string | null; sourceUrl?: string | null; currentRole?: string | null; fileName?: string | null; fallbackName?: string | null; sender?: string | null; contactText?: string | null } = {}): CandidateImport | null {
-  const rawContent = fixMojibake(normalizeWhitespace(text));
+  const sourceTextWithLines = fixMojibake(String(text ?? ""));
+  const rawContent = normalizeWhitespace(sourceTextWithLines);
   const sanitizedContent = cleanDocumentTextForImport(rawContent);
   const content = sanitizedContent || normalizeWhitespace(options.fileName ?? "");
   if (!content || content.length < 8) return null;
@@ -1037,6 +1039,7 @@ export function candidateFromFreeText(sourceType: string, text: string, options:
   const allEmails = unique([...extractEmails(textWithoutReferenceSections(contactText)), ...extractEmails(senderContact)])
     .map((item) => item.toLowerCase())
     .filter((item) => !emailLooksInternalOrSystem(item));
+  const cvNameEvidence = extractCandidateNameEvidence(sourceTextWithLines, cleanCandidateNameText, candidateNameLooksReal);
   const explicitName = cleanCandidateNameText(content.match(/(?:nombre|name|candidato|postulante)\s*[:\-]\s*([A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]{4,80})/i)?.[1] ?? "");
   const fallbackName = nameFromFileName(options.fallbackName ?? options.fileName);
   const senderName = nameFromMailHeader(options.sender);
@@ -1045,7 +1048,13 @@ export function candidateFromFreeText(sourceType: string, text: string, options:
     .map((part) => cleanCandidateNameText(normalizeWhitespace(part)))
     .find((part) => candidateNameLooksReal(part) && part.toLowerCase() !== fallbackName.toLowerCase());
   const fromEmailName = nameFromEmailAddress(allEmails[0]);
-  const realName = fallbackName || explicitName || senderName || firstLikelyName || fromEmailName;
+  const selectedNameEvidence = cvNameEvidence
+    ?? (explicitName ? { value: explicitName, source: "cv_label" as const, confidence: 100 } : null)
+    ?? (fallbackName ? { value: fallbackName, source: "file_name" as const, confidence: 65 } : null)
+    ?? (senderName ? { value: senderName, source: "sender" as const, confidence: 60 } : null)
+    ?? (firstLikelyName ? { value: firstLikelyName, source: "cv_heading" as const, confidence: 90 } : null)
+    ?? (fromEmailName ? { value: fromEmailName, source: "email" as const, confidence: 45 } : null);
+  const realName = selectedNameEvidence?.value ?? "";
   const senderEmail = extractEmails(senderContact).find((item) => !emailLooksInternalOrSystem(item)) ?? null;
   const email = selectCandidateEmails(allEmails, realName, senderEmail);
   const phone = extractPhones(textWithoutReferenceSections(contactText)).slice(0, 2);
@@ -1094,7 +1103,17 @@ export function candidateFromFreeText(sourceType: string, text: string, options:
       sourcePath: options.sourceUrl ?? null,
       isPrimaryCv: true
     }],
-    raw: { text: content, sourceUrl: options.sourceUrl, fileName: options.fileName }
+    raw: {
+      text: content,
+      sourceUrl: options.sourceUrl,
+      fileName: options.fileName,
+      identity: selectedNameEvidence ? {
+        nameSource: selectedNameEvidence.source,
+        nameConfidence: selectedNameEvidence.source === "cv_heading" && !emailSupportsCandidateName(realName, email)
+          ? 85
+          : selectedNameEvidence.confidence
+      } : undefined
+    }
   };
 }
 
@@ -2361,7 +2380,7 @@ export function isClearlyGenericCandidateName(name: string) {
   return /^(atencion al cliente|auxiliar administrativ[oa]|administrativ[oa]|asesor(?:a)? comercial|ejecutiv[oa] comercial|vendedor(?:a)?|ventas(?: y marketing)?|recursos humanos|servicios generales|operador(?:a)?|recepcionista|cajer[oa]|repositor(?:a)?|logistica(?: y produccion)?|gastronomia|marketing|diseno grafico|desarrollador(?:a)?|programador(?:a)?|contador(?:a)?|abogad[oa]|enfermer[oa]|tecnico(?: especialista)?|mantenimiento|produccion|supervisor(?:a)?|encargad[oa])$/i.test(normalized);
 }
 
-function candidateNameLooksReal(name: string) {
+export function candidateNameLooksReal(name: string) {
   const cleaned = name.replace(/\s+/g, " ").trim();
   const words = cleaned.split(/\s+/).filter(Boolean);
   if (!cleaned || cleaned.length < 5 || cleaned.length > 90) return false;
@@ -3418,6 +3437,7 @@ async function repairCandidateDocuments(
       }
     }
     const evidence = extractCvCandidateEvidence(rawText, row.full_name);
+    const nameEvidence = extractCandidateNameEvidence(rawText, cleanCandidateNameText, candidateNameLooksReal);
     const analysis = evidence.analysis;
     if (!analysis.hasReadableText) {
       if (documentBytesAvailable) {
@@ -3454,18 +3474,33 @@ async function repairCandidateDocuments(
     const country = analysis.country ?? humanCandidateField(row.country);
     await q(
       `UPDATE candidates
-       SET email=$1,
-           phone=$2,
-           city=$3,
-           country=$4,
-           "current_role"=$5,
-           ai_seniority_years=coalesce($6,ai_seniority_years),
-           ai_tags=$7,
-           ai_languages=case when jsonb_array_length($8::jsonb)>0 then $8::jsonb else ai_languages end,
-           ai_summary=$9,
+       SET full_name=$1,
+           email=$2,
+           phone=$3,
+           city=$4,
+           country=$5,
+           "current_role"=$6,
+           ai_seniority_years=coalesce($7,ai_seniority_years),
+           ai_tags=$8,
+           ai_languages=case when jsonb_array_length($9::jsonb)>0 then $9::jsonb else ai_languages end,
+           ai_summary=$10,
            updated_at=now()
-       WHERE id=$10`,
-      [emails, phones, city, country, currentRole, analysis.years, tags, JSON.stringify(analysis.languages), analysis.summary, row.candidate_id]
+       WHERE id=$11`,
+      [
+        nameEvidence && shouldReplaceCandidateName(row.full_name, nameEvidence, emails, candidateNameLooksReal)
+          ? nameEvidence.value
+          : row.full_name,
+        emails,
+        phones,
+        city,
+        country,
+        currentRole,
+        analysis.years,
+        tags,
+        JSON.stringify(analysis.languages),
+        analysis.summary,
+        row.candidate_id
+      ]
     );
     await q(
       `UPDATE documents
