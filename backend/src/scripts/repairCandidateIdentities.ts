@@ -175,9 +175,9 @@ async function mergeExactDuplicate(pair: DuplicatePair) {
     }
     await client.query(
       `UPDATE candidates keeper SET
-         email=(SELECT array_agg(DISTINCT item) FROM unnest(keeper.email || duplicate.email) item),
-         phone=(SELECT array_agg(DISTINCT item) FROM unnest(keeper.phone || duplicate.phone) item),
-         ai_tags=(SELECT array_agg(DISTINCT item) FROM unnest(keeper.ai_tags || duplicate.ai_tags) item),
+         email=coalesce((SELECT array_agg(DISTINCT item) FROM unnest(coalesce(keeper.email,'{}'::text[]) || coalesce(duplicate.email,'{}'::text[])) item), '{}'::text[]),
+         phone=coalesce((SELECT array_agg(DISTINCT item) FROM unnest(coalesce(keeper.phone,'{}'::text[]) || coalesce(duplicate.phone,'{}'::text[])) item), '{}'::text[]),
+         ai_tags=coalesce((SELECT array_agg(DISTINCT item) FROM unnest(coalesce(keeper.ai_tags,'{}'::text[]) || coalesce(duplicate.ai_tags,'{}'::text[])) item), '{}'::text[]),
          quality_score=greatest(keeper.quality_score, duplicate.quality_score),
          updated_at=now()
        FROM candidates duplicate
