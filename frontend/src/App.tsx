@@ -216,17 +216,17 @@ export function App() {
 
   return (
     <div className="flex min-h-screen">
-      <aside className="fixed inset-y-0 left-0 w-56 bg-navy text-white">
+      <aside className="app-sidebar fixed inset-y-0 left-0 w-56 text-white">
         <div className="flex h-16 items-center gap-3 border-b border-white/10 px-5">
           <div className="brand-mark">TH</div>
           <div>
             <div className="text-sm font-bold">Talent Hub</div>
-            <div className="flex items-center gap-2 text-xs"><span className="text-lime-300">AGLH</span><span className="text-violet-300">Yoiners</span></div>
+            <div className="flex items-center gap-2 text-xs"><span className="text-lime-200">AGLH</span><span className="text-white/55">Yoiners</span></div>
           </div>
         </div>
         <nav className="p-3">
           {nav.map(([key, Icon, label]) => (
-            <button key={key} onClick={() => navigateTo(key)} className={`mb-1 flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm ${page === key || (page === "candidate" && key === candidateReturnPage) ? "bg-white/10 text-white" : "text-white/65 hover:bg-white/5"}`}>
+            <button key={key} onClick={() => navigateTo(key)} className={`app-sidebar-nav ${page === key || (page === "candidate" && key === candidateReturnPage) ? "app-sidebar-nav-active" : "app-sidebar-nav-idle"}`}>
               <Icon size={17} /> {label}
             </button>
           ))}
@@ -239,7 +239,7 @@ export function App() {
             <h1 className="text-lg font-bold">{titleFor(page)}</h1>
           </div>
           <div className="flex items-center gap-3 text-sm">
-            {user.avatarUrl && <img src={user.avatarUrl} alt="" className="h-8 w-8 rounded-full" referrerPolicy="no-referrer" />}
+            {user.avatarUrl ? <img src={user.avatarUrl} alt="" className="h-8 w-8 rounded-full" referrerPolicy="no-referrer" /> : <div className="user-avatar">{user.name?.[0]?.toUpperCase() || "U"}</div>}
             <span className="text-slate-500">{user.name} · {user.role}</span>
             <button className="btn-ghost" onClick={async () => { clearTalentFinderSnapshot(); await logout(); setUser(null); window.location.assign("/login"); }}><LogOut size={16} /></button>
           </div>
@@ -268,16 +268,14 @@ function Login() {
         ? "Google no pudo validar el acceso. Volvé a intentarlo."
         : "";
   return (
-    <div className="grid min-h-screen place-items-center bg-canvas p-4">
-      <div className="card w-full max-w-sm p-6">
-        <div className="mb-6 flex items-center gap-3">
-          <div className="brand-mark h-10 w-10">TH</div>
-          <div><h1 className="font-bold">Talent Hub AGLH</h1><p className="text-sm text-slate-500">Acceso interno</p></div>
-        </div>
+    <div className="login-shell grid min-h-screen place-items-center p-6">
+      <div className="login-card text-center">
+        <div className="brand-wordmark mb-16 text-2xl">AGLH</div>
+        <h1 className="login-title mb-5">Bienvenido/a</h1>
+        <p className="mb-12 text-lg text-slate-500">Accedé al buscador interno de talento.</p>
         {error && <ErrorBox message={error} />}
-        <p className="mb-5 text-sm leading-6 text-slate-600">Ingresá con tu cuenta corporativa de AGLH o Yoiners.</p>
-        <button className="btn-primary w-full justify-center" onClick={loginWithGoogle}>Continuar con Google</button>
-        <p className="mt-4 text-center text-xs text-slate-500">Solo se aceptan cuentas @aglh.com.uy y @yoiners.com.</p>
+        <button className="btn-primary login-button w-full justify-center" onClick={loginWithGoogle}>Continuar con Google</button>
+        <p className="mt-5 text-sm leading-6 text-slate-500">Usá tu cuenta corporativa de AGLH o Yoiners.</p>
       </div>
     </div>
   );
@@ -1409,9 +1407,9 @@ function PagePad({ children }: { children: ReactNode }) { return <div className=
 function Empty({ text }: { text: string }) { return <div className="card flex items-center gap-2 p-5 text-sm text-slate-500"><Database size={16} /> {text}</div>; }
 function ErrorBox({ message }: { message: string }) { return <div className="mb-3 flex items-center gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700"><AlertCircle size={16} /> {message}</div>; }
 function Skeleton() { return <div className="card h-40 animate-pulse bg-slate-100" />; }
-function Avatar({ name, small = false }: { name: string; small?: boolean }) { const initials = name.split(" ").map((x) => x[0]).join("").slice(0, 2).toUpperCase(); return <div className={`grid shrink-0 place-items-center rounded-full bg-violet-600 font-bold text-white ring-4 ring-lime-200/70 ${small ? "h-10 w-10" : "h-16 w-16 text-xl"}`}>{initials || <UserRound />}</div>; }
-function TagList({ tags }: { tags: string[] }) { const visible = tags.filter((tag) => tag && tag.length <= 40).slice(0, 4); return <div className="mt-2 flex flex-wrap gap-1">{visible.map((t) => <span className="rounded-full bg-lime-100 px-2 py-0.5 text-xs font-semibold text-violet-800" key={t}>{shortText(t, 32)}</span>)}</div>; }
-function MatchScore({ score }: { score: number }) { return <div className="min-w-28" title="Compatibilidad calculada únicamente para la búsqueda actual"><div className="mb-1 text-right text-xs font-semibold text-slate-500">Coincidencia</div><div className="text-right text-lg font-extrabold text-violet-700">{score}%</div><div className="h-2 rounded-full bg-lime-100"><div className="h-2 rounded-full bg-violet-600" style={{ width: `${Math.max(0, Math.min(100, score))}%` }} /></div></div>; }
+function Avatar({ name, small = false }: { name: string; small?: boolean }) { const initials = name.split(" ").map((x) => x[0]).join("").slice(0, 2).toUpperCase(); return <div className={`grid shrink-0 place-items-center rounded-full bg-[#e6efe9] font-bold text-[#0f5132] ${small ? "h-10 w-10" : "h-16 w-16 text-xl"}`}>{initials || <UserRound />}</div>; }
+function TagList({ tags }: { tags: string[] }) { const visible = tags.filter((tag) => tag && tag.length <= 40).slice(0, 4); return <div className="mt-2 flex flex-wrap gap-1">{visible.map((t) => <span className="rounded-full bg-[#eef4e4] px-2 py-0.5 text-xs font-semibold text-[#355326]" key={t}>{shortText(t, 32)}</span>)}</div>; }
+function MatchScore({ score }: { score: number }) { return <div className="min-w-28" title="Compatibilidad calculada únicamente para la búsqueda actual"><div className="mb-1 text-right text-xs font-semibold text-slate-500">Coincidencia</div><div className="text-right text-lg font-extrabold text-[#0f5132]">{score}%</div><div className="h-2 rounded-full bg-[#e8eee9]"><div className="h-2 rounded-full bg-[#0f5132]" style={{ width: `${Math.max(0, Math.min(100, score))}%` }} /></div></div>; }
 function InfoCard({ title, text }: { title: string; text: string }) { return <div className="card whitespace-pre-line p-4"><h3 className="mb-2 font-bold">{title}</h3><p className="text-sm text-slate-600">{text}</p></div>; }
 function Table({ title, rows, empty, columns }: any) { return <div className="card overflow-hidden"><div className="border-b border-slate-200 p-4 font-bold">{title}</div>{rows.length === 0 ? <div className="p-4 text-sm text-slate-500">{empty}</div> : <div className="overflow-auto"><table className="w-full text-left text-sm"><thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>{columns.map((c: string) => <th className="px-4 py-2" key={c}>{c}</th>)}</tr></thead><tbody>{rows.map((r: any) => <tr className="border-t border-slate-100" key={r.id}>{columns.map((c: string) => <td className={`px-4 py-2 align-top ${c === "message" || c === "reason" ? "max-w-xl whitespace-normal break-words text-xs leading-relaxed" : "whitespace-nowrap"}`} key={c} title={String(r[c] ?? "")}>{c === "message" || c === "reason" ? shortText(String(r[c] ?? ""), 220) : String(r[c] ?? "")}</td>)}</tr>)}</tbody></table></div>}</div>; }
 function list(value: string) { return value.split(",").map((x) => x.trim()).filter(Boolean); }
