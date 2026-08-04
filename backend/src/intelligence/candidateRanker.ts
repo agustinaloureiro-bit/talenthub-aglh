@@ -37,6 +37,15 @@ const EQUIVALENT_TERMS: Record<string, string[]> = {
   frigorista: ["tecnico frigorista", "tecnico en refrigeracion", "refrigeracion industrial"],
   "refrigeracion industrial": ["refrigeracion", "frigorista", "sistemas de refrigeracion", "equipos de frio", "maquinas de frio", "camara de frio", "camaras frigorificas", "aire acondicionado", "hvac"],
   "mantenimiento industrial": ["mantenimiento preventivo", "mantenimiento correctivo", "mantenimiento de equipos", "mantenimiento de maquinas", "reparacion de equipos"],
+  "mecanico industrial": ["mecanica industrial", "mecanico de autoelevadores", "tecnico mecanico", "electromecanico", "tecnico electromecanico", "tecnico de mantenimiento", "mantenimiento mecanico"],
+  "tecnico mecanico": ["mecanico industrial", "mecanico", "electromecanico", "mantenimiento mecanico"],
+  electromecanico: ["tecnico electromecanico", "mecanico industrial", "electricidad industrial", "mantenimiento industrial"],
+  "tecnico electromecanico": ["electromecanico", "mecanico industrial", "tecnico de mantenimiento"],
+  "mecanica industrial": ["mecanico industrial", "electromecanico", "mantenimiento mecanico", "mantenimiento industrial"],
+  "equipos industriales": ["maquinaria industrial", "maquinas industriales", "equipamiento industrial", "equipos de planta"],
+  hidraulica: ["sistemas hidraulicos", "circuitos hidraulicos", "mecanica hidraulica", "neumatica"],
+  "diagnostico de fallas": ["deteccion de fallas", "resolucion de fallas", "diagnostico mecanico", "diagnostico electrico"],
+  "baterias industriales": ["baterias de traccion", "baterias de autoelevadores", "mantenimiento de baterias"],
   "refrigerantes industriales": ["freon", "nh3", "amoniaco", "gas refrigerante", "gases refrigerantes"],
   "auxiliar administrativo": ["administrativo", "administrativa", "asistente administrativo", "asistente administrativa", "back office"],
   "chofer de ambulancia": ["conductor de ambulancia", "ambulanciero", "traslado de pacientes", "emergencia movil"],
@@ -89,7 +98,7 @@ const EQUIVALENT_TERMS: Record<string, string[]> = {
   "auxiliar de deposito": ["operario de deposito", "peon de deposito", "picking", "packing", "preparacion de pedidos", "stock"],
   recepcionista: ["recepcion", "atencion telefonica", "atencion al cliente"],
   electricista: ["electricidad", "electricidad industrial", "instalaciones electricas"],
-  mecanico: ["mecanica", "mecanica automotriz", "mantenimiento mecanico"],
+  mecanico: ["mecanica", "mecanica automotriz", "mantenimiento mecanico", "mecanico industrial", "electromecanico", "tecnico mecanico"],
   soldador: ["soldadora", "soldadura", "mig", "mag", "tig"],
   enfermero: ["enfermera", "enfermeria", "auxiliar de enfermeria"],
   enfermera: ["enfermero", "enfermeria", "auxiliar de enfermeria"],
@@ -99,8 +108,8 @@ const EQUIVALENT_TERMS: Record<string, string[]> = {
   psicologa: ["psicologo", "psicologia", "licenciada en psicologia"],
   "auxiliar de farmacia": ["idoneo en farmacia", "farmacia", "farmaceutico"],
   "call center": ["contact center", "telemarketer", "telemarketing", "operador telefonico"],
-  autoelevador: ["montacargas", "forklift"],
-  montacargas: ["autoelevador", "forklift"],
+  autoelevador: ["montacargas", "forklift", "apilador electrico", "equipos de movimiento de materiales", "baterias de traccion"],
+  montacargas: ["autoelevador", "forklift", "apilador electrico", "equipos de movimiento de materiales"],
   "preparacion de pedidos": ["picking", "deposito", "logistica"],
   "libreta profesional": ["licencia profesional", "libreta categoria c", "libreta categoria d", "libreta categoria e", "libreta categoria f"],
   cobranzas: ["cobranza", "gestion de morosos", "recuperacion de deuda"],
@@ -191,6 +200,7 @@ function requestedConcepts(interpreted: InterpretedTalentQuery) {
 
 function satisfiesResidualKeywords(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   if (!interpreted.keywords.length) return true;
+  if (interpreted.requiredGroups.length > 1) return true;
   const haystack = candidateHaystack(candidate);
   const normalizedQuery = normalizeSearchValue(interpreted.originalQuery);
   const detailedDescription = normalizedQuery.length >= 180
@@ -226,6 +236,35 @@ function isAdministrativeWarehouseQuery(interpreted: InterpretedTalentQuery) {
 function isIndustrialRefrigerationQuery(interpreted: InterpretedTalentQuery) {
   return [...interpreted.roles, ...interpreted.skills]
     .some((concept) => /\b(?:refrigeracion|frigorista|maquinas? de frio|refrigerantes industriales)\b/.test(normalizeSearchValue(concept)));
+}
+
+function isIndustrialMechanicQuery(interpreted: InterpretedTalentQuery) {
+  return [...interpreted.roles, ...interpreted.skills]
+    .some((concept) => /\b(?:mecanico industrial|mecanica industrial|electromecanico|equipos industriales|autoelevador|hidraulica|diagnostico de fallas)\b/.test(normalizeSearchValue(concept)));
+}
+
+function industrialMechanicFit(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
+  if (!isIndustrialMechanicQuery(interpreted)) return 0;
+  const role = normalizeSearchValue(candidate.currentRole ?? "");
+  const evidence = normalizeSearchValue(candidateHaystack(candidate));
+  const specializedRole = /\b(?:mecanico industrial|mecanico de (?:autoelevador(?:es)?|montacargas)|tecnico mecanico|electromecanico|tecnico electromecanico|tecnico de mantenimiento)\b/.test(role);
+  const specializedEvidence = /\b(?:mecanico industrial|mecanica industrial|mecanico de (?:autoelevador(?:es)?|montacargas)|tecnico (?:mecanico|electromecanico|de mantenimiento mecanico)|electromecanico)\b/.test(evidence);
+  const specializedIdentity = specializedRole || specializedEvidence;
+  const mechanicalRole = specializedIdentity || /\b(?:mecanico|mecanica|mantenimiento mecanico)\b/.test(role);
+  const materialHandling = /\b(?:autoelevador(?:es)?|montacargas|forklifts?|apilador electrico|equipos? de movimiento de materiales)\b/.test(evidence);
+  const industrialEquipment = /\b(?:equipos? industriales?|maquinaria industrial|maquinas? industriales?|mantenimiento industrial|planta industrial)\b/.test(evidence);
+  const hydraulic = /\b(?:hidraulica|hidraulico|sistemas? hidraulicos?|neumatica|neumatico)\b/.test(evidence);
+  const electrical = /\b(?:electricidad industrial|fallas? electricas?|motores? electricos?|electromecanica)\b/.test(evidence);
+  const diagnostics = /\b(?:diagnostico|deteccion|resolucion) de fallas?\b/.test(evidence);
+  const maintenance = /\b(?:mantenimiento (?:preventivo|correctivo|industrial|mecanico)|reparacion de (?:equipos|maquinas|maquinaria|autoelevadores?))\b/.test(evidence);
+
+  if (specializedIdentity && materialHandling && (hydraulic || electrical || diagnostics)) return 7;
+  if (materialHandling && maintenance && (mechanicalRole || hydraulic || electrical)) return 6;
+  if (specializedIdentity && industrialEquipment && maintenance) return 6;
+  if (specializedIdentity && (industrialEquipment || hydraulic || electrical)) return 5;
+  if (mechanicalRole && (industrialEquipment || materialHandling || hydraulic)) return 4;
+  if (mechanicalRole && maintenance) return 3;
+  return 0;
 }
 
 function industrialRefrigerationFit(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
@@ -452,6 +491,7 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
       const hasContact = Boolean(candidate.email?.length || candidate.phone?.length);
       const warehouseFit = administrativeWarehouseFit(candidate, interpreted);
       const refrigerationFit = industrialRefrigerationFit(candidate, interpreted);
+      const mechanicFit = industrialMechanicFit(candidate, interpreted);
       const seniorityMatch = interpreted.seniority
         ? normalizeSearchValue(candidateHaystack(candidate)).includes(normalizeSearchValue(interpreted.seniority))
         : true;
@@ -469,6 +509,7 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
         + basicProfileSuitability(candidate, interpreted).bonus
         + (warehouseFit >= 6 ? 24 : warehouseFit === 5 ? 20 : warehouseFit === 4 ? 14 : warehouseFit === 2 ? 6 : warehouseFit < 0 ? -16 : 0)
         + (refrigerationFit >= 6 ? 24 : refrigerationFit === 5 ? 20 : refrigerationFit === 4 ? 16 : refrigerationFit === 3 ? 10 : 0)
+        + (mechanicFit >= 7 ? 28 : mechanicFit === 6 ? 24 : mechanicFit === 5 ? 19 : mechanicFit === 4 ? 13 : mechanicFit === 3 ? 6 : 0)
       )));
       const primaryAligned = primaryRoleMatches(candidate, interpreted);
       const exactSpecializedRole = isAmbulanceDriverQuery(interpreted) && primaryAligned;
@@ -490,14 +531,16 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
         matchCoverage: conceptCoverage,
         primaryRoleAligned: primaryAligned,
         warehouseFit,
-        refrigerationFit
+        refrigerationFit,
+        mechanicFit
       };
     })
-    .sort((a, b) => b.refrigerationFit - a.refrigerationFit
+    .sort((a, b) => b.mechanicFit - a.mechanicFit
+      || b.refrigerationFit - a.refrigerationFit
       || b.warehouseFit - a.warehouseFit
       || Number(b.primaryRoleAligned) - Number(a.primaryRoleAligned)
       || (b.matchCoverage?.ratio ?? 0) - (a.matchCoverage?.ratio ?? 0)
       || b.score - a.score
       || b.qualityScore - a.qualityScore)
-    .map(({ matchCoverage, primaryRoleAligned, warehouseFit, refrigerationFit, ...candidate }) => candidate);
+    .map(({ matchCoverage, primaryRoleAligned, warehouseFit, refrigerationFit, mechanicFit, ...candidate }) => candidate);
 }

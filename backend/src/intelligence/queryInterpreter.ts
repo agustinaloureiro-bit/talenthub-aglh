@@ -16,6 +16,14 @@ const SENIORITY_PATTERNS: Array<[RegExp, string]> = [
 ];
 
 const ROLE_HINTS = [
+  "mecanico industrial",
+  "mecánico industrial",
+  "tecnico electromecanico",
+  "técnico electromecánico",
+  "electromecanico",
+  "electromecánico",
+  "tecnico de mantenimiento industrial",
+  "técnico de mantenimiento industrial",
   "maquinista de refrigeracion",
   "maquinista de refrigeración",
   "tecnico en refrigeracion",
@@ -96,6 +104,18 @@ const SKILL_HINTS = [
   "aire acondicionado",
   "mecanica industrial",
   "mecánica industrial",
+  "mantenimiento mecanico",
+  "mantenimiento mecánico",
+  "equipos industriales",
+  "maquinaria industrial",
+  "hidraulica",
+  "hidráulica",
+  "neumatica",
+  "neumática",
+  "diagnostico de fallas",
+  "diagnóstico de fallas",
+  "baterias industriales",
+  "baterías industriales",
   "mantenimiento preventivo",
   "mantenimiento correctivo",
   "electricidad industrial",
@@ -176,6 +196,12 @@ const SKILL_HINTS = [
 const CONCEPT_PATTERNS: Array<{ pattern: RegExp; skill: string }> = [
   { pattern: /\b(?:refrigeraci[oó]n industrial|sistemas? de refrigeraci[oó]n|m[aá]quinas? de fr[ií]o|generaci[oó]n de fr[ií]o|equipos? de fr[ií]o|frigorista)\b/i, skill: "refrigeracion industrial" },
   { pattern: /\b(?:mantenimiento (?:preventivo|correctivo)|mantenimiento de (?:m[aá]quinas|equipos|sistemas)|mantenimiento industrial)\b/i, skill: "mantenimiento industrial" },
+  { pattern: /\b(?:mec[aá]nica industrial|mec[aá]nico industrial|electromec[aá]nic[oa]|mantenimiento mec[aá]nico)\b/i, skill: "mecanica industrial" },
+  { pattern: /\b(?:autoelevadores?|montacargas|forklifts?|equipos? de movimiento de materiales)\b/i, skill: "autoelevador" },
+  { pattern: /\b(?:sistemas?|fallas?|circuitos?) hidr[aá]ulic[oa]s?|hidr[aá]ulica|neum[aá]tica\b/i, skill: "hidraulica" },
+  { pattern: /\b(?:diagn[oó]stico|detecci[oó]n|resoluci[oó]n) de fallas?\b/i, skill: "diagnostico de fallas" },
+  { pattern: /\b(?:equipos?|m[aá]quinas?|maquinaria) industriales?\b/i, skill: "equipos industriales" },
+  { pattern: /\bbater[ií]as? (?:industriales?|de tracci[oó]n|de autoelevadores?)\b/i, skill: "baterias industriales" },
   { pattern: /\b(?:fre[oó]n|nh3|amon[ií]aco|gases? refrigerantes?)\b/i, skill: "refrigerantes industriales" },
   { pattern: /lider|jefatura|supervis|coordinar (?:un |el )?equipo|manejo de (?:personal|equipos)|personas a cargo/i, skill: "liderazgo" },
   { pattern: /organizad|planific|ordenad|gesti[oó]n del tiempo|seguimiento de tareas/i, skill: "organizacion" },
@@ -236,6 +262,16 @@ function isAdministrativeWarehouseDescription(query: string) {
 function isIndustrialRefrigerationDescription(query: string) {
   const normalized = normalizeHint(query);
   return /\b(?:refrigeracion industrial|sistemas? de refrigeracion|maquinas? de frio|generacion de frio|frigorista|freon|nh3|amoniaco)\b/.test(normalized);
+}
+
+function isIndustrialMechanicDescription(query: string) {
+  const normalized = normalizeHint(query);
+  const mechanicIdentity = /\b(?:mecanico industrial|electromecanico|tecnico (?:mecanico|electromecanico|de mantenimiento)|mecanica industrial)\b/.test(normalized);
+  const industrialContext = /\b(?:industrial|equipos?|maquinas?|maquinaria|autoelevadores?|montacargas|forklift|hidraulica|neumatica|baterias?)\b/.test(normalized);
+  const equipmentMaintenance = /\b(?:reparacion|mantenimiento|diagnostico|fallas?)\b/.test(normalized)
+    && /\b(?:autoelevadores?|montacargas|forklift|equipos? industriales?|maquinas?|maquinaria)\b/.test(normalized);
+  return !isIndustrialRefrigerationDescription(query)
+    && ((mechanicIdentity && industrialContext) || equipmentMaintenance);
 }
 
 function isFieldSalesDescription(query: string) {
@@ -301,6 +337,21 @@ function requiredGroupsForQuery(
       [
         "mantenimiento industrial", "mantenimiento preventivo", "mantenimiento correctivo",
         "mantenimiento de equipos", "mantenimiento de maquinas", "reparacion"
+      ]
+    ];
+  }
+  if (isIndustrialMechanicDescription(query)) {
+    return [
+      [
+        "mecanico industrial", "mecanico", "tecnico mecanico", "electromecanico",
+        "tecnico electromecanico", "tecnico de mantenimiento", "mantenimiento mecanico",
+        "mecanica industrial"
+      ],
+      [
+        "mantenimiento industrial", "mantenimiento preventivo", "mantenimiento correctivo",
+        "reparacion de equipos", "equipos industriales", "maquinaria industrial",
+        "autoelevador", "montacargas", "forklift", "hidraulica", "neumatica",
+        "electricidad industrial", "diagnostico de fallas"
       ]
     ];
   }
@@ -410,6 +461,7 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   const roles = [...new Set([
     ...detectedRoles,
     ...(isIndustrialRefrigerationDescription(normalizedQuery) && detectedRoles.length === 0 ? ["tecnico en refrigeracion"] : []),
+    ...(isIndustrialMechanicDescription(normalizedQuery) && detectedRoles.length === 0 ? ["mecanico industrial"] : []),
     ...(isFieldSalesDescription(normalizedQuery) ? ["vendedor de terreno"] : []),
     ...(isAdministrativeWarehouseDescription(normalizedQuery) ? ["auxiliar de deposito"] : [])
   ])];

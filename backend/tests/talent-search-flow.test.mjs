@@ -199,6 +199,86 @@ Se valora Freón, NH3, electricidad y soldadura. Zona Las Piedras.`);
   assert.deepEqual(ranked.map((candidate) => candidate.id), ["frigorista"]);
 });
 
+test("interpreta mecanica industrial sin exigir cada tecnologia deseable", async () => {
+  const description = `Buscamos un Mecánico Industrial para una empresa de equipos para movimiento de materiales.
+Responsabilidades: reparación y mantenimiento preventivo y correctivo de autoelevadores eléctricos y a combustión.
+Mantenimiento de equipos industriales y baterías. Diagnóstico de fallas mecánicas, hidráulicas y eléctricas.`;
+  const interpreted = interpretTalentQuery(description);
+
+  assert.ok(interpreted.roles.some((role) => /mecanico industrial/i.test(role)));
+  assert.ok(interpreted.skills.includes("mecanica industrial"));
+  assert.ok(interpreted.skills.includes("autoelevador"));
+  assert.ok(interpreted.skills.includes("hidraulica"));
+  assert.ok(interpreted.skills.includes("diagnostico de fallas"));
+  assert.equal(interpreted.requiredGroups.length, 2);
+  assert.ok(interpreted.requiredGroups[0].some((term) => /mecanico|electromecanico/i.test(term)));
+  assert.ok(interpreted.requiredGroups[1].some((term) => /autoelevador|industrial|hidraulica/i.test(term)));
+
+  let providerQuery = "";
+  const engine = new RecruitmentIntelligenceEngine(async (query) => {
+    providerQuery = query;
+    return [];
+  });
+  await engine.search(description);
+  assert.match(providerQuery, /mecanico|electromecanico/i);
+  assert.match(providerQuery, /autoelevador|mantenimiento industrial|hidraulica/i);
+  assert.ok(providerQuery.length < 320);
+});
+
+test("mecanica industrial prioriza autoelevadores y conserva alternativas electromecanicas", () => {
+  const interpreted = interpretTalentQuery(`Mecánico Industrial. Reparación y mantenimiento de autoelevadores y equipos industriales.
+Diagnóstico de fallas mecánicas, hidráulicas y eléctricas.`);
+  const ranked = rerankCandidates([
+    {
+      id: "autoelevadores",
+      fullName: "Mario Pereira",
+      currentRole: "Mecánico de autoelevadores",
+      tags: ["mecanica", "hidraulica", "electricidad"],
+      qualityScore: 70,
+      documentCount: 1,
+      documentSnippet: "Reparación y mantenimiento preventivo de autoelevadores eléctricos y a combustión. Diagnóstico de fallas hidráulicas.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "electromecanico-industrial",
+      fullName: "Luis Rodriguez",
+      currentRole: "Técnico electromecánico",
+      tags: ["mantenimiento industrial"],
+      qualityScore: 75,
+      documentCount: 1,
+      documentSnippet: "Mantenimiento preventivo y correctivo de maquinaria industrial, motores eléctricos y sistemas hidráulicos.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "automotriz",
+      fullName: "Pedro Gomez",
+      currentRole: "Mecánico automotriz",
+      tags: ["mecanica"],
+      qualityScore: 90,
+      documentCount: 1,
+      documentSnippet: "Service y reparación de automóviles particulares.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "electricista-domestico",
+      fullName: "Jose Silva",
+      currentRole: "Electricista domiciliario",
+      tags: ["electricidad"],
+      qualityScore: 90,
+      documentCount: 1,
+      documentSnippet: "Instalaciones eléctricas residenciales.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.deepEqual(ranked.slice(0, 2).map((candidate) => candidate.id), ["autoelevadores", "electromecanico-industrial"]);
+  assert.ok(!ranked.some((candidate) => candidate.id === "electricista-domestico"));
+});
+
 test("una descripcion comercial extensa recupera ventas de terreno sin exigir criterios favorables", async () => {
   const description = `La búsqueda está orientada a un/a vendedor/a de Terreno para el canal de Reventa de Lubricantes.
 La persona será responsable de desarrollar y gestionar la cartera de clientes, trabajando con una estructura definida de actividades y objetivos, incluyendo indicadores de gestión como visitas comerciales y ventas.

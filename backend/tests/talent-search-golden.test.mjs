@@ -169,6 +169,32 @@ Horario: 8:00 a 18:00, lunes a viernes y algún sábado.`,
       })
     ],
     expected: ["ambulancia"]
+  },
+  {
+    name: "mecánica industrial prioriza experiencia en autoelevadores y electromecánica",
+    query: `Mecánico Industrial. Reparación y mantenimiento preventivo y correctivo de autoelevadores.
+Mantenimiento de equipos industriales. Diagnóstico de fallas mecánicas, hidráulicas y eléctricas.`,
+    candidates: [
+      candidate("autoelevadores", {
+        currentRole: "Mecánico de autoelevadores",
+        tags: ["mecanica", "hidraulica", "electricidad"],
+        documentSnippet: "Reparación de autoelevadores eléctricos y a combustión, mantenimiento preventivo y diagnóstico hidráulico."
+      }),
+      candidate("electromecanico", {
+        currentRole: "Técnico electromecánico",
+        tags: ["mantenimiento industrial"],
+        documentSnippet: "Mantenimiento correctivo de maquinaria industrial, motores y sistemas hidráulicos."
+      }),
+      candidate("automotriz", {
+        currentRole: "Mecánico automotriz",
+        documentSnippet: "Reparación y service de automóviles particulares."
+      }),
+      candidate("electricista", {
+        currentRole: "Electricista domiciliario",
+        documentSnippet: "Instalaciones eléctricas residenciales."
+      })
+    ],
+    expected: ["autoelevadores", "electromecanico"]
   }
 ];
 
