@@ -8,7 +8,6 @@ const TALENT_FINDER_STATE_KEY = "talenthub:finder-state:v2";
 
 type TalentFinderSnapshot = {
   query: string;
-  seniority: string;
   source: string;
   location: string;
   contact: string;
@@ -28,7 +27,7 @@ type TalentFinderSnapshot = {
 };
 
 function readTalentFinderSnapshot(): TalentFinderSnapshot {
-  const empty: TalentFinderSnapshot = { query: "", seniority: "", source: "", location: "", contact: "", document: "", minScore: 0, activeOnly: true, recency: "", sort: "relevance", results: [], totalResults: 0, currentPage: 1, searchStatus: "", hasSearched: false, interpretedTerms: [], ignoredCriteria: [] };
+  const empty: TalentFinderSnapshot = { query: "", source: "", location: "", contact: "", document: "", minScore: 0, activeOnly: true, recency: "", sort: "relevance", results: [], totalResults: 0, currentPage: 1, searchStatus: "", hasSearched: false, interpretedTerms: [], ignoredCriteria: [] };
   try {
     const stored = window.sessionStorage.getItem(TALENT_FINDER_STATE_KEY);
     if (!stored) return empty;
@@ -167,15 +166,6 @@ const sourceOptions: FilterOption[] = [
   { value: "aglh", label: "AGLH" }
 ];
 
-const seniorityOptions: FilterOption[] = [
-  { value: "", label: "Todo seniority" },
-  { value: "Junior", label: "Junior" },
-  { value: "Semi-Senior", label: "Semi-Senior" },
-  { value: "Senior", label: "Senior" },
-  { value: "Lead", label: "Lead" },
-  { value: "Manager", label: "Manager" }
-];
-
 const contactOptions: FilterOption[] = [
   { value: "", label: "Cualquier contacto" },
   { value: "phone", label: "Con teléfono" },
@@ -228,15 +218,15 @@ export function App() {
     <div className="flex min-h-screen">
       <aside className="fixed inset-y-0 left-0 w-56 bg-navy text-white">
         <div className="flex h-16 items-center gap-3 border-b border-white/10 px-5">
-          <div className="grid h-9 w-9 place-items-center rounded-md bg-teal font-extrabold">TH</div>
+          <div className="brand-mark">TH</div>
           <div>
             <div className="text-sm font-bold">Talent Hub</div>
-            <div className="text-xs text-white/50">AGLH</div>
+            <div className="flex items-center gap-2 text-xs"><span className="text-lime-300">AGLH</span><span className="text-violet-300">Yoiners</span></div>
           </div>
         </div>
         <nav className="p-3">
           {nav.map(([key, Icon, label]) => (
-            <button key={key} onClick={() => navigateTo(key)} className={`mb-1 flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm ${page === key || (page === "candidate" && key === candidateReturnPage) ? "bg-white/10 text-white" : "text-white/65 hover:bg-white/5"}`}>
+            <button key={key} onClick={() => navigateTo(key)} className={`mb-1 flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm ${page === key || (page === "candidate" && key === candidateReturnPage) ? "bg-white/10 text-white" : "text-white/65 hover:bg-white/5"}`}>
               <Icon size={17} /> {label}
             </button>
           ))}
@@ -281,7 +271,7 @@ function Login() {
     <div className="grid min-h-screen place-items-center bg-canvas p-4">
       <div className="card w-full max-w-sm p-6">
         <div className="mb-6 flex items-center gap-3">
-          <div className="grid h-10 w-10 place-items-center rounded-md bg-navy font-extrabold text-white">TH</div>
+          <div className="brand-mark h-10 w-10">TH</div>
           <div><h1 className="font-bold">Talent Hub AGLH</h1><p className="text-sm text-slate-500">Acceso interno</p></div>
         </div>
         {error && <ErrorBox message={error} />}
@@ -293,13 +283,47 @@ function Login() {
   );
 }
 
+function SyncAllButton({ onComplete, compact = false }: { onComplete?: () => void; compact?: boolean }) {
+  const [syncing, setSyncing] = useState(false);
+  const [message, setMessage] = useState("");
+
+  async function syncAll() {
+    setSyncing(true);
+    setMessage("Sincronizando las fuentes conectadas...");
+    try {
+      const response = await api<{ meta?: { sources?: number; imported?: number; errors?: number } }>("/integrations/sync-all", {
+        method: "POST",
+        timeoutMs: 120_000
+      });
+      const sources = Number(response.meta?.sources ?? 0);
+      const imported = Number(response.meta?.imported ?? 0);
+      const errors = Number(response.meta?.errors ?? 0);
+      setMessage(`${sources} fuentes actualizadas · ${imported} candidatos nuevos o actualizados${errors ? ` · ${errors} pendientes` : ""}`);
+      onComplete?.();
+    } catch (error: any) {
+      setMessage(error.message || "No se pudo completar la sincronización.");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  return (
+    <div className={compact ? "flex flex-wrap items-center gap-2" : "flex flex-wrap items-center gap-3"}>
+      <button className="btn-sync" onClick={syncAll} disabled={syncing}>
+        <RotateCcw className={syncing ? "animate-spin" : ""} size={16} />
+        {syncing ? "Sincronizando..." : "Sincronizar fuentes"}
+      </button>
+      {message && <span className="max-w-xl text-xs text-slate-500">{message}</span>}
+    </div>
+  );
+}
+
 function Candidates({ onView }: { onView: (id: string) => void }) {
   const [items, setItems] = useState<Candidate[]>([]);
   const [search, setSearch] = useState("");
   const [source, setSource] = useState("");
   const [contact, setContact] = useState("");
   const [location, setLocation] = useState("");
-  const [seniority, setSeniority] = useState("");
   const [document, setDocument] = useState("");
   const [status, setStatus] = useState("active");
   const [recency, setRecency] = useState("");
@@ -311,7 +335,7 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [meta, setMeta] = useState<{ total: number; databaseTotal: number; returned: number; limit: number; offset: number } | null>(null);
-  const load = async (nextPage = page, filters = { search, source, contact, location, seniority, document, status, recency, sort }) => {
+  const load = async (nextPage = page, filters = { search, source, contact, location, document, status, recency, sort }) => {
     setLoading(true);
     setError("");
     try {
@@ -329,13 +353,12 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
   };
   useEffect(() => { load(); }, []);
   function resetFilters() {
-    setSearch(""); setSource(""); setContact(""); setLocation(""); setSeniority(""); setDocument(""); setStatus("active"); setRecency(""); setSort("updated");
-    load(0, { search: "", source: "", contact: "", location: "", seniority: "", document: "", status: "active", recency: "", sort: "updated" });
+    setSearch(""); setSource(""); setContact(""); setLocation(""); setDocument(""); setStatus("active"); setRecency(""); setSort("updated");
+    load(0, { search: "", source: "", contact: "", location: "", document: "", status: "active", recency: "", sort: "updated" });
   }
   const filterSetters: Record<string, (value: string) => void> = {
     search: setSearch,
     location: setLocation,
-    seniority: setSeniority,
     source: setSource,
     contact: setContact,
     document: setDocument,
@@ -344,11 +367,10 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
     sort: setSort
   };
   const updateFilter = (key: string, value: string | number) => filterSetters[key]?.(String(value));
-  const filterValues = { search, source, contact, location, seniority, document, status, recency, sort };
+  const filterValues = { search, source, contact, location, document, status, recency, sort };
   const primaryFields: FilterField[] = [
     { key: "search", type: "text", placeholder: "Buscar por nombre, experiencia, rol o contacto" },
-    { key: "location", type: "text", placeholder: "Ciudad o país" },
-    { key: "seniority", type: "select", options: seniorityOptions }
+    { key: "location", type: "text", placeholder: "Ciudad o país" }
   ];
   const secondaryFields: FilterField[] = [
     { key: "source", type: "select", options: sourceOptions },
@@ -361,7 +383,7 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
   return (
     <PagePad>
       <section className="card mb-4 p-4">
-      <FilterControls fields={primaryFields} values={filterValues} onChange={updateFilter} onEnter={() => load(0)} className="grid gap-2 lg:grid-cols-[minmax(280px,1fr)_180px_180px]" />
+      <FilterControls fields={primaryFields} values={filterValues} onChange={updateFilter} onEnter={() => load(0)} className="grid gap-2 lg:grid-cols-[minmax(320px,1fr)_220px]" />
       <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-[150px_170px_150px_165px_170px_170px_auto_auto]">
         <FilterControls fields={secondaryFields} values={filterValues} onChange={updateFilter} className="contents" />
         <button className="btn-primary" onClick={() => load(0)} disabled={loading}><Search size={16} /> {loading ? "Buscando..." : "Aplicar filtros"}</button>
@@ -369,6 +391,7 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
       </div>
       </section>
       <div className="mb-4 flex flex-wrap gap-2">
+        <SyncAllButton onComplete={() => load(0)} />
         <button className="btn-ghost" onClick={() => setShowImport(!showImport)}><Database size={16} /> Importar candidatos</button>
         <button className="btn-primary" onClick={() => setShowForm(!showForm)}><Plus size={16} /> Nuevo candidato</button>
       </div>
@@ -459,7 +482,7 @@ function CandidateImportPanel({ onImported }: { onImported: () => void }) {
 }
 
 function CandidateForm({ onSaved }: { onSaved: () => void }) {
-  const [form, setForm] = useState({ fullName: "", currentRole: "", city: "", country: "", email: "", phone: "", seniority: "", years: 0, tags: "", summary: "", qualityScore: 0 });
+  const [form, setForm] = useState({ fullName: "", currentRole: "", city: "", country: "", email: "", phone: "", years: 0, tags: "", summary: "", qualityScore: 0 });
   const [error, setError] = useState("");
   async function save(e: FormEvent) {
     e.preventDefault();
@@ -478,7 +501,6 @@ function CandidateForm({ onSaved }: { onSaved: () => void }) {
       <Input label="País" value={form.country} onChange={(v) => setForm({ ...form, country: v })} />
       <Input label="Emails separados por coma" value={form.email} onChange={(v) => setForm({ ...form, email: v })} />
       <Input label="Teléfonos separados por coma" value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} />
-      <Input label="Seniority" value={form.seniority} onChange={(v) => setForm({ ...form, seniority: v })} />
       <Input label="Años" type="number" value={String(form.years)} onChange={(v) => setForm({ ...form, years: Number(v) })} />
       <Input label="Tags separados por coma" value={form.tags} onChange={(v) => setForm({ ...form, tags: v })} />
       <div className="md:col-span-2"><label className="label">Resumen</label><textarea className="field" value={form.summary} onChange={(e) => setForm({ ...form, summary: e.target.value })} /></div>
@@ -490,7 +512,6 @@ function CandidateForm({ onSaved }: { onSaved: () => void }) {
 function TalentFinder({ onView }: { onView: (id: string) => void }) {
   const [snapshot] = useState(readTalentFinderSnapshot);
   const [query, setQuery] = useState(snapshot.query);
-  const [seniority, setSeniority] = useState(snapshot.seniority);
   const [source, setSource] = useState(snapshot.source);
   const [location, setLocation] = useState(snapshot.location);
   const [contact, setContact] = useState(snapshot.contact);
@@ -511,8 +532,8 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
 
   useEffect(() => {
     const previous = readTalentFinderSnapshot();
-    window.sessionStorage.setItem(TALENT_FINDER_STATE_KEY, JSON.stringify({ query, seniority, source, location, contact, document, minScore, activeOnly, recency, sort, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms, ignoredCriteria, scrollY: previous.scrollY ?? 0 }));
-  }, [query, seniority, source, location, contact, document, minScore, activeOnly, recency, sort, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms, ignoredCriteria]);
+    window.sessionStorage.setItem(TALENT_FINDER_STATE_KEY, JSON.stringify({ query, source, location, contact, document, minScore, activeOnly, recency, sort, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms, ignoredCriteria, scrollY: previous.scrollY ?? 0 }));
+  }, [query, source, location, contact, document, minScore, activeOnly, recency, sort, results, totalResults, currentPage, searchStatus, hasSearched, interpretedTerms, ignoredCriteria]);
 
   useEffect(() => {
     if (!snapshot.scrollY) return;
@@ -537,7 +558,7 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
     }
     setSearchStatus("Buscando en los candidatos ya procesados...");
     try {
-      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[]; locations?: string[]; ignoredCriteria?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean } }>("/search/talent", { method: "POST", timeoutMs: 20_000, body: JSON.stringify({ query, page, pageSize: 50, filters: { seniority: seniority || undefined, source: source ? [source] : undefined, location: location || undefined, contact: contact || undefined, document: document || undefined, minScore: minScore || undefined, activeOnly, recency: recency || undefined, sort } }) });
+      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[]; locations?: string[]; ignoredCriteria?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean } }>("/search/talent", { method: "POST", timeoutMs: 20_000, body: JSON.stringify({ query, page, pageSize: 50, filters: { source: source ? [source] : undefined, location: location || undefined, contact: contact || undefined, document: document || undefined, minScore: minScore || undefined, activeOnly, recency: recency || undefined, sort } }) });
       setResults((previous) => append
         ? [...new Map([...previous, ...response.data].map((candidate) => [candidate.id, candidate])).values()]
         : response.data);
@@ -563,7 +584,6 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
   const filterSetters: Record<string, (value: string | number) => void> = {
     source: (value) => setSource(String(value)),
     location: (value) => setLocation(String(value)),
-    seniority: (value) => setSeniority(String(value)),
     contact: (value) => setContact(String(value)),
     document: (value) => setDocument(String(value)),
     minScore: (value) => setMinScore(Number(value)),
@@ -573,7 +593,6 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
   const finderFields: FilterField[] = [
     { key: "source", type: "select", options: sourceOptions },
     { key: "location", type: "text", placeholder: "Ciudad o país" },
-    { key: "seniority", type: "select", options: seniorityOptions },
     { key: "contact", type: "select", options: contactOptions },
     { key: "document", type: "select", options: [{ value: "", label: "Cualquier CV" }, { value: "pdf", label: "CV en PDF" }, { value: "word", label: "CV en Word" }] },
     { key: "minScore", type: "select", parse: Number, options: [{ value: "0", label: "Toda coincidencia" }, { value: "60", label: "60% o más" }, { value: "70", label: "70% o más" }, { value: "80", label: "80% o más" }, { value: "90", label: "90% o más" }] },
@@ -587,16 +606,16 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
         <textarea className="field min-h-28" placeholder="Ejemplo: auxiliar administrativo con experiencia en facturación y atención al cliente" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") run(1, false); }} />
         <FilterControls
           fields={finderFields}
-          values={{ source, location, seniority, contact, document, minScore, recency, sort }}
+          values={{ source, location, contact, document, minScore, recency, sort }}
           onChange={(key, value) => filterSetters[key]?.(value)}
-          className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8"
+          className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-7"
         />
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={activeOnly} onChange={(e) => setActiveOnly(e.target.checked)} /> Solo activos</label>
-          <button className="btn-primary ml-auto" onClick={() => run(1, false)} disabled={!query.trim() || loading}><Search size={16} /> {loading ? "Buscando..." : "Buscar candidatos"}</button>
+          <div className="ml-auto flex flex-wrap gap-2"><SyncAllButton compact /><button className="btn-primary" onClick={() => run(1, false)} disabled={!query.trim() || loading}><Search size={16} /> {loading ? "Buscando..." : "Buscar candidatos"}</button></div>
         </div>
       </section>
-      {searchStatus && <div className="mb-3 rounded-md border border-slate-200 bg-white p-3 text-sm text-slate-600">{searchStatus}</div>}
+      {searchStatus && <div className="mb-3 rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-600">{searchStatus}</div>}
       {hasSearched && ignoredCriteria.length > 0 && <div className="mb-3 rounded-md border border-slate-200 bg-white p-3 text-sm text-slate-600">Los criterios personales sensibles no se usan para filtrar candidatos. El ranking se basa en ubicación, experiencia y adecuación laboral.</div>}
       {hasSearched && interpretedTerms.length > 0 && <div className="mb-3 flex flex-wrap items-center gap-2 border-y border-slate-200 bg-white px-3 py-3 text-sm"><span className="font-semibold text-slate-600">La búsqueda entendió:</span>{interpretedTerms.map((term) => <span key={term} className="rounded-full bg-teal/10 px-2 py-1 text-xs font-semibold text-teal">{term}</span>)}</div>}
       {hasSearched && <div className="mb-3 text-sm text-slate-500">Mostrando {results.length} de {totalResults} candidatos relacionados · {sort === "recent" ? "CV más recientes primero" : sort === "oldest" ? "CV más antiguos primero" : sort === "name" ? "orden alfabético" : "ordenados por compatibilidad, priorizando actividad reciente entre perfiles similares"}</div>}
@@ -639,7 +658,7 @@ function CandidateProfile({ id, canEdit }: { id: string; canEdit: boolean }) {
       {tab === "formacion" && <ChildList rows={data.education} empty="Sin formación registrada." fields={["institution", "degree", "field", "start_year", "end_year"]} canEdit={canEdit} kind="education" id={id} onSaved={load} />}
       {tab === "documentos" && <ChildList rows={documents} empty="Sin documentos registrados." fields={["type", "file_name", "source_type", "created_at"]} canEdit={canEdit} kind="documents" id={id} onSaved={load} />}
       {tab === "procesos" && <ChildList rows={data.processes} empty="Sin procesos registrados." fields={["process_name", "client", "stage", "event_date"]} canEdit={canEdit} kind="processes" id={id} onSaved={load} />}
-      {tab === "ia" && <div className="grid gap-4 md:grid-cols-3"><InfoCard title="Fortalezas" text={c.strengths?.join("\n") || "Sin fortalezas registradas."} /><InfoCard title="Áreas de oportunidad" text={c.weaknesses?.join("\n") || "Sin áreas registradas."} /><InfoCard title="Seniority" text={`${c.seniority || "Sin estimación"} ${c.years ? `· ${c.years} años` : ""}`} /></div>}
+      {tab === "ia" && <div className="grid gap-4 md:grid-cols-2"><InfoCard title="Fortalezas" text={c.strengths?.join("\n") || "Sin fortalezas registradas."} /><InfoCard title="Áreas de oportunidad" text={c.weaknesses?.join("\n") || "Sin áreas registradas."} /></div>}
     </PagePad>
   );
 }
@@ -1320,7 +1339,7 @@ function CvPreviewModal({ candidate, onClose, onView }: { candidate: Candidate; 
   const isImage = mimeType.startsWith("image/");
   const extractedText = cleanDisplayText(candidate.documentSnippet);
   return <div className="fixed inset-0 z-50 bg-slate-950/60 p-3 md:p-5" role="dialog" aria-modal="true" aria-label={`CV de ${candidate.fullName}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <div className="mx-auto flex h-full max-w-7xl flex-col overflow-hidden rounded-md bg-white shadow-2xl">
+    <div className="mx-auto flex h-full max-w-7xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
       <header className="flex items-start justify-between gap-4 border-b border-slate-200 px-4 py-3 md:px-5">
         <div className="min-w-0"><div className="truncate text-lg font-extrabold text-slate-900">{candidate.fullName}</div><div className="truncate text-sm text-slate-500">{candidate.currentRole || "Perfil sin rol definido"} · {fileName}</div></div>
         <button className="btn-ghost shrink-0" onClick={onClose} title="Cerrar vista previa" aria-label="Cerrar vista previa"><X size={18} /></button>
@@ -1362,7 +1381,16 @@ function CandidateRow({ candidate, onView, onPreview, reason, matchScore }: { ca
   const whatsappUrl = candidate.phone?.[0] ? whatsappUrlForPhone(candidate.phone[0]) : null;
   const summary = cleanDisplayText(candidate.summary);
   const submitted = candidate.latestSourceAt ? new Date(candidate.latestSourceAt).toLocaleDateString("es-UY") : "";
-  return <div className="card flex flex-wrap items-start justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div>{candidate.status === "needs_review" && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">Revisar datos</span>}</div><div className="truncate text-sm text-slate-500">{role} · {location}{candidate.years ? ` · ${candidate.years} años declarados` : ""}</div>{summary && <p className="mt-2 max-w-3xl text-sm leading-5 text-slate-700">{shortText(summary, 260)}</p>}<div className="mt-2 flex flex-wrap items-center gap-2">{documents > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600"><FileText size={13} /> {documents} CV/doc</span>}{candidate.primaryDocumentName && <span className="max-w-sm truncate text-xs text-slate-500">{shortText(candidate.primaryDocumentName, 70)}</span>}{whatsappUrl && <a className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:underline" href={whatsappUrl} target="_blank" rel="noreferrer" title="Abrir conversación en WhatsApp"><MessageCircle size={13} /> {shortText(candidate.phone[0], 35)}</a>}{candidate.email?.[0] && <a className="max-w-xs truncate text-xs text-slate-500 hover:underline" href={`mailto:${candidate.email[0]}`}>{shortText(candidate.email[0], 45)}</a>}{submitted && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">CV recibido {submitted}</span>}</div><div className="mt-2 flex flex-wrap gap-1">{(candidate.sourceTypes ?? []).map((source) => <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600" key={source}>{source}</span>)}</div><TagList tags={candidate.tags ?? []} />{reason && <p className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{shortText(reason, 240)}</p>}</div></div><div className="flex shrink-0 items-center gap-3">{typeof matchScore === "number" && <MatchScore score={matchScore} />}<div className="grid gap-2">{onPreview && documents > 0 && <button className="btn-primary justify-center" onClick={onPreview}><Eye size={16} /> Ver CV</button>}<button className="btn-ghost justify-center" onClick={() => onView(candidate.id)}>Ver ficha</button></div></div></div>;
+  return <div className="card candidate-card flex flex-wrap items-start justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div>{candidate.status === "needs_review" && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">Revisar datos</span>}</div><div className="truncate text-sm text-slate-500">{role} · {location}{candidate.years ? ` · ${candidate.years} años declarados` : ""}</div>{summary && <p className="mt-2 max-w-3xl text-sm leading-5 text-slate-700">{shortText(summary, 260)}</p>}<div className="mt-2 flex flex-wrap items-center gap-2">{documents > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600"><FileText size={13} /> {documents} CV/doc</span>}{candidate.primaryDocumentName && <span className="max-w-sm truncate text-xs text-slate-500">{shortText(candidate.primaryDocumentName, 70)}</span>}{whatsappUrl && <a className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:underline" href={whatsappUrl} target="_blank" rel="noreferrer" title="Abrir conversación en WhatsApp"><MessageCircle size={13} /> {shortText(candidate.phone[0], 35)}</a>}{candidate.email?.[0] && <a className="max-w-xs truncate text-xs text-slate-500 hover:underline" href={`mailto:${candidate.email[0]}`}>{shortText(candidate.email[0], 45)}</a>}{submitted && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">CV recibido {submitted}</span>}</div><div className="mt-2 flex flex-wrap gap-1">{(candidate.sourceTypes ?? []).map((source) => <span className={sourceBadgeClass(source)} key={source}>{source}</span>)}</div><TagList tags={candidate.tags ?? []} />{reason && <p className="match-reason mt-2 px-3 py-2 text-xs">{shortText(reason, 240)}</p>}</div></div><div className="flex shrink-0 items-center gap-3">{typeof matchScore === "number" && <MatchScore score={matchScore} />}<div className="grid gap-2">{onPreview && documents > 0 && <button className="btn-primary justify-center" onClick={onPreview}><Eye size={16} /> Ver CV</button>}<button className="btn-ghost justify-center" onClick={() => onView(candidate.id)}>Ver ficha</button></div></div></div>;
+}
+
+function sourceBadgeClass(source: string) {
+  const normalized = source.toLowerCase();
+  if (normalized.includes("aglh")) return "source-badge source-aglh";
+  if (normalized.includes("yoiners")) return "source-badge source-yoiners";
+  if (normalized.includes("gmail")) return "source-badge source-gmail";
+  if (normalized.includes("buscojobs")) return "source-badge source-buscojobs";
+  return "source-badge source-default";
 }
 
 type InputProps = {
@@ -1381,9 +1409,9 @@ function PagePad({ children }: { children: ReactNode }) { return <div className=
 function Empty({ text }: { text: string }) { return <div className="card flex items-center gap-2 p-5 text-sm text-slate-500"><Database size={16} /> {text}</div>; }
 function ErrorBox({ message }: { message: string }) { return <div className="mb-3 flex items-center gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700"><AlertCircle size={16} /> {message}</div>; }
 function Skeleton() { return <div className="card h-40 animate-pulse bg-slate-100" />; }
-function Avatar({ name, small = false }: { name: string; small?: boolean }) { const initials = name.split(" ").map((x) => x[0]).join("").slice(0, 2).toUpperCase(); return <div className={`grid shrink-0 place-items-center rounded-md bg-teal font-bold text-white ${small ? "h-10 w-10" : "h-16 w-16 text-xl"}`}>{initials || <UserRound />}</div>; }
-function TagList({ tags }: { tags: string[] }) { const visible = tags.filter((tag) => tag && tag.length <= 40).slice(0, 4); return <div className="mt-2 flex flex-wrap gap-1">{visible.map((t) => <span className="rounded-full bg-teal/10 px-2 py-0.5 text-xs font-semibold text-teal" key={t}>{shortText(t, 32)}</span>)}</div>; }
-function MatchScore({ score }: { score: number }) { return <div className="min-w-28" title="Compatibilidad calculada únicamente para la búsqueda actual"><div className="mb-1 text-right text-xs font-semibold text-slate-500">Coincidencia</div><div className="text-right text-lg font-extrabold text-slate-800">{score}%</div><div className="h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-teal" style={{ width: `${Math.max(0, Math.min(100, score))}%` }} /></div></div>; }
+function Avatar({ name, small = false }: { name: string; small?: boolean }) { const initials = name.split(" ").map((x) => x[0]).join("").slice(0, 2).toUpperCase(); return <div className={`grid shrink-0 place-items-center rounded-full bg-violet-600 font-bold text-white ring-4 ring-lime-200/70 ${small ? "h-10 w-10" : "h-16 w-16 text-xl"}`}>{initials || <UserRound />}</div>; }
+function TagList({ tags }: { tags: string[] }) { const visible = tags.filter((tag) => tag && tag.length <= 40).slice(0, 4); return <div className="mt-2 flex flex-wrap gap-1">{visible.map((t) => <span className="rounded-full bg-lime-100 px-2 py-0.5 text-xs font-semibold text-violet-800" key={t}>{shortText(t, 32)}</span>)}</div>; }
+function MatchScore({ score }: { score: number }) { return <div className="min-w-28" title="Compatibilidad calculada únicamente para la búsqueda actual"><div className="mb-1 text-right text-xs font-semibold text-slate-500">Coincidencia</div><div className="text-right text-lg font-extrabold text-violet-700">{score}%</div><div className="h-2 rounded-full bg-lime-100"><div className="h-2 rounded-full bg-violet-600" style={{ width: `${Math.max(0, Math.min(100, score))}%` }} /></div></div>; }
 function InfoCard({ title, text }: { title: string; text: string }) { return <div className="card whitespace-pre-line p-4"><h3 className="mb-2 font-bold">{title}</h3><p className="text-sm text-slate-600">{text}</p></div>; }
 function Table({ title, rows, empty, columns }: any) { return <div className="card overflow-hidden"><div className="border-b border-slate-200 p-4 font-bold">{title}</div>{rows.length === 0 ? <div className="p-4 text-sm text-slate-500">{empty}</div> : <div className="overflow-auto"><table className="w-full text-left text-sm"><thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>{columns.map((c: string) => <th className="px-4 py-2" key={c}>{c}</th>)}</tr></thead><tbody>{rows.map((r: any) => <tr className="border-t border-slate-100" key={r.id}>{columns.map((c: string) => <td className={`px-4 py-2 align-top ${c === "message" || c === "reason" ? "max-w-xl whitespace-normal break-words text-xs leading-relaxed" : "whitespace-nowrap"}`} key={c} title={String(r[c] ?? "")}>{c === "message" || c === "reason" ? shortText(String(r[c] ?? ""), 220) : String(r[c] ?? "")}</td>)}</tr>)}</tbody></table></div>}</div>; }
 function list(value: string) { return value.split(",").map((x) => x.trim()).filter(Boolean); }

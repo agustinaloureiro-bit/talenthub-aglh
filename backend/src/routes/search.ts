@@ -197,7 +197,7 @@ function mergeRankedMatches(...groups: RankedCandidateMatch[][]) {
   }
   return [...merged.values()]
     .sort((left, right) => right.rank - left.rank)
-    .slice(0, 350);
+    .slice(0, 500);
 }
 
 async function findProfileMatches(candidateFilter: string, params: unknown[], queryParameter: 2 | 3, timeoutMs: number) {
@@ -248,7 +248,7 @@ async function findDocumentMatches(candidateFilter: string, params: unknown[]) {
            coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')
          ) @@ search_terms.query
        ORDER BY rank DESC
-       LIMIT 750
+       LIMIT 1000
      ), unique_matches AS MATERIALIZED (
        SELECT DISTINCT ON (raw_matches.id)
          raw_matches.id,
@@ -263,10 +263,20 @@ async function findDocumentMatches(candidateFilter: string, params: unknown[]) {
      SELECT id, rank, matched_document_id
      FROM unique_matches
      ORDER BY rank DESC
-     LIMIT 250`,
+     LIMIT 400`,
     params,
-    2_000
+    2_500
   );
+}
+
+async function searchRows(operation: () => Promise<{ rows: RankedCandidateMatch[] }>) {
+  try {
+    return (await operation()).rows;
+  } catch (error: any) {
+    // A slow retrieval pass must not cancel the other independent search passes.
+    if (error?.code === "57014") return [];
+    throw error;
+  }
 }
 
 async function hydrateCandidateMatches(matches: RankedCandidateMatch[]) {
@@ -356,30 +366,12 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     params.push(new Date(Date.now() - recencyDays * 86_400_000).toISOString());
     candidateFilter += ` AND EXISTS (SELECT 1 FROM candidate_sources recent_source WHERE recent_source.candidate_id=c.id AND recent_source.is_active=true AND recent_source.source_created_at >= $${params.length}::timestamptz)`;
   }
-  let plannedMatches: RankedCandidateMatch[] = [];
-  let broadMatches: RankedCandidateMatch[] = [];
-  let documentMatches: RankedCandidateMatch[] = [];
-  try {
-    ({ rows: plannedMatches } = await findProfileMatches(candidateFilter, params, 2, 2_500));
-  } catch (error: any) {
-    if (error?.code !== "57014") throw error;
-  }
-  if (plannedMatches.length < 120) {
-    try {
-      ({ rows: broadMatches } = await findProfileMatches(candidateFilter, params, 3, 2_500));
-    } catch (error: any) {
-      if (error?.code !== "57014") throw error;
-    }
-  }
-  const profileMatches = mergeRankedMatches(plannedMatches, broadMatches);
-  if (profileMatches.length < 80) {
-    try {
-      ({ rows: documentMatches } = await findDocumentMatches(candidateFilter, params));
-    } catch (error: any) {
-      if (error?.code !== "57014") throw error;
-    }
-  }
-  const matches = mergeRankedMatches(profileMatches, documentMatches);
+  const [plannedMatches, broadMatches, documentMatches] = await Promise.all([
+    searchRows(() => findProfileMatches(candidateFilter, params, 2, 2_500)),
+    searchRows(() => findProfileMatches(candidateFilter, params, 3, 2_500)),
+    searchRows(() => findDocumentMatches(candidateFilter, params))
+  ]);
+  const matches = mergeRankedMatches(plannedMatches, broadMatches, documentMatches);
   const { rows } = await hydrateCandidateMatches(matches);
   return rows.map((row) => {
     const cvResidence = extractCvResidence(row.document_snippet ?? "");
