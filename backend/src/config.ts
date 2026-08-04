@@ -25,7 +25,7 @@ export function isAllowedGoogleEmail(email: string) {
 }
 
 function required(key: string) {
-  const value = process.env[key];
+  const value = process.env[key]?.trim();
   if (!value) throw new Error(`Missing required env var ${key}`);
   return value;
 }
