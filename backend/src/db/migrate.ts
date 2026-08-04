@@ -1,8 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import bcrypt from "bcryptjs";
 import { fileURLToPath } from "node:url";
-import { config } from "../config.js";
 import { pool } from "./pool.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -37,13 +35,6 @@ async function migrate() {
     }
   }
 
-  const passwordHash = await bcrypt.hash(config.adminPassword, 12);
-  await pool.query(
-    `INSERT INTO users (name, email, password_hash, role)
-     VALUES ($1, lower($2), $3, 'admin')
-     ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name, password_hash = EXCLUDED.password_hash, role = 'admin', is_active = true, updated_at = now()`,
-    [config.adminName, config.adminEmail, passwordHash]
-  );
 }
 
 migrate()

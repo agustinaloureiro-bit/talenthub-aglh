@@ -3674,7 +3674,7 @@ integrationsRouter.patch("/:id", requireRole("admin"), asyncHandler(async (req, 
   res.json({ data: { ...rows[0], config: maskConfig(rows[0].config) } });
 }));
 
-integrationsPublicRouter.get("/google/callback", asyncHandler(async (req, res) => {
+integrationsPublicRouter.get("/google/callback", requireRole("admin"), asyncHandler(async (req, res) => {
   const id = String(req.query.state ?? "");
   const code = cleanText(req.query.code);
   if (id !== "gmail" || !code) {

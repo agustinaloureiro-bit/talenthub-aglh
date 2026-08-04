@@ -9,16 +9,16 @@ services:
     envVars:
       - key: DATABASE_URL
         sync: false
-      - key: JWT_SECRET
+      - key: SESSION_SECRET
         generateValue: true
-      - key: JWT_EXPIRES_IN
-        value: 8h
-      - key: ADMIN_EMAIL
-        value: admin@aglh.com
-      - key: ADMIN_PASSWORD
+      - key: GOOGLE_CLIENT_ID
         sync: false
-      - key: ADMIN_NAME
-        value: Administrador AGLH
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_CALLBACK_URL
+        value: https://talenthub-aglh.onrender.com/api/auth/google/callback
+      - key: ALLOWED_GOOGLE_DOMAINS
+        value: aglh.com.uy,yoiners.com
       - key: CORS_ORIGIN
         value: https://talenthub-aglh.onrender.com
       - key: SERVE_STATIC

@@ -3,7 +3,7 @@
 ## Despliegue con Docker Compose
 
 1. Crear archivo `.env` desde `.env.example`.
-2. Cambiar `JWT_SECRET`, `POSTGRES_PASSWORD` y credenciales del administrador.
+2. Configurar `SESSION_SECRET`, las credenciales OAuth de Google y `POSTGRES_PASSWORD`.
 3. Ejecutar:
 
 ```bash
@@ -34,6 +34,7 @@ docker compose down -v
 
 - Usar secretos fuertes en `.env`.
 - Colocar el frontend detrás de HTTPS.
-- Restringir `CORS_ORIGIN` al dominio real.
+- Configurar en Google Cloud el callback exacto `https://talenthub-aglh.onrender.com/api/auth/google/callback`.
+- Limitar `ALLOWED_GOOGLE_DOMAINS` a `aglh.com.uy,yoiners.com`.
 - Configurar backups del volumen o usar PostgreSQL administrado compatible con pgvector.
-- Rotar `ADMIN_PASSWORD` luego del primer ingreso si se usa una contraseña temporal.
+- No habilitar accesos alternativos por contraseña.

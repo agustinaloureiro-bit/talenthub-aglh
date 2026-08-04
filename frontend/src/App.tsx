@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { AlertCircle, Briefcase, CheckCircle2, ChevronLeft, Database, Download, ExternalLink, Eye, FileText, GraduationCap, Languages, LogOut, Mail, MapPin, MessageCircle, Plug, Plus, RotateCcw, Save, Search, Settings, UserRound, Users, X } from "lucide-react";
-import { API_URL, api, authHeaders, currentUser, login, logout, type User } from "./lib/api";
+import { API_URL, api, authHeaders, loadCurrentUser, loginWithGoogle, logout, type User } from "./lib/api";
 
 type Page = "finder" | "candidates" | "candidate" | "integrations" | "settings";
 
@@ -199,12 +199,17 @@ const nav = [
 ] as const;
 
 export function App() {
-  const [user, setUser] = useState<User | null>(currentUser());
+  const [user, setUser] = useState<User | null | undefined>(undefined);
   const [page, setPage] = useState<Page>("finder");
   const [candidateId, setCandidateId] = useState<string | null>(null);
   const [candidateReturnPage, setCandidateReturnPage] = useState<Page>("candidates");
 
-  if (!user) return <Login onLogin={setUser} />;
+  useEffect(() => {
+    loadCurrentUser().then(setUser).catch(() => setUser(null));
+  }, []);
+
+  if (user === undefined) return <div className="grid min-h-screen place-items-center bg-canvas text-sm text-slate-500">Verificando acceso...</div>;
+  if (!user) return <Login />;
 
   const openCandidate = (id: string) => {
     setCandidateId(id);
@@ -244,8 +249,9 @@ export function App() {
             <h1 className="text-lg font-bold">{titleFor(page)}</h1>
           </div>
           <div className="flex items-center gap-3 text-sm">
+            {user.avatarUrl && <img src={user.avatarUrl} alt="" className="h-8 w-8 rounded-full" referrerPolicy="no-referrer" />}
             <span className="text-slate-500">{user.name} · {user.role}</span>
-            <button className="btn-ghost" onClick={() => { clearTalentFinderSnapshot(); logout(); setUser(null); }}><LogOut size={16} /></button>
+            <button className="btn-ghost" onClick={async () => { clearTalentFinderSnapshot(); await logout(); setUser(null); window.location.assign("/login"); }}><LogOut size={16} /></button>
           </div>
         </header>
         {page === "finder" && <TalentFinder onView={openCandidate} />}
@@ -262,31 +268,27 @@ function titleFor(page: Page) {
   return ({ finder: "Talent Finder", candidates: "Candidatos", candidate: "Ficha de candidato", integrations: "Integraciones", settings: "Configuración" } as Record<Page, string>)[page];
 }
 
-function Login({ onLogin }: { onLogin: (user: User) => void }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  async function submit(e: FormEvent) {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
-    try { onLogin(await login(email, password)); } catch (err: any) { setError(err.message); } finally { setLoading(false); }
-  }
+function Login() {
+  const errorCode = new URLSearchParams(window.location.search).get("auth_error");
+  const error = errorCode === "domain"
+    ? "Acceso no autorizado. Usá una cuenta de aglh.com.uy o yoiners.com."
+    : errorCode === "inactive"
+      ? "Tu usuario está desactivado. Contactá a un administrador."
+      : errorCode === "oauth"
+        ? "Google no pudo validar el acceso. Volvé a intentarlo."
+        : "";
   return (
     <div className="grid min-h-screen place-items-center bg-canvas p-4">
-      <form onSubmit={submit} className="card w-full max-w-sm p-6">
+      <div className="card w-full max-w-sm p-6">
         <div className="mb-6 flex items-center gap-3">
           <div className="grid h-10 w-10 place-items-center rounded-md bg-navy font-extrabold text-white">TH</div>
-          <div><h1 className="font-bold">Talent Hub AGLH</h1><p className="text-sm text-slate-500">Ingreso seguro</p></div>
+          <div><h1 className="font-bold">Talent Hub AGLH</h1><p className="text-sm text-slate-500">Acceso interno</p></div>
         </div>
         {error && <ErrorBox message={error} />}
-        <label className="label">Email</label>
-        <input className="field mb-3" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-        <label className="label">Contraseña</label>
-        <input className="field mb-5" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-        <button className="btn-primary w-full" disabled={loading}>{loading ? "Ingresando..." : "Ingresar"}</button>
-      </form>
+        <p className="mb-5 text-sm leading-6 text-slate-600">Ingresá con tu cuenta corporativa de AGLH o Yoiners.</p>
+        <button className="btn-primary w-full justify-center" onClick={loginWithGoogle}>Continuar con Google</button>
+        <p className="mt-4 text-center text-xs text-slate-500">Solo se aceptan cuentas @aglh.com.uy y @yoiners.com.</p>
+      </div>
     </div>
   );
 }
@@ -740,6 +742,7 @@ function Integrations({ canEdit }: { canEdit: boolean }) {
       const response = await fetch(`${API_URL}/integrations/gmail/takeout-import?fileName=${encodeURIComponent(file.name)}`, {
         method: "POST",
         headers: { ...authHeaders(), "Content-Type": "application/octet-stream" },
+        credentials: "include",
         body: await file.arrayBuffer()
       });
       const payload = await response.json().catch(() => ({}));
@@ -1176,7 +1179,8 @@ async function previewDocument(candidateId: string, document: CandidateDocument)
 
 async function fetchDocumentBlob(candidateId: string, document: CandidateDocument) {
   const response = await fetch(`${API_URL}/candidates/${candidateId}/documents/${document.id}/download`, {
-    headers: authHeaders()
+    headers: authHeaders(),
+    credentials: "include"
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => null);

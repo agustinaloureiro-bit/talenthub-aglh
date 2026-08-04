@@ -3,9 +3,11 @@ import test from "node:test";
 import { Buffer } from "node:buffer";
 
 process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/test";
-process.env.JWT_SECRET ??= "test-secret";
-process.env.ADMIN_EMAIL ??= "admin@example.com";
-process.env.ADMIN_PASSWORD ??= "password";
+process.env.SESSION_SECRET ??= "test-session-secret";
+process.env.GOOGLE_CLIENT_ID ??= "test-client-id";
+process.env.GOOGLE_CLIENT_SECRET ??= "test-client-secret";
+process.env.GOOGLE_CALLBACK_URL ??= "http://localhost:4000/api/auth/google/callback";
+process.env.ALLOWED_GOOGLE_DOMAINS ??= "aglh.com.uy,yoiners.com";
 
 test("genera la misma huella para el mismo CV y distingue contenido diferente", async () => {
   const { documentContentHash } = await import("../dist/services/candidateIngestion.js");

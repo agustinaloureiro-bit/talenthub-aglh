@@ -24,7 +24,7 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       frameSrc: ["'self'", "blob:"],
-      imgSrc: ["'self'", "data:", "blob:"]
+      imgSrc: ["'self'", "data:", "blob:", "https://lh3.googleusercontent.com"]
     }
   }
 }));
@@ -39,11 +39,10 @@ app.get("/health", (_req, res) => res.json({
   commit: process.env.RENDER_GIT_COMMIT?.slice(0, 12) ?? null
 }));
 app.use("/api/auth", authRouter);
-app.use("/api/integrations", integrationsPublicRouter);
 app.use("/api/candidates", requireAuth, candidatesRouter);
 app.use("/api/search", requireAuth, searchRouter);
 app.use("/api/intelligence", requireAuth, intelligenceRouter);
-app.use("/api/integrations", requireAuth, integrationsRouter);
+app.use("/api/integrations", requireAuth, integrationsPublicRouter, integrationsRouter);
 app.use("/api/settings", requireAuth, settingsRouter);
 app.use("/api/users", requireAuth, usersRouter);
 

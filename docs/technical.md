@@ -3,7 +3,7 @@
 ## Módulos
 
 - Frontend: React, TypeScript, TailwindCSS y Vite.
-- Backend: Node.js, Express, TypeScript, JWT, validación con Zod y logs HTTP con Pino.
+- Backend: Node.js, Express, TypeScript, Google OAuth, sesiones firmadas, validación con Zod y logs HTTP con Pino.
 - Base de datos: PostgreSQL 16 con extensión pgvector.
 - Infraestructura: Docker Compose con servicios `db`, `api` y `web`.
 
@@ -27,8 +27,10 @@
 
 ## API REST
 
-- `POST /api/auth/login`
+- `GET /api/auth/google`
+- `GET /api/auth/google/callback`
 - `GET /api/auth/me`
+- `POST /api/auth/logout`
 - `GET /api/dashboard`
 - `GET /api/candidates`
 - `POST /api/candidates`

@@ -1,38 +1,33 @@
 # Publicar Talent Hub AGLH en Render
 
-Esta configuración deja la aplicación completa en internet con:
+La aplicación usa exclusivamente Google OAuth. No existe un usuario o contraseña propios de TalentHub.
 
-- 1 servicio web Render para frontend + API.
-- 1 base PostgreSQL administrada por Render.
-- Migraciones automáticas al iniciar el servicio.
+## Variables de entorno
 
-## Pasos
+Configurar en Render:
 
-1. Crear cuenta o iniciar sesión en Render:
-   https://dashboard.render.com
+- `DATABASE_URL`: conexión PostgreSQL/Supabase.
+- `GOOGLE_CLIENT_ID`: ID del cliente OAuth de Google Cloud.
+- `GOOGLE_CLIENT_SECRET`: secreto del cliente OAuth de Google Cloud.
+- `GOOGLE_CALLBACK_URL`: `https://talenthub-aglh.onrender.com/api/auth/google/callback`
+- `ALLOWED_GOOGLE_DOMAINS`: `aglh.com.uy,yoiners.com`
+- `SESSION_SECRET`: valor aleatorio largo; Render puede generarlo.
+- `CORS_ORIGIN`: `https://talenthub-aglh.onrender.com`
+- `SERVE_STATIC`: `true`
 
-2. Subir este proyecto a GitHub.
+No guardar estos valores en Git.
 
-3. En Render, elegir:
-   **New +** → **Blueprint**
+## Google Cloud
 
-4. Conectar el repositorio de GitHub donde esté este proyecto.
+Crear un cliente OAuth 2.0 de tipo **Aplicación web** y registrar exactamente esta URI de redirección autorizada:
 
-5. Render va a detectar `render.yaml`.
+`https://talenthub-aglh.onrender.com/api/auth/google/callback`
 
-6. Cuando pida `ADMIN_PASSWORD`, escribir una contraseña segura.
+En la pantalla de consentimiento, configurar la aplicación como interna si ambas cuentas pertenecen a la misma organización de Google Workspace. Si pertenecen a organizaciones distintas, agregar los usuarios permitidos según la modalidad de publicación elegida en Google Cloud.
 
-7. Crear el Blueprint.
+## Acceso
 
-8. Al finalizar, abrir la URL pública del servicio `talenthub-aglh`.
-
-## Usuario inicial
-
-- Email: `admin@aglh.com`
-- Contraseña: la que ingresaste en Render como `ADMIN_PASSWORD`
-
-## Notas
-
-- La app no depende de tu computadora una vez desplegada.
-- La base de datos vive en Render.
-- Cada cambio futuro se publica subiendo cambios al repositorio conectado.
+- Solo se aceptan emails verificados terminados exactamente en `@aglh.com.uy` o `@yoiners.com`.
+- La primera cuenta válida de una base vacía se crea como administradora.
+- Las cuentas nuevas posteriores se crean con rol de consulta y un administrador puede asignarles otro rol.
+- Los tokens de Google usados para iniciar sesión no se guardan.

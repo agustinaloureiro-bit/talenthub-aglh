@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/test";
+process.env.SESSION_SECRET ??= "test-session-secret";
+process.env.GOOGLE_CLIENT_ID ??= "test-client-id";
+process.env.GOOGLE_CLIENT_SECRET ??= "test-client-secret";
+process.env.GOOGLE_CALLBACK_URL ??= "http://localhost:4000/api/auth/google/callback";
+process.env.ALLOWED_GOOGLE_DOMAINS ??= "aglh.com.uy,yoiners.com";
+
 const { interpretTalentQuery } = await import("../dist/intelligence/queryInterpreter.js");
 const { isCredibleCandidateName, rerankCandidates } = await import("../dist/intelligence/candidateRanker.js");
 const { RecruitmentIntelligenceEngine } = await import("../dist/intelligence/intelligenceEngine.js");
