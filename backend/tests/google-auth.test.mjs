@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import jwt from "jsonwebtoken";
 
@@ -40,4 +41,13 @@ test("las cookies de sesión son HttpOnly y SameSite Lax", async () => {
   assert.equal(options.httpOnly, true);
   assert.equal(options.sameSite, "lax");
   assert.equal(options.path, "/");
+});
+
+test("todo usuario corporativo autenticado puede sincronizar sin acceder a credenciales", async () => {
+  const source = await readFile(new URL("../src/routes/integrations.ts", import.meta.url), "utf8");
+
+  assert.match(source, /post\("\/sync-all", requireRole\("viewer"\)/);
+  assert.match(source, /post\("\/:id\/sync", requireRole\("viewer"\)/);
+  assert.match(source, /patch\("\/:id", requireRole\("admin"\)/);
+  assert.match(source, /post\("\/:id\/google-oauth-url", requireRole\("admin"\)/);
 });

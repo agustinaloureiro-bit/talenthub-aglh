@@ -3955,7 +3955,7 @@ async function runSyncQueue<T, R>(items: T[], concurrency: number, worker: (item
   return results;
 }
 
-integrationsRouter.post("/sync-all", requireRole("recruiter"), asyncHandler(async (_req, res) => {
+integrationsRouter.post("/sync-all", requireRole("viewer"), asyncHandler(async (_req, res) => {
   const results = await syncConnectedIntegrations();
   const imported = results.reduce((sum, row: any) => sum + Number(row.new_records ?? 0) + Number(row.updated_records ?? 0), 0);
   const errors = results.reduce((sum, row: any) => sum + Number(row.errors ?? 0), 0);
@@ -4061,7 +4061,7 @@ integrationsRouter.post("/gmail/takeout-import", requireRole("recruiter"), expre
   });
 }));
 
-integrationsRouter.post("/:id/sync", requireRole("recruiter"), asyncHandler(async (req, res) => {
+integrationsRouter.post("/:id/sync", requireRole("viewer"), asyncHandler(async (req, res) => {
   const result = await syncIntegration(String(req.params.id));
   if (!result) return res.status(404).json({ error: "Integracion no encontrada" });
   res.status(201).json({ data: result });
