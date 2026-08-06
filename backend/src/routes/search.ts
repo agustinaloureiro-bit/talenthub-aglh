@@ -189,7 +189,6 @@ type RankedCandidateMatch = {
 };
 
 const MAX_RETRIEVAL_CANDIDATES = 300;
-const MIN_DIVERSE_RETRIEVAL_CANDIDATES = 220;
 const MIN_DOCUMENT_FALLBACK_CANDIDATES = 80;
 const HYDRATION_RETRY_CANDIDATES = 160;
 const MAX_RANKING_DOCUMENT_CHARS = 12_000;
@@ -211,29 +210,6 @@ function mergeRankedMatches(...groups: RankedCandidateMatch[][]) {
   return [...merged.values()]
     .sort((left, right) => right.rank - left.rank)
     .slice(0, MAX_RETRIEVAL_CANDIDATES);
-}
-
-async function findProfileMatches(candidateFilter: string, params: unknown[], queryParameter: number, timeoutMs: number) {
-  const queryExpression = `$${queryParameter}`;
-  return qSearchWithTimeout(
-    `WITH search_terms AS MATERIALIZED (
-       SELECT websearch_to_tsquery('spanish', ${queryExpression}) AS query,
-         $1::text AS original_query,
-         $2::text AS planned_query,
-         $3::text AS broad_query
-     )
-       SELECT c.id,
-         0.02 + ts_rank_cd(c.search_vector, search_terms.query) AS rank,
-         NULL::uuid AS matched_document_id
-       FROM candidates c CROSS JOIN search_terms
-       WHERE ${candidateFilter}
-         AND c.search_vector @@ search_terms.query
-         AND EXISTS (SELECT 1 FROM documents available_doc WHERE available_doc.candidate_id=c.id)
-       ORDER BY rank DESC, c.quality_score DESC, c.updated_at DESC
-       LIMIT ${MAX_RETRIEVAL_CANDIDATES}`,
-    params,
-    timeoutMs
-  );
 }
 
 async function findFastProfileMatches(candidateFilter: string, params: unknown[], queryParameter: number, timeoutMs: number) {
@@ -432,29 +408,33 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     candidateFilter += ` AND EXISTS (SELECT 1 FROM candidate_sources recent_source WHERE recent_source.candidate_id=c.id AND recent_source.is_active=true AND recent_source.source_created_at >= $${params.length}::timestamptz)`;
   }
   const retrievalStartedAt = Date.now();
-  const plannedPass = await searchRows(() => findProfileMatches(candidateFilter, params, 2, 5_000));
+  const groupQueries = groupWebsearchQueries(plan).slice(0, 2);
+  const profileQueries = [
+    { queryParameter: 2, params },
+    { queryParameter: 3, params },
+    ...groupQueries.map((groupQuery) => ({
+      queryParameter: params.length + 1,
+      params: [...params, groupQuery]
+    }))
+  ];
+  const profilePasses = await Promise.all(profileQueries.map((profileQuery) => searchRows(
+    () => findFastProfileMatches(
+      candidateFilter,
+      profileQuery.params,
+      profileQuery.queryParameter,
+      4_000
+    )
+  )));
+  const plannedPass = profilePasses[0];
   const plannedMatches = plannedPass.rows;
   const plannedRetrievalMs = Date.now() - retrievalStartedAt;
-  const additionalPasses: SearchPass[] = [];
-  let groupMatches: RankedCandidateMatch[] = [];
-  let broadMatches: RankedCandidateMatch[] = [];
+  const broadPass = profilePasses[1];
+  const groupPasses = profilePasses.slice(2);
+  const additionalPasses: SearchPass[] = [broadPass, ...groupPasses];
+  const broadMatches = broadPass.rows;
+  const groupMatches = groupPasses.flatMap((pass) => pass.rows);
   let documentMatches: RankedCandidateMatch[] = [];
-  if (!plannedPass.timedOut && plannedMatches.length < MIN_DIVERSE_RETRIEVAL_CANDIDATES) {
-    const broadPass = await searchRows(() => findProfileMatches(candidateFilter, params, 3, 5_000));
-    additionalPasses.push(broadPass);
-    broadMatches = broadPass.rows;
-  }
-  if (![plannedPass, ...additionalPasses].some((pass) => pass.timedOut)
-    && mergeRankedMatches(plannedMatches, broadMatches).length < MIN_DIVERSE_RETRIEVAL_CANDIDATES) {
-    const groupQueries = groupWebsearchQueries(plan).slice(0, 2);
-    const groupPasses = await Promise.all(groupQueries.map((groupQuery) => searchRows(
-        () => findProfileMatches(candidateFilter, [...params, groupQuery], params.length + 1, 4_000)
-    )));
-    additionalPasses.push(...groupPasses);
-    groupMatches = groupPasses.flatMap((pass) => pass.rows);
-  }
-  if (![plannedPass, ...additionalPasses].some((pass) => pass.timedOut)
-    && mergeRankedMatches(plannedMatches, broadMatches, groupMatches).length < MIN_DOCUMENT_FALLBACK_CANDIDATES) {
+  if (mergeRankedMatches(plannedMatches, broadMatches, groupMatches).length < MIN_DOCUMENT_FALLBACK_CANDIDATES) {
     const documentPass = await searchRows(() => findDocumentMatches(candidateFilter, params));
     additionalPasses.push(documentPass);
     documentMatches = documentPass.rows;
