@@ -1,7 +1,12 @@
 import pg, { type QueryResultRow } from "pg";
 import { config } from "../config.js";
 
-export const pool = new pg.Pool({ connectionString: config.databaseUrl });
+export const pool = new pg.Pool({
+  connectionString: config.databaseUrl,
+  max: 20,
+  connectionTimeoutMillis: 5_000,
+  idleTimeoutMillis: 30_000
+});
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));

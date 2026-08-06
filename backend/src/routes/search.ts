@@ -203,7 +203,7 @@ function mergeRankedMatches(...groups: RankedCandidateMatch[][]) {
   }
   return [...merged.values()]
     .sort((left, right) => right.rank - left.rank)
-    .slice(0, 500);
+    .slice(0, 300);
 }
 
 async function findProfileMatches(candidateFilter: string, params: unknown[], queryParameter: 2 | 3, timeoutMs: number) {
@@ -223,7 +223,7 @@ async function findProfileMatches(candidateFilter: string, params: unknown[], qu
          AND c.search_vector @@ search_terms.query
          AND EXISTS (SELECT 1 FROM documents available_doc WHERE available_doc.candidate_id=c.id)
        ORDER BY rank DESC, c.quality_score DESC, c.updated_at DESC
-       LIMIT 500`,
+       LIMIT 300`,
     params,
     timeoutMs
   );
@@ -254,7 +254,7 @@ async function findDocumentMatches(candidateFilter: string, params: unknown[]) {
            coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')
          ) @@ search_terms.query
        ORDER BY rank DESC
-       LIMIT 1000
+       LIMIT 600
      ), unique_matches AS MATERIALIZED (
        SELECT DISTINCT ON (raw_matches.id)
          raw_matches.id,
@@ -269,7 +269,7 @@ async function findDocumentMatches(candidateFilter: string, params: unknown[]) {
      SELECT id, rank, matched_document_id
      FROM unique_matches
      ORDER BY rank DESC
-     LIMIT 400`,
+     LIMIT 300`,
     params,
     2_500
   );
@@ -314,12 +314,24 @@ async function hydrateCandidateMatches(matches: RankedCandidateMatch[]) {
          (d.id=requested.matched_document_id) DESC,
          d.is_primary_cv DESC,
          d.created_at DESC
-     ), document_evidence AS MATERIALIZED (
+    ), ranked_document_evidence AS MATERIALIZED (
        SELECT d.candidate_id,
-         left(string_agg(left(coalesce(d.raw_text, ''), 12000), E'\n\n' ORDER BY d.is_primary_cv DESC, d.created_at DESC), 30000) AS raw_text
+         d.raw_text,
+         d.is_primary_cv,
+         d.created_at,
+         row_number() OVER (
+           PARTITION BY d.candidate_id
+           ORDER BY d.is_primary_cv DESC, d.created_at DESC
+         ) AS evidence_order
        FROM documents d
        WHERE d.candidate_id = ANY($1::uuid[])
-       GROUP BY d.candidate_id
+         AND nullif(d.raw_text, '') IS NOT NULL
+    ), document_evidence AS MATERIALIZED (
+       SELECT candidate_id,
+         left(string_agg(left(coalesce(raw_text, ''), 12000), E'\n\n' ORDER BY is_primary_cv DESC, created_at DESC), 30000) AS raw_text
+       FROM ranked_document_evidence
+       WHERE evidence_order <= 3
+       GROUP BY candidate_id
      ), source_summary AS MATERIALIZED (
        SELECT cs.candidate_id,
          count(DISTINCT cs.source_type)::int AS source_count,
@@ -379,11 +391,11 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     params.push(new Date(Date.now() - recencyDays * 86_400_000).toISOString());
     candidateFilter += ` AND EXISTS (SELECT 1 FROM candidate_sources recent_source WHERE recent_source.candidate_id=c.id AND recent_source.is_active=true AND recent_source.source_created_at >= $${params.length}::timestamptz)`;
   }
-  const [plannedMatches, broadMatches, documentMatches] = await Promise.all([
-    searchRows(() => findProfileMatches(candidateFilter, params, 2, 2_500)),
-    searchRows(() => findProfileMatches(candidateFilter, params, 3, 2_500)),
-    searchRows(() => findDocumentMatches(candidateFilter, params))
-  ]);
+  // Run bounded passes in sequence so a search does not consume several pool
+  // connections while historical extraction is also active.
+  const plannedMatches = await searchRows(() => findProfileMatches(candidateFilter, params, 2, 2_500));
+  const broadMatches = await searchRows(() => findProfileMatches(candidateFilter, params, 3, 2_500));
+  const documentMatches = await searchRows(() => findDocumentMatches(candidateFilter, params));
   const matches = mergeRankedMatches(plannedMatches, broadMatches, documentMatches);
   const { rows } = await hydrateCandidateMatches(matches);
   return rows.map((row) => {

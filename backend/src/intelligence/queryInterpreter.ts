@@ -341,6 +341,12 @@ function requiredGroupsForQuery(
   const normalized = normalizeHint(query);
   const optionalConcepts = optionalConceptsForQuery(query, [...skills, ...industries]);
   const requiredConceptAliases: Record<string, string[]> = {
+    "auxiliar administrativo": [
+      "auxiliar administrativo", "auxiliar administrativa", "administrativo",
+      "administrativa", "asistente administrativo", "asistente administrativa",
+      "asistente de administracion", "auxiliar contable", "administrativo contable",
+      "administrativo de facturacion", "back office"
+    ],
     "sistemas de facturacion": [
       "sistema de facturacion", "sistemas de facturacion", "software de facturacion",
       "programa de facturacion", "facturacion electronica", "emision de facturas",

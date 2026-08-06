@@ -756,6 +756,8 @@ test("interpreta cercania y sistemas de facturacion sin reducir la busqueda a un
   assert.equal(interpreted.locationStrict, false);
   assert.ok(interpreted.requiredGroups.some((group) => group.includes("memory")));
   assert.ok(interpreted.requiredGroups.some((group) => group.includes("facturacion")));
+  assert.ok(interpreted.requiredGroups.some((group) => group.includes("administrativa")));
+  assert.ok(interpreted.requiredGroups.some((group) => group.includes("asistente administrativo")));
 });
 
 test("prioriza cercania verificada, conserva domicilios sin barrio y descarta ubicaciones incompatibles", () => {
