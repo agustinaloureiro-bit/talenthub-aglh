@@ -999,11 +999,11 @@ Operario en planta industrial de Maldonado.`;
   assert.equal(extractCvResidence(text), null);
 });
 
-test("analisis de CV conserva un domicilio declarado aunque la localidad no este en el catalogo", async () => {
+test("analisis de CV conserva la localidad declarada sin guardar la calle como ciudad", async () => {
   const { extractCvResidence } = await import("../dist/services/cvAnalysis.js");
   assert.deepEqual(
     extractCvResidence("CONTACTO Domicilio: Calle Los Ceibos 1542, Villa Nueva. Celular: 099 123 456 EXPERIENCIA LABORAL Operario"),
-    { city: "Calle Los Ceibos 1542, Villa Nueva", country: "Uruguay" }
+    { city: "Villa Nueva", country: "Uruguay" }
   );
 });
 

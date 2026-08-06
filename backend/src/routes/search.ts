@@ -8,6 +8,7 @@ import type { TalentSearchFilters } from "../intelligence/types.js";
 import { extractCvResidence } from "../services/cvAnalysis.js";
 import { knownUruguayLocationNames, nearbyUruguayLocations, normalizePlaceName } from "../intelligence/uruguayGeography.js";
 import { employerAliasesForConcepts } from "../intelligence/employerKnowledge.js";
+import { candidateDisplayLocation, candidateDisplayName } from "../services/candidatePresentation.js";
 
 export const searchRouter = Router();
 
@@ -187,8 +188,8 @@ type RankedCandidateMatch = {
   matched_document_id?: string | null;
 };
 
-const MAX_RETRIEVAL_CANDIDATES = 180;
-const MIN_FAST_RETRIEVAL_CANDIDATES = 120;
+const MAX_RETRIEVAL_CANDIDATES = 300;
+const MIN_DIVERSE_RETRIEVAL_CANDIDATES = 220;
 const MAX_RANKING_DOCUMENT_CHARS = 12_000;
 
 function mergeRankedMatches(...groups: RankedCandidateMatch[][]) {
@@ -210,7 +211,7 @@ function mergeRankedMatches(...groups: RankedCandidateMatch[][]) {
     .slice(0, MAX_RETRIEVAL_CANDIDATES);
 }
 
-async function findProfileMatches(candidateFilter: string, params: unknown[], queryParameter: 2 | 3, timeoutMs: number) {
+async function findProfileMatches(candidateFilter: string, params: unknown[], queryParameter: number, timeoutMs: number) {
   const queryExpression = `$${queryParameter}`;
   return qSearchWithTimeout(
     `WITH search_terms AS MATERIALIZED (
@@ -279,14 +280,29 @@ async function findDocumentMatches(candidateFilter: string, params: unknown[]) {
   );
 }
 
-async function searchRows(operation: () => Promise<{ rows: RankedCandidateMatch[] }>) {
+type SearchPass = {
+  rows: RankedCandidateMatch[];
+  timedOut: boolean;
+};
+
+async function searchRows(operation: () => Promise<{ rows: RankedCandidateMatch[] }>): Promise<SearchPass> {
   try {
-    return (await operation()).rows;
+    return { rows: (await operation()).rows, timedOut: false };
   } catch (error: any) {
     // A slow retrieval pass must not cancel the other independent search passes.
-    if (error?.code === "57014" || /timeout exceeded when trying to connect/i.test(String(error?.message ?? error))) return [];
+    if (error?.code === "57014" || /timeout exceeded when trying to connect/i.test(String(error?.message ?? error))) {
+      return { rows: [], timedOut: true };
+    }
     throw error;
   }
+}
+
+function groupWebsearchQueries(plan?: CandidateRetrievalPlan) {
+  return (plan?.requiredGroups ?? [])
+    .map((group) => [...new Set(group.map(normalizeSearchText).filter(Boolean))].slice(0, 8))
+    .filter((group) => group.length > 0)
+    .slice(0, 4)
+    .map((group) => group.map((term) => `"${term.replace(/"/g, " ")}"`).join(" OR "));
 }
 
 async function hydrateCandidateMatches(matches: RankedCandidateMatch[]) {
@@ -363,8 +379,14 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     candidateFilter += ` AND EXISTS (SELECT 1 FROM candidate_sources cs WHERE cs.candidate_id=c.id AND cs.is_active=true AND cs.source_type = ANY($${params.length}))`;
   }
   if (filters.location) {
-    params.push(`%${filters.location}%`);
-    candidateFilter += ` AND (coalesce(c.city,'') ILIKE $${params.length} OR coalesce(c.country,'') ILIKE $${params.length})`;
+    const normalizedLocation = normalizePlaceName(filters.location);
+    const knownLocation = knownUruguayLocationNames()
+      .find((location) => normalizePlaceName(location) === normalizedLocation);
+    const locationValues = knownLocation
+      ? nearbyUruguayLocations(knownLocation)
+      : [filters.location];
+    params.push([...new Set(locationValues.map((location) => `%${location}%`))]);
+    candidateFilter += ` AND (coalesce(c.city,'') ILIKE ANY($${params.length}::text[]) OR coalesce(c.country,'') ILIKE ANY($${params.length}::text[]))`;
   }
   if (filters.contact === "email") candidateFilter += " AND cardinality(coalesce(c.email, '{}'::text[])) > 0";
   if (filters.contact === "phone") candidateFilter += " AND cardinality(coalesce(c.phone, '{}'::text[])) > 0";
@@ -377,17 +399,34 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     candidateFilter += ` AND EXISTS (SELECT 1 FROM candidate_sources recent_source WHERE recent_source.candidate_id=c.id AND recent_source.is_active=true AND recent_source.source_created_at >= $${params.length}::timestamptz)`;
   }
   const retrievalStartedAt = Date.now();
-  const plannedMatches = await searchRows(() => findProfileMatches(candidateFilter, params, 2, 3_500));
+  const plannedPass = await searchRows(() => findProfileMatches(candidateFilter, params, 2, 3_500));
+  const plannedMatches = plannedPass.rows;
   const plannedRetrievalMs = Date.now() - retrievalStartedAt;
+  const additionalPasses: SearchPass[] = [];
+  let groupMatches: RankedCandidateMatch[] = [];
   let broadMatches: RankedCandidateMatch[] = [];
   let documentMatches: RankedCandidateMatch[] = [];
-  if (plannedMatches.length < MIN_FAST_RETRIEVAL_CANDIDATES) {
-    [broadMatches, documentMatches] = await Promise.all([
+  if (plannedMatches.length < MIN_DIVERSE_RETRIEVAL_CANDIDATES) {
+    const groupQueries = groupWebsearchQueries(plan);
+    const passes = await Promise.all([
+      ...groupQueries.map((groupQuery) => searchRows(
+        () => findProfileMatches(candidateFilter, [...params, groupQuery], params.length + 1, 3_500)
+      )),
       searchRows(() => findProfileMatches(candidateFilter, params, 3, 3_500)),
       searchRows(() => findDocumentMatches(candidateFilter, params))
     ]);
+    additionalPasses.push(...passes);
+    const groupPasses = passes.slice(0, groupQueries.length);
+    groupMatches = groupPasses.flatMap((pass) => pass.rows);
+    broadMatches = passes[groupQueries.length]?.rows ?? [];
+    documentMatches = passes[groupQueries.length + 1]?.rows ?? [];
   }
-  const matches = mergeRankedMatches(plannedMatches, broadMatches, documentMatches);
+  const matches = mergeRankedMatches(plannedMatches, groupMatches, broadMatches, documentMatches);
+  if (!matches.length && [plannedPass, ...additionalPasses].some((pass) => pass.timedOut)) {
+    const timeoutError = new Error("Talent search retrieval timed out") as Error & { code?: string };
+    timeoutError.code = "57014";
+    throw timeoutError;
+  }
   const hydrationStartedAt = Date.now();
   const { rows } = await hydrateCandidateMatches(matches);
   console.info("Talent search completed", {
@@ -395,17 +434,19 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     plannedRetrievalMs,
     hydrationMs: Date.now() - hydrationStartedAt,
     plannedMatches: plannedMatches.length,
+    groupMatches: groupMatches.length,
     broadMatches: broadMatches.length,
     documentMatches: documentMatches.length,
+    timedOutPasses: [plannedPass, ...additionalPasses].filter((pass) => pass.timedOut).length,
     hydratedCandidates: rows.length
   });
   return rows.map((row) => {
     const cvResidence = extractCvResidence(row.document_snippet ?? "");
     return {
     id: row.id,
-    fullName: row.full_name,
+    fullName: candidateDisplayName(row.full_name),
     currentRole: row.current_role,
-    city: cvResidence?.city ?? row.city,
+    city: candidateDisplayLocation(cvResidence?.city ?? row.city),
     country: cvResidence?.country ?? row.country,
     seniority: row.ai_seniority,
     years: row.ai_seniority_years,

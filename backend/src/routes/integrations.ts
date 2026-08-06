@@ -1932,6 +1932,17 @@ async function scrapeGmail(config: Record<string, unknown>): Promise<AgentSyncRe
           sourcePath: attachment.sourcePath || candidate.sourceUrl,
           isPrimaryCv: true
         }];
+        const internalDate = cleanText(message?.internalDate);
+        candidate.sourceCreatedAt = /^\d{12,13}$/.test(internalDate)
+          ? new Date(Number(internalDate)).toISOString()
+          : null;
+        candidate.raw = {
+          ...candidate.raw,
+          gmailMessageId: id,
+          internalDate: internalDate || undefined,
+          subject: parsed.subject,
+          from: parsed.from
+        };
         rows.push(candidate);
       }
     }

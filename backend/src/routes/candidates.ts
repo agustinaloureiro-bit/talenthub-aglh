@@ -7,6 +7,7 @@ import { analyzeCvText } from "../services/cvAnalysis.js";
 import { downloadBuscojobsCv } from "../services/buscojobsClient.js";
 import { downloadYoinersCv } from "../services/yoinersClient.js";
 import { extractCvCandidateEvidence } from "../services/cvCandidateEnrichment.js";
+import { candidateDisplayLocation, candidateDisplayName } from "../services/candidatePresentation.js";
 
 export const candidatesRouter = Router();
 
@@ -38,12 +39,12 @@ function mapCandidate(row: any) {
   };
   return {
     id: row.id,
-    fullName: row.full_name,
+    fullName: candidateDisplayName(row.full_name),
     firstName: row.first_name,
     lastName: row.last_name,
     email: row.email ?? [],
     phone: row.phone ?? [],
-    city: humanValue(row.city),
+    city: candidateDisplayLocation(row.city),
     country: humanValue(row.country),
     linkedinUrl: row.linkedin_url,
     currentRole: humanValue(row.current_role),

@@ -383,11 +383,13 @@ function industrialRefrigerationFit(candidate: TalentCandidateResult, interprete
   const role = normalizeSearchValue(candidate.currentRole ?? "");
   const evidence = normalizeSearchValue(candidateHaystack(candidate));
   const specializedRole = /\b(?:maquinista de refrigeracion|tecnico (?:en|de) refrigeracion|tecnico frigorista|frigorista|refrigerista)\b/.test(role);
+  const maintenanceRole = /\b(?:tecnico de mantenimiento|mantenimiento)\b/.test(role);
   const industrialCold = /\b(?:refrigeracion industrial|sistemas? de refrigeracion|maquinas? de frio|equipos? de frio|generacion de frio|camaras? frigorificas?)\b/.test(evidence);
   const refrigerants = /\b(?:freon|nh3|amoniaco|gases? refrigerantes?)\b/.test(evidence);
   const maintenance = /\b(?:mantenimiento (?:industrial|preventivo|correctivo)|reparacion de (?:equipos|maquinas|sistemas))\b/.test(evidence);
   if (specializedRole && industrialCold && maintenance) return 6;
   if (specializedRole && maintenance) return 5;
+  if (maintenanceRole && industrialCold && maintenance) return 5;
   if (industrialCold && maintenance) return 4;
   if (industrialCold) return 3;
   if (refrigerants && maintenance) return 3;
@@ -688,7 +690,10 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
         + (refrigerationFit >= 6 ? 24 : refrigerationFit === 5 ? 20 : refrigerationFit === 4 ? 16 : refrigerationFit === 3 ? 10 : 0)
         + (mechanicFit >= 7 ? 28 : mechanicFit === 6 ? 24 : mechanicFit === 5 ? 19 : mechanicFit === 4 ? 13 : mechanicFit === 3 ? 6 : 0)
       )));
-      const primaryAligned = primaryRoleMatches(candidate, interpreted);
+      const primaryAligned = primaryRoleMatches(candidate, interpreted)
+        || mechanicFit >= 4
+        || refrigerationFit >= 4
+        || warehouseFit >= 4;
       const exactSpecializedRole = isAmbulanceDriverQuery(interpreted) && primaryAligned;
       const roleScore = exactSpecializedRole
         ? Math.max(98, rawScore)
@@ -722,9 +727,9 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
       || b.mechanicFit - a.mechanicFit
       || b.refrigerationFit - a.refrigerationFit
       || b.warehouseFit - a.warehouseFit
-      || Number(b.primaryRoleAligned) - Number(a.primaryRoleAligned)
-      || (b.matchCoverage?.ratio ?? 0) - (a.matchCoverage?.ratio ?? 0)
       || b.score - a.score
+      || (b.matchCoverage?.ratio ?? 0) - (a.matchCoverage?.ratio ?? 0)
+      || Number(b.primaryRoleAligned) - Number(a.primaryRoleAligned)
       || b.qualityScore - a.qualityScore)
     .filter((candidate, index, ranked) => !ranked.slice(0, index).some((existing) => sameCandidateIdentity(existing, candidate)))
     .map(({ matchCoverage, primaryRoleAligned, warehouseFit, refrigerationFit, mechanicFit, ...candidate }) => candidate);

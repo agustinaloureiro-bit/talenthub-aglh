@@ -146,7 +146,12 @@ function declaredLocation(value: string) {
   if (knownPlace) return knownPlace;
   const landmark = landmarkLocation(location);
   if (landmark) return landmark;
-  return location.replace(/,?\s*Uruguay\s*$/i, "").trim() || null;
+  const declaredLocality = location.split(",").at(-1)?.trim() ?? "";
+  if (/^[\p{L}][\p{L}' -]{2,39}$/u.test(declaredLocality)
+    && declaredLocality.split(/\s+/).length <= 5) return declaredLocality;
+  // A street or an arbitrary header fragment is useful as raw CV evidence, but it is
+  // not a locality. Keeping it as `city` pollutes geographic filters and result cards.
+  return null;
 }
 
 export function extractCvResidence(input: string) {

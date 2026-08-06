@@ -46,6 +46,7 @@ export type TalentCandidateResult = {
   summary?: string | null;
   qualityScore: number;
   sourceCount?: number;
+  sourceTypes?: string[];
   documentCount?: number;
   primaryDocumentName?: string | null;
   primaryDocumentId?: string | null;

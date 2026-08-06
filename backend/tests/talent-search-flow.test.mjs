@@ -484,10 +484,23 @@ Se valora Freón, NH3, electricidad y soldadura. Zona Las Piedras.`);
       documentSnippet: "Mantenimiento preventivo y correctivo de cámaras frigoríficas y equipos de frío con Freón y amoníaco.",
       score: 0,
       matchReason: ""
+    },
+    {
+      id: "soldador-complementario",
+      fullName: "Fernando Soldador",
+      currentRole: "Soldador",
+      city: "Peñarol",
+      tags: ["soldadura", "mantenimiento"],
+      qualityScore: 95,
+      documentCount: 1,
+      documentSnippet: "Soldadura en instalaciones industriales con amoníaco y apoyo de mantenimiento en equipos de frío.",
+      score: 0,
+      matchReason: ""
     }
   ], interpreted);
 
-  assert.deepEqual(ranked.map((candidate) => candidate.id), ["frigorista"]);
+  assert.equal(ranked[0]?.id, "frigorista");
+  assert.ok(!ranked.some((candidate) => candidate.id === "generico"));
 });
 
 test("interpreta mecanica industrial sin exigir cada tecnologia deseable", async () => {
@@ -567,6 +580,7 @@ Diagnóstico de fallas mecánicas, hidráulicas y eléctricas.`);
   ], interpreted);
 
   assert.deepEqual(ranked.slice(0, 2).map((candidate) => candidate.id), ["autoelevadores", "electromecanico-industrial"]);
+  assert.ok(ranked[0].score >= ranked[1].score);
   assert.ok(!ranked.some((candidate) => candidate.id === "electricista-domestico"));
 });
 
@@ -612,6 +626,17 @@ Se valora experiencia en consumo masivo.`);
       matchReason: ""
     },
     {
+      id: "kam-generico",
+      fullName: "Ana KAM",
+      currentRole: "Key Account Manager",
+      tags: ["comercial"],
+      qualityScore: 99,
+      documentCount: 1,
+      documentSnippet: "Gestión general de cuentas corporativas.",
+      score: 0,
+      matchReason: ""
+    },
+    {
       id: "mostrador",
       fullName: "Pedro Rodríguez",
       currentRole: "Vendedor de salón",
@@ -625,6 +650,8 @@ Se valora experiencia en consumo masivo.`);
   ], interpreted);
 
   assert.equal(ranked[0]?.id, "campo");
+  const genericKam = ranked.find((candidate) => candidate.id === "kam-generico");
+  assert.ok(!genericKam || ranked[0].score > genericKam.score);
 });
 
 test("valor hora nominal no se interpreta como experiencia en nomina", async () => {
