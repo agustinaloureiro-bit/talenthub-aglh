@@ -190,6 +190,8 @@ type RankedCandidateMatch = {
 
 const MAX_RETRIEVAL_CANDIDATES = 300;
 const MIN_DIVERSE_RETRIEVAL_CANDIDATES = 220;
+const MIN_DOCUMENT_FALLBACK_CANDIDATES = 80;
+const HYDRATION_RETRY_CANDIDATES = 160;
 const MAX_RANKING_DOCUMENT_CHARS = 12_000;
 
 function mergeRankedMatches(...groups: RankedCandidateMatch[][]) {
@@ -229,6 +231,31 @@ async function findProfileMatches(candidateFilter: string, params: unknown[], qu
          AND EXISTS (SELECT 1 FROM documents available_doc WHERE available_doc.candidate_id=c.id)
        ORDER BY rank DESC, c.quality_score DESC, c.updated_at DESC
        LIMIT ${MAX_RETRIEVAL_CANDIDATES}`,
+    params,
+    timeoutMs
+  );
+}
+
+async function findFastProfileMatches(candidateFilter: string, params: unknown[], queryParameter: number, timeoutMs: number) {
+  const queryExpression = `$${queryParameter}`;
+  return qSearchWithTimeout(
+    `WITH search_terms AS MATERIALIZED (
+       SELECT websearch_to_tsquery('spanish', ${queryExpression}) AS query,
+         $1::text AS original_query,
+         $2::text AS planned_query,
+         $3::text AS broad_query
+     ), matching_ids AS MATERIALIZED (
+       SELECT c.id
+       FROM candidates c CROSS JOIN search_terms
+       WHERE ${candidateFilter}
+         AND c.search_vector @@ search_terms.query
+         AND EXISTS (SELECT 1 FROM documents available_doc WHERE available_doc.candidate_id=c.id)
+       LIMIT ${MAX_RETRIEVAL_CANDIDATES}
+     )
+     SELECT matching_ids.id,
+       0.01::double precision AS rank,
+       NULL::uuid AS matched_document_id
+     FROM matching_ids`,
     params,
     timeoutMs
   );
@@ -295,6 +322,12 @@ async function searchRows(operation: () => Promise<{ rows: RankedCandidateMatch[
     }
     throw error;
   }
+}
+
+function isSearchTimeout(error: unknown) {
+  const candidate = error as { code?: string; message?: string } | null;
+  return candidate?.code === "57014"
+    || /timeout exceeded when trying to connect|statement timeout/i.test(String(candidate?.message ?? error));
 }
 
 function groupWebsearchQueries(plan?: CandidateRetrievalPlan) {
@@ -399,36 +432,54 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     candidateFilter += ` AND EXISTS (SELECT 1 FROM candidate_sources recent_source WHERE recent_source.candidate_id=c.id AND recent_source.is_active=true AND recent_source.source_created_at >= $${params.length}::timestamptz)`;
   }
   const retrievalStartedAt = Date.now();
-  const plannedPass = await searchRows(() => findProfileMatches(candidateFilter, params, 2, 3_500));
+  const plannedPass = await searchRows(() => findProfileMatches(candidateFilter, params, 2, 5_000));
   const plannedMatches = plannedPass.rows;
   const plannedRetrievalMs = Date.now() - retrievalStartedAt;
   const additionalPasses: SearchPass[] = [];
   let groupMatches: RankedCandidateMatch[] = [];
   let broadMatches: RankedCandidateMatch[] = [];
   let documentMatches: RankedCandidateMatch[] = [];
-  if (plannedMatches.length < MIN_DIVERSE_RETRIEVAL_CANDIDATES) {
-    const groupQueries = groupWebsearchQueries(plan);
-    const passes = await Promise.all([
-      ...groupQueries.map((groupQuery) => searchRows(
-        () => findProfileMatches(candidateFilter, [...params, groupQuery], params.length + 1, 3_500)
-      )),
-      searchRows(() => findProfileMatches(candidateFilter, params, 3, 3_500)),
-      searchRows(() => findDocumentMatches(candidateFilter, params))
-    ]);
-    additionalPasses.push(...passes);
-    const groupPasses = passes.slice(0, groupQueries.length);
-    groupMatches = groupPasses.flatMap((pass) => pass.rows);
-    broadMatches = passes[groupQueries.length]?.rows ?? [];
-    documentMatches = passes[groupQueries.length + 1]?.rows ?? [];
+  if (!plannedPass.timedOut && plannedMatches.length < MIN_DIVERSE_RETRIEVAL_CANDIDATES) {
+    const broadPass = await searchRows(() => findProfileMatches(candidateFilter, params, 3, 5_000));
+    additionalPasses.push(broadPass);
+    broadMatches = broadPass.rows;
   }
-  const matches = mergeRankedMatches(plannedMatches, groupMatches, broadMatches, documentMatches);
+  if (![plannedPass, ...additionalPasses].some((pass) => pass.timedOut)
+    && mergeRankedMatches(plannedMatches, broadMatches).length < MIN_DIVERSE_RETRIEVAL_CANDIDATES) {
+    const groupQueries = groupWebsearchQueries(plan).slice(0, 2);
+    const groupPasses = await Promise.all(groupQueries.map((groupQuery) => searchRows(
+        () => findProfileMatches(candidateFilter, [...params, groupQuery], params.length + 1, 4_000)
+    )));
+    additionalPasses.push(...groupPasses);
+    groupMatches = groupPasses.flatMap((pass) => pass.rows);
+  }
+  if (![plannedPass, ...additionalPasses].some((pass) => pass.timedOut)
+    && mergeRankedMatches(plannedMatches, broadMatches, groupMatches).length < MIN_DOCUMENT_FALLBACK_CANDIDATES) {
+    const documentPass = await searchRows(() => findDocumentMatches(candidateFilter, params));
+    additionalPasses.push(documentPass);
+    documentMatches = documentPass.rows;
+  }
+  let matches = mergeRankedMatches(plannedMatches, groupMatches, broadMatches, documentMatches);
+  const timedOutPasses = [plannedPass, ...additionalPasses].filter((pass) => pass.timedOut).length;
+  if (!matches.length && timedOutPasses) {
+    const fastPass = await searchRows(() => findFastProfileMatches(candidateFilter, params, 3, 6_000));
+    additionalPasses.push(fastPass);
+    matches = mergeRankedMatches(fastPass.rows);
+  }
   if (!matches.length && [plannedPass, ...additionalPasses].some((pass) => pass.timedOut)) {
     const timeoutError = new Error("Talent search retrieval timed out") as Error & { code?: string };
     timeoutError.code = "57014";
     throw timeoutError;
   }
   const hydrationStartedAt = Date.now();
-  const { rows } = await hydrateCandidateMatches(matches);
+  let hydrated;
+  try {
+    hydrated = await hydrateCandidateMatches(matches);
+  } catch (error) {
+    if (!isSearchTimeout(error) || matches.length <= HYDRATION_RETRY_CANDIDATES) throw error;
+    hydrated = await hydrateCandidateMatches(matches.slice(0, HYDRATION_RETRY_CANDIDATES));
+  }
+  const { rows } = hydrated;
   console.info("Talent search completed", {
     totalDatabaseMs: Date.now() - retrievalStartedAt,
     plannedRetrievalMs,
