@@ -157,7 +157,7 @@ function expandedWebsearchQuery(query: string) {
 
 function plannedWebsearchQuery(query: string, plan?: CandidateRetrievalPlan) {
   const groups = (plan?.requiredGroups ?? [])
-    .map((group) => [...new Set(group.map(normalizeSearchText).filter(Boolean))].slice(0, 8))
+    .map((group) => [...new Set(group.map(normalizeSearchText).filter(Boolean))].slice(0, 5))
     .filter((group) => group.length > 0)
     .slice(0, 4);
   if (groups.length < 2) return expandedWebsearchQuery(query);
@@ -187,6 +187,10 @@ type RankedCandidateMatch = {
   matched_document_id?: string | null;
 };
 
+const MAX_RETRIEVAL_CANDIDATES = 180;
+const MIN_FAST_RETRIEVAL_CANDIDATES = 120;
+const MAX_RANKING_DOCUMENT_CHARS = 12_000;
+
 function mergeRankedMatches(...groups: RankedCandidateMatch[][]) {
   const merged = new Map<string, RankedCandidateMatch>();
   for (const match of groups.flat()) {
@@ -203,7 +207,7 @@ function mergeRankedMatches(...groups: RankedCandidateMatch[][]) {
   }
   return [...merged.values()]
     .sort((left, right) => right.rank - left.rank)
-    .slice(0, 220);
+    .slice(0, MAX_RETRIEVAL_CANDIDATES);
 }
 
 async function findProfileMatches(candidateFilter: string, params: unknown[], queryParameter: 2 | 3, timeoutMs: number) {
@@ -223,7 +227,7 @@ async function findProfileMatches(candidateFilter: string, params: unknown[], qu
          AND c.search_vector @@ search_terms.query
          AND EXISTS (SELECT 1 FROM documents available_doc WHERE available_doc.candidate_id=c.id)
        ORDER BY rank DESC, c.quality_score DESC, c.updated_at DESC
-       LIMIT 220`,
+       LIMIT ${MAX_RETRIEVAL_CANDIDATES}`,
     params,
     timeoutMs
   );
@@ -269,7 +273,7 @@ async function findDocumentMatches(candidateFilter: string, params: unknown[]) {
      SELECT id, rank, matched_document_id
      FROM unique_matches
      ORDER BY rank DESC
-     LIMIT 220`,
+     LIMIT ${MAX_RETRIEVAL_CANDIDATES}`,
     params,
     2_500
   );
@@ -332,7 +336,7 @@ async function hydrateCandidateMatches(matches: RankedCandidateMatch[]) {
        primary_documents.id AS primary_document_id,
        primary_documents.mime_type AS primary_document_mime_type,
        primary_documents.source_type AS primary_document_source_type,
-       left(coalesce(primary_documents.raw_text, ''), 30000) AS document_snippet,
+       left(coalesce(primary_documents.raw_text, ''), ${MAX_RANKING_DOCUMENT_CHARS}) AS document_snippet,
        source_summary.latest_source_at,
        requested.rank
      FROM requested
@@ -373,15 +377,23 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     candidateFilter += ` AND EXISTS (SELECT 1 FROM candidate_sources recent_source WHERE recent_source.candidate_id=c.id AND recent_source.is_active=true AND recent_source.source_created_at >= $${params.length}::timestamptz)`;
   }
   const retrievalStartedAt = Date.now();
-  const [plannedMatches, broadMatches, documentMatches] = await Promise.all([
-    searchRows(() => findProfileMatches(candidateFilter, params, 2, 2_500)),
-    searchRows(() => findProfileMatches(candidateFilter, params, 3, 2_500)),
-    searchRows(() => findDocumentMatches(candidateFilter, params))
-  ]);
+  const plannedMatches = await searchRows(() => findProfileMatches(candidateFilter, params, 2, 3_500));
+  const plannedRetrievalMs = Date.now() - retrievalStartedAt;
+  let broadMatches: RankedCandidateMatch[] = [];
+  let documentMatches: RankedCandidateMatch[] = [];
+  if (plannedMatches.length < MIN_FAST_RETRIEVAL_CANDIDATES) {
+    [broadMatches, documentMatches] = await Promise.all([
+      searchRows(() => findProfileMatches(candidateFilter, params, 3, 3_500)),
+      searchRows(() => findDocumentMatches(candidateFilter, params))
+    ]);
+  }
   const matches = mergeRankedMatches(plannedMatches, broadMatches, documentMatches);
+  const hydrationStartedAt = Date.now();
   const { rows } = await hydrateCandidateMatches(matches);
   console.info("Talent search completed", {
-    retrievalMs: Date.now() - retrievalStartedAt,
+    totalDatabaseMs: Date.now() - retrievalStartedAt,
+    plannedRetrievalMs,
+    hydrationMs: Date.now() - hydrationStartedAt,
     plannedMatches: plannedMatches.length,
     broadMatches: broadMatches.length,
     documentMatches: documentMatches.length,

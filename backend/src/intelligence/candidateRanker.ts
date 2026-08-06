@@ -16,6 +16,21 @@ function normalizeSearchValue(value: string) {
     .trim();
 }
 
+const candidateHaystackCache = new WeakMap<TalentCandidateResult, string>();
+const candidateProfileCache = new WeakMap<TalentCandidateResult, string>();
+const candidateResidenceCache = new WeakMap<TalentCandidateResult, string>();
+const locationMatchCache = new WeakMap<TalentCandidateResult, WeakMap<InterpretedTalentQuery, ReturnType<typeof calculateCandidateLocationMatch>>>();
+const enrichedTextCache = new Map<string, string>();
+
+function enrichedSearchText(value: string) {
+  const cached = enrichedTextCache.get(value);
+  if (cached != null) return cached;
+  const enriched = enrichWithEmployerConcepts(value);
+  if (enrichedTextCache.size >= 500) enrichedTextCache.clear();
+  enrichedTextCache.set(value, enriched);
+  return enriched;
+}
+
 export function isCredibleCandidateName(value: string) {
   const name = String(value ?? "").replace(/\s+/g, " ").trim();
   if (name.length < 4 || name.length > 90 || /[@\d]|https?:|www\.|:/.test(name)) return false;
@@ -161,7 +176,9 @@ function includesAny(text: string, values: string[]) {
 }
 
 function candidateHaystack(candidate: TalentCandidateResult) {
-  return enrichWithEmployerConcepts([
+  const cached = candidateHaystackCache.get(candidate);
+  if (cached != null) return cached;
+  const value = enrichedSearchText([
     candidate.fullName,
     candidate.currentRole ?? "",
     candidate.city ?? "",
@@ -174,6 +191,8 @@ function candidateHaystack(candidate: TalentCandidateResult) {
     candidate.primaryDocumentName ?? "",
     candidate.documentSnippet ?? ""
   ].join(" "));
+  candidateHaystackCache.set(candidate, value);
+  return value;
 }
 
 function relevantExperience(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
@@ -187,12 +206,16 @@ function relevantExperience(candidate: TalentCandidateResult, interpreted: Inter
 }
 
 function candidateProfileText(candidate: TalentCandidateResult) {
-  return [
+  const cached = candidateProfileCache.get(candidate);
+  if (cached != null) return cached;
+  const value = [
     candidate.currentRole ?? "",
     (candidate.tags ?? []).join(" "),
     candidate.city ?? "",
     candidate.country ?? ""
   ].join(" ");
+  candidateProfileCache.set(candidate, value);
+  return value;
 }
 
 function recencyBonus(value?: string | null) {
@@ -258,7 +281,7 @@ function satisfiesResidualKeywords(candidate: TalentCandidateResult, interpreted
 }
 
 function conceptMatchesText(text: string, interpreted: InterpretedTalentQuery, concept: string) {
-  const enrichedText = enrichWithEmployerConcepts(text);
+  const enrichedText = enrichedSearchText(text);
   const isSpecializedRole = interpreted.requiredGroups.length > 1
     && interpreted.roles.some((role) => normalizeSearchValue(role) === normalizeSearchValue(concept));
   if (isSpecializedRole) return interpreted.requiredGroups.every((group) => includesAny(enrichedText, group));
@@ -426,9 +449,14 @@ function satisfiesRequiredGroups(candidate: TalentCandidateResult, interpreted: 
 }
 
 function candidateResidence(candidate: TalentCandidateResult) {
+  const cached = candidateResidenceCache.get(candidate);
+  if (cached != null) return cached;
   const cvResidence = extractCvResidence(candidate.documentSnippet ?? "");
   const structuredResidence = [candidate.city ?? "", candidate.country ?? ""].join(" ").trim();
-  if (!cvResidence) return structuredResidence;
+  if (!cvResidence) {
+    candidateResidenceCache.set(candidate, structuredResidence);
+    return structuredResidence;
+  }
 
   const cvResidenceText = [cvResidence.city, cvResidence.country].filter(Boolean).join(" ");
   const cvPlace = findUruguayPlace(cvResidenceText);
@@ -438,10 +466,12 @@ function candidateResidence(candidate: TalentCandidateResult) {
     && cvPlace.department === structuredPlace.department
     && normalizePlaceName(cvPlace.name) === normalizePlaceName(cvPlace.department)
     && normalizePlaceName(structuredPlace.name) !== normalizePlaceName(cvPlace.name);
-  return cvIsBroader ? structuredResidence : cvResidenceText;
+  const residence = cvIsBroader ? structuredResidence : cvResidenceText;
+  candidateResidenceCache.set(candidate, residence);
+  return residence;
 }
 
-function candidateLocationMatch(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
+function calculateCandidateLocationMatch(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   if (!interpreted.locations.length) return { matches: true, distanceKm: null, confidence: "not_requested" as const };
   const residence = candidateResidence(candidate);
   if (!residence) return { matches: !interpreted.locationStrict, distanceKm: null, confidence: "unknown" as const };
@@ -470,6 +500,19 @@ function candidateLocationMatch(candidate: TalentCandidateResult, interpreted: I
   return knownResidence && knownRequestedLocation
     ? { matches: false, distanceKm: null, confidence: "incompatible" as const }
     : { matches: !interpreted.locationStrict, distanceKm: null, confidence: "unknown" as const };
+}
+
+function candidateLocationMatch(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
+  let byQuery = locationMatchCache.get(candidate);
+  if (!byQuery) {
+    byQuery = new WeakMap();
+    locationMatchCache.set(candidate, byQuery);
+  }
+  const cached = byQuery.get(interpreted);
+  if (cached) return cached;
+  const result = calculateCandidateLocationMatch(candidate, interpreted);
+  byQuery.set(interpreted, result);
+  return result;
 }
 
 function requestsCandidateResidence(interpreted: InterpretedTalentQuery) {
