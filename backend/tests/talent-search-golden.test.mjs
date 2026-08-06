@@ -49,7 +49,7 @@ const goldenSearches = [
     expected: ["abogado-ingles"]
   },
   {
-    name: "administración con facturación excluye perfiles administrativos genéricos",
+    name: "administración con facturación prioriza la evidencia exacta y conserva alternativas del área",
     query: "Busco auxiliar administrativo con experiencia en facturación",
     candidates: [
       candidate("administracion-facturacion", {
@@ -67,7 +67,7 @@ const goldenSearches = [
         documentSnippet: "Venta al público y emisión ocasional de facturas."
       })
     ],
-    expected: ["administracion-facturacion"]
+    expected: ["administracion-facturacion", "administracion-general"]
   },
   {
     name: "depósito especializado exige autoelevador y picking",

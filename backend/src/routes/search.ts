@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { q, qWithTimeout } from "../db/pool.js";
+import { qWithTimeout } from "../db/pool.js";
 import { asyncHandler } from "../middleware/errors.js";
 import { RecruitmentIntelligenceEngine } from "../intelligence/intelligenceEngine.js";
 import type { CandidateRetrievalPlan } from "../intelligence/intelligenceEngine.js";
@@ -203,7 +203,7 @@ function mergeRankedMatches(...groups: RankedCandidateMatch[][]) {
   }
   return [...merged.values()]
     .sort((left, right) => right.rank - left.rank)
-    .slice(0, 300);
+    .slice(0, 220);
 }
 
 async function findProfileMatches(candidateFilter: string, params: unknown[], queryParameter: 2 | 3, timeoutMs: number) {
@@ -223,7 +223,7 @@ async function findProfileMatches(candidateFilter: string, params: unknown[], qu
          AND c.search_vector @@ search_terms.query
          AND EXISTS (SELECT 1 FROM documents available_doc WHERE available_doc.candidate_id=c.id)
        ORDER BY rank DESC, c.quality_score DESC, c.updated_at DESC
-       LIMIT 300`,
+       LIMIT 220`,
     params,
     timeoutMs
   );
@@ -269,7 +269,7 @@ async function findDocumentMatches(candidateFilter: string, params: unknown[]) {
      SELECT id, rank, matched_document_id
      FROM unique_matches
      ORDER BY rank DESC
-     LIMIT 300`,
+     LIMIT 220`,
     params,
     2_500
   );
@@ -280,7 +280,7 @@ async function searchRows(operation: () => Promise<{ rows: RankedCandidateMatch[
     return (await operation()).rows;
   } catch (error: any) {
     // A slow retrieval pass must not cancel the other independent search passes.
-    if (error?.code === "57014") return [];
+    if (error?.code === "57014" || /timeout exceeded when trying to connect/i.test(String(error?.message ?? error))) return [];
     throw error;
   }
 }
@@ -314,25 +314,7 @@ async function hydrateCandidateMatches(matches: RankedCandidateMatch[]) {
          (d.id=requested.matched_document_id) DESC,
          d.is_primary_cv DESC,
          d.created_at DESC
-    ), ranked_document_evidence AS MATERIALIZED (
-       SELECT d.candidate_id,
-         d.raw_text,
-         d.is_primary_cv,
-         d.created_at,
-         row_number() OVER (
-           PARTITION BY d.candidate_id
-           ORDER BY d.is_primary_cv DESC, d.created_at DESC
-         ) AS evidence_order
-       FROM documents d
-       WHERE d.candidate_id = ANY($1::uuid[])
-         AND nullif(d.raw_text, '') IS NOT NULL
-    ), document_evidence AS MATERIALIZED (
-       SELECT candidate_id,
-         left(string_agg(left(coalesce(raw_text, ''), 12000), E'\n\n' ORDER BY is_primary_cv DESC, created_at DESC), 30000) AS raw_text
-       FROM ranked_document_evidence
-       WHERE evidence_order <= 3
-       GROUP BY candidate_id
-     ), source_summary AS MATERIALIZED (
+    ), source_summary AS MATERIALIZED (
        SELECT cs.candidate_id,
          count(DISTINCT cs.source_type)::int AS source_count,
          array_agg(DISTINCT cs.source_type ORDER BY cs.source_type) AS source_types,
@@ -350,14 +332,13 @@ async function hydrateCandidateMatches(matches: RankedCandidateMatch[]) {
        primary_documents.id AS primary_document_id,
        primary_documents.mime_type AS primary_document_mime_type,
        primary_documents.source_type AS primary_document_source_type,
-       coalesce(document_evidence.raw_text, left(coalesce(primary_documents.raw_text, ''), 8000)) AS document_snippet,
+       left(coalesce(primary_documents.raw_text, ''), 30000) AS document_snippet,
        source_summary.latest_source_at,
        requested.rank
      FROM requested
      JOIN candidates c ON c.id=requested.id
      LEFT JOIN document_counts ON document_counts.candidate_id=c.id
      LEFT JOIN primary_documents ON primary_documents.candidate_id=c.id
-     LEFT JOIN document_evidence ON document_evidence.candidate_id=c.id
      LEFT JOIN source_summary ON source_summary.candidate_id=c.id
      ORDER BY requested.rank DESC, c.quality_score DESC, c.updated_at DESC`,
     [ids, ranks, documentIds],
@@ -391,13 +372,21 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     params.push(new Date(Date.now() - recencyDays * 86_400_000).toISOString());
     candidateFilter += ` AND EXISTS (SELECT 1 FROM candidate_sources recent_source WHERE recent_source.candidate_id=c.id AND recent_source.is_active=true AND recent_source.source_created_at >= $${params.length}::timestamptz)`;
   }
-  // Run bounded passes in sequence so a search does not consume several pool
-  // connections while historical extraction is also active.
-  const plannedMatches = await searchRows(() => findProfileMatches(candidateFilter, params, 2, 2_500));
-  const broadMatches = await searchRows(() => findProfileMatches(candidateFilter, params, 3, 2_500));
-  const documentMatches = await searchRows(() => findDocumentMatches(candidateFilter, params));
+  const retrievalStartedAt = Date.now();
+  const [plannedMatches, broadMatches, documentMatches] = await Promise.all([
+    searchRows(() => findProfileMatches(candidateFilter, params, 2, 2_500)),
+    searchRows(() => findProfileMatches(candidateFilter, params, 3, 2_500)),
+    searchRows(() => findDocumentMatches(candidateFilter, params))
+  ]);
   const matches = mergeRankedMatches(plannedMatches, broadMatches, documentMatches);
   const { rows } = await hydrateCandidateMatches(matches);
+  console.info("Talent search completed", {
+    retrievalMs: Date.now() - retrievalStartedAt,
+    plannedMatches: plannedMatches.length,
+    broadMatches: broadMatches.length,
+    documentMatches: documentMatches.length,
+    hydratedCandidates: rows.length
+  });
   return rows.map((row) => {
     const cvResidence = extractCvResidence(row.document_snippet ?? "");
     return {
@@ -436,7 +425,11 @@ export async function searchTalent(query: string, filters: TalentSearchFilters =
 
 searchRouter.post("/talent", asyncHandler(async (req, res) => {
   const body = searchSchema.parse(req.body);
-  await q("INSERT INTO saved_searches (user_id, query, filters) VALUES ($1,$2,$3)", [req.user!.id, body.query, JSON.stringify(body.filters)]);
+  void qWithTimeout(
+    "INSERT INTO saved_searches (user_id, query, filters) VALUES ($1,$2,$3)",
+    [req.user!.id, body.query, JSON.stringify(body.filters)],
+    1_000
+  ).catch(() => undefined);
   let result;
   try {
     result = await searchTalent(body.query, body.filters);

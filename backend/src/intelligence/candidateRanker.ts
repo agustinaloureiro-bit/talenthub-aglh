@@ -402,11 +402,27 @@ function satisfiesRequiredGroups(candidate: TalentCandidateResult, interpreted: 
     .some((role) => ["operario", "operaria"].includes(normalizeSearchValue(role)));
   if (requiresOperationalRole && !hasFactoryOperationsRoleEvidence(candidate)) return false;
   const evidence = candidateHaystack(candidate);
-  return interpreted.requiredGroups.every((group) => {
+  const groupMatches = (group: string[]) => {
     if (isAmbulanceDriverQuery(interpreted)
       && (group.includes("ambulanciero") || group.includes("ambulancia"))) return true;
     return includesAny(evidence, group);
-  });
+  };
+  const requiresCompleteEvidence = Boolean(interpreted.languages.length)
+    || isAmbulanceDriverQuery(interpreted)
+    || isAdministrativeWarehouseQuery(interpreted)
+    || isIndustrialRefrigerationQuery(interpreted)
+    || isIndustrialMechanicQuery(interpreted);
+  if (requiresCompleteEvidence) return interpreted.requiredGroups.every(groupMatches);
+
+  // In a broad recruiting search, the requested role is the eligibility
+  // criterion. Additional skills improve the score but do not hide useful
+  // alternatives that a recruiter may still want to inspect.
+  const roleGroups = interpreted.requiredGroups.filter((group) => interpreted.roles.some((role) => {
+    const normalizedRole = normalizeSearchValue(role);
+    return group.some((value) => normalizeSearchValue(value) === normalizedRole);
+  }));
+  if (roleGroups.length) return roleGroups.some(groupMatches);
+  return interpreted.requiredGroups.some(groupMatches);
 }
 
 function candidateResidence(candidate: TalentCandidateResult) {
