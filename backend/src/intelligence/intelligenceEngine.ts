@@ -33,7 +33,7 @@ function retrievalSignals(query: string) {
     "busqueda", "búsqueda", "esta", "está", "orientada", "orientado", "canal", "persona",
     "sera", "será", "estructura", "definida", "actividades", "objetivos", "incluyendo",
     "indicadores", "entre", "otros", "consideramos", "perfiles", "pueden", "favorables",
-    "un", "trabajando"
+    "un", "trabajando", "estudiante", "estudiantes", "estudiando", "cursando"
   ]);
   return profileQuery
     .split(/[^\p{L}\p{N}]+/u)
@@ -48,10 +48,10 @@ function compactRetrievalQuery(query: string, understoodConcepts: string[]) {
     .map((concept) => concept.replace(/\s+/g, " ").trim())
     .filter(Boolean);
   const conceptWords = new Set(
-    normalizedConcepts.flatMap((concept) => retrievalSignals(concept).map((word) => word.toLowerCase()))
+    normalizedConcepts.flatMap((concept) => retrievalSignals(concept).map(normalizeRetrievalToken))
   );
   const residualSignals = retrievalSignals(query)
-    .filter((word) => !conceptWords.has(word.toLowerCase()));
+    .filter((word) => !conceptWords.has(normalizeRetrievalToken(word)));
   const detailedDescription = retrievalSignals(query).length >= 12;
   const maxResidualSignals = detailedDescription ? 5 : 8;
   const maxConcepts = detailedDescription ? 10 : 12;
@@ -60,6 +60,15 @@ function compactRetrievalQuery(query: string, understoodConcepts: string[]) {
     ...normalizedConcepts.slice(0, maxConcepts),
     ...residualSignals.slice(0, maxResidualSignals)
   ])].join(" ");
+}
+
+function normalizeRetrievalToken(value: string) {
+  return value.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "");
+}
+
+function academicRetrievalSignals(groups: string[][]) {
+  const canonical = new Set(["contador", "administracion de empresas", "economista"]);
+  return groups.flat().filter((value) => canonical.has(normalizeRetrievalToken(value)));
 }
 
 export class RecruitmentIntelligenceEngine {
@@ -73,7 +82,9 @@ export class RecruitmentIntelligenceEngine {
       ...interpreted.languages,
       ...interpreted.industries,
       ...interpreted.locations,
-      ...interpreted.keywords
+      ...interpreted.keywords,
+      ...academicRetrievalSignals(interpreted.academicGroups),
+      ...interpreted.experienceAreas.slice(0, 4)
     ].filter(Boolean);
     const retrievalQuery = compactRetrievalQuery(interpreted.normalizedQuery, understoodConcepts);
     const candidates = await this.fallbackSearch(retrievalQuery, filters, {

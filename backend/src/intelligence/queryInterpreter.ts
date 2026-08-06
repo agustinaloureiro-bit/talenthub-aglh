@@ -96,6 +96,27 @@ const ROLE_HINTS = [
   "técnico"
 ];
 
+const ACADEMIC_CONCEPTS: Array<{ pattern: RegExp; aliases: string[] }> = [
+  {
+    pattern: /\b(?:contador(?:a)?(?:\s+public[oa])?|contabilidad|ciencias contables)\b/i,
+    aliases: [
+      "contador", "contadora", "contador publico", "contadora publica", "ciencias contables"
+    ]
+  },
+  {
+    pattern: /\b(?:administraci[oó]n de empresas|licenciatura en administraci[oó]n|gestion de empresas)\b/i,
+    aliases: [
+      "administracion de empresas", "licenciatura en administracion", "gestion de empresas"
+    ]
+  },
+  {
+    pattern: /\b(?:economista|licenciatura en econom[ií]a|econom[ií]a)\b/i,
+    aliases: [
+      "economista", "licenciatura en economia"
+    ]
+  }
+];
+
 const LOCATION_HINTS = [...new Set(knownUruguayLocationNames().map(normalizeHint))];
 
 const SKILL_HINTS = [
@@ -495,9 +516,34 @@ function experienceRequirement(query: string) {
   };
 }
 
+function academicRequirements(query: string) {
+  const normalized = normalizeHint(query);
+  const matches = ACADEMIC_CONCEPTS.filter(({ pattern }) => pattern.test(normalized));
+  const educationContext = /\b(?:estudiante|estudiando|cursando|carrera|formacion|universidad|facultad|egresad[oa]|recibid[oa])\b/.test(normalized);
+  if (!educationContext || matches.length === 0) return [];
+  return [[...new Set(matches.flatMap(({ aliases }) => aliases))]];
+}
+
+function requestedExperienceAreas(query: string) {
+  const normalized = normalizeHint(query);
+  if (/\b(?:experiencia|trayectoria)\b.{0,80}\b(?:tareas?\s+)?administrativ[oa]s?\b/.test(normalized)
+    || /\b(?:tareas?\s+)?administrativ[oa]s?\b.{0,50}\b(?:experiencia|trayectoria)\b/.test(normalized)) {
+    return [
+      "administrativo", "administrativa", "administracion", "tareas administrativas",
+      "auxiliar administrativo", "auxiliar administrativa", "asistente administrativo",
+      "asistente administrativa", "back office", "secretaria", "facturacion", "archivo"
+    ];
+  }
+  return [];
+}
+
 export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   const normalizedQuery = query.replace(/\s+/g, " ").trim();
-  const detectedRoles = findHints(normalizedQuery, ROLE_HINTS);
+  const academicGroups = academicRequirements(normalizedQuery);
+  const experienceAreas = requestedExperienceAreas(normalizedQuery);
+  const academicAliases = new Set(academicGroups.flat().map(normalizeHint));
+  const detectedRoles = findHints(normalizedQuery, ROLE_HINTS)
+    .filter((role) => !academicAliases.has(normalizeHint(role)));
   const roles = [...new Set([
     ...detectedRoles,
     ...(isIndustrialRefrigerationDescription(normalizedQuery) && detectedRoles.length === 0 ? ["tecnico en refrigeracion"] : []),
@@ -514,8 +560,15 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   const industries = findHints(normalizedQuery, ["supermercado", "industria", "fabrica", "fábrica", "retail", "logistica", "logística", "manufactura", "tecnologia", "tecnología", "gastronomia", "gastronomía", "restaurante", "lubricantes", "consumo masivo"]);
   const locations = findHints(normalizedQuery, LOCATION_HINTS);
   const profileLevel = basicProfileRequested(normalizedQuery) ? "basic" : null;
-  const keywords = residualKeywords(normalizedQuery, [...roles, ...skills, ...languages, ...industries, ...locations]);
+  const keywords = residualKeywords(normalizedQuery, [
+    ...roles, ...skills, ...languages, ...industries, ...locations,
+    ...academicGroups.flat(), ...experienceAreas, "estudiante", "estudiando", "cursando"
+  ]);
   const experience = experienceRequirement(normalizedQuery);
+  const requiredGroups = [
+    ...requiredGroupsForQuery(normalizedQuery, roles, skills, languages, industries),
+    ...academicGroups
+  ];
 
   return {
     originalQuery: query,
@@ -531,8 +584,10 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
     locationStrict: strictLocationRequested(normalizedQuery),
     profileLevel,
     ignoredCriteria: ignoredSensitiveCriteria(normalizedQuery),
-    mustHave: [...roles, ...skills, ...languages, ...locations, ...keywords],
-    requiredGroups: requiredGroupsForQuery(normalizedQuery, roles, skills, languages, industries),
+    mustHave: [...roles, ...skills, ...languages, ...locations, ...keywords, ...academicGroups.map((group) => group[0])],
+    requiredGroups,
+    academicGroups,
+    experienceAreas,
     minimumRelevantExperienceMonths: experience.months,
     experienceComparator: experience.comparator
   };

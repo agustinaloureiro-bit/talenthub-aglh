@@ -196,13 +196,36 @@ function candidateHaystack(candidate: TalentCandidateResult) {
 }
 
 function relevantExperience(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
-  const requestedAreas = interpreted.roles.length
+  const requestedAreas = interpreted.experienceAreas.length
+    ? interpreted.experienceAreas
+    : interpreted.roles.length
     ? interpreted.roles
     : [...interpreted.skills, ...interpreted.industries].slice(0, 3);
   const areaTerms = [...new Set(requestedAreas.flatMap(experienceEquivalentValues))];
   const employerAliases = employerAliasesForConcepts(areaTerms);
   const documentedEvidence = [candidate.documentSnippet ?? "", candidate.summary ?? ""].join("\n");
   return calculateRelevantExperienceMonths(documentedEvidence, [...areaTerms, ...employerAliases]);
+}
+
+function academicEvidence(candidate: TalentCandidateResult) {
+  const normalizedSummary = normalizeSearchValue(candidate.summary ?? "");
+  const summarizedFormation = normalizedSummary.match(/\bformacion mencionada:\s*(.{1,360})/);
+  if (summarizedFormation?.[1]) return summarizedFormation[1];
+
+  const normalized = normalizeSearchValue(candidate.documentSnippet ?? "");
+  const marker = /\b(?:formacion|educacion|estudios?|universidad|facultad|carrera|licenciatura|estudiante|estudiando|cursando|egresad[oa]|recibid[oa]|titulo)\b/g;
+  const windows: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = marker.exec(normalized)) != null) {
+    windows.push(normalized.slice(match.index, Math.min(normalized.length, match.index + 320)));
+  }
+  return windows.join(" ");
+}
+
+function satisfiesAcademicGroup(candidate: TalentCandidateResult, group: string[]) {
+  const evidence = academicEvidence(candidate);
+  if (!evidence) return false;
+  return group.some((value) => evidence.includes(normalizeSearchValue(value)));
 }
 
 function candidateProfileText(candidate: TalentCandidateResult) {
@@ -227,6 +250,25 @@ function recencyBonus(value?: string | null) {
   if (ageDays <= 90) return 4;
   if (ageDays <= 365) return 2;
   return 0;
+}
+
+function sameCandidateIdentity(left: TalentCandidateResult, right: TalentCandidateResult) {
+  if (normalizeSearchValue(left.fullName) !== normalizeSearchValue(right.fullName)) return false;
+  const leftContacts = new Set([
+    ...(left.email ?? []).map((value) => value.toLowerCase().trim()),
+    ...(left.phone ?? []).map((value) => value.replace(/\D/g, "")).filter((value) => value.length >= 7)
+  ]);
+  const sharesContact = [
+    ...(right.email ?? []).map((value) => value.toLowerCase().trim()),
+    ...(right.phone ?? []).map((value) => value.replace(/\D/g, "")).filter((value) => value.length >= 7)
+  ].some((value) => leftContacts.has(value));
+  const leftDocument = normalizeSearchValue(left.primaryDocumentName ?? "");
+  const rightDocument = normalizeSearchValue(right.primaryDocumentName ?? "");
+  const sharesDocument = leftDocument.length >= 6 && leftDocument === rightDocument;
+  const leftSummary = normalizeSearchValue(left.summary ?? "");
+  const rightSummary = normalizeSearchValue(right.summary ?? "");
+  const sharesSummary = leftSummary.length >= 80 && leftSummary === rightSummary;
+  return sharesContact && (sharesDocument || sharesSummary);
 }
 
 function primaryRoleMatches(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
@@ -254,7 +296,9 @@ function requestedConcepts(interpreted: InterpretedTalentQuery) {
     ...interpreted.languages,
     ...interpreted.industries,
     ...interpreted.locations,
-    ...interpreted.keywords
+    ...interpreted.keywords,
+    ...interpreted.academicGroups.map((group) => group[0]),
+    ...interpreted.experienceAreas.slice(0, 1)
   ];
   const byNormalized = new Map<string, string>();
   for (const value of values) {
@@ -430,22 +474,26 @@ function satisfiesRequiredGroups(candidate: TalentCandidateResult, interpreted: 
       && (group.includes("ambulanciero") || group.includes("ambulancia"))) return true;
     return includesAny(evidence, group);
   };
+  if (interpreted.academicGroups.some((group) => !satisfiesAcademicGroup(candidate, group))) return false;
+  const academicGroupKeys = new Set(interpreted.academicGroups.map((group) => group.map(normalizeSearchValue).sort().join("|")));
+  const ordinaryGroups = interpreted.requiredGroups.filter((group) => !academicGroupKeys.has(group.map(normalizeSearchValue).sort().join("|")));
+  if (!ordinaryGroups.length) return true;
   const requiresCompleteEvidence = Boolean(interpreted.languages.length)
     || isAmbulanceDriverQuery(interpreted)
     || isAdministrativeWarehouseQuery(interpreted)
     || isIndustrialRefrigerationQuery(interpreted)
     || isIndustrialMechanicQuery(interpreted);
-  if (requiresCompleteEvidence) return interpreted.requiredGroups.every(groupMatches);
+  if (requiresCompleteEvidence) return ordinaryGroups.every(groupMatches);
 
   // In a broad recruiting search, the requested role is the eligibility
   // criterion. Additional skills improve the score but do not hide useful
   // alternatives that a recruiter may still want to inspect.
-  const roleGroups = interpreted.requiredGroups.filter((group) => interpreted.roles.some((role) => {
+  const roleGroups = ordinaryGroups.filter((group) => interpreted.roles.some((role) => {
     const normalizedRole = normalizeSearchValue(role);
     return group.some((value) => normalizeSearchValue(value) === normalizedRole);
   }));
   if (roleGroups.length) return roleGroups.some(groupMatches);
-  return interpreted.requiredGroups.some(groupMatches);
+  return ordinaryGroups.some(groupMatches);
 }
 
 function candidateResidence(candidate: TalentCandidateResult) {
@@ -678,5 +726,6 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
       || (b.matchCoverage?.ratio ?? 0) - (a.matchCoverage?.ratio ?? 0)
       || b.score - a.score
       || b.qualityScore - a.qualityScore)
+    .filter((candidate, index, ranked) => !ranked.slice(0, index).some((existing) => sameCandidateIdentity(existing, candidate)))
     .map(({ matchCoverage, primaryRoleAligned, warehouseFit, refrigerationFit, mechanicFit, ...candidate }) => candidate);
 }

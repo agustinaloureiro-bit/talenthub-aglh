@@ -106,6 +106,126 @@ test("interpreta los años de experiencia como requisito cuantitativo del área"
   assert.ok(!interpreted.keywords.includes("años"));
 });
 
+test("interpreta carreras alternativas y vincula los años al área administrativa", async () => {
+  const query = `Estudiante
+Contador; Administración de empresas; Economista
+3 años de experiencia en tareas administrativas`;
+  const interpreted = interpretTalentQuery(query);
+
+  assert.deepEqual(interpreted.roles, []);
+  assert.equal(interpreted.academicGroups.length, 1);
+  assert.ok(interpreted.academicGroups[0].includes("contador"));
+  assert.ok(interpreted.academicGroups[0].includes("administracion de empresas"));
+  assert.ok(interpreted.academicGroups[0].includes("economista"));
+  assert.ok(interpreted.experienceAreas.includes("tareas administrativas"));
+  assert.equal(interpreted.minimumRelevantExperienceMonths, 36);
+  assert.deepEqual(interpreted.keywords, []);
+
+  let providerQuery = "";
+  let retrievalPlan;
+  const engine = new RecruitmentIntelligenceEngine(async (retrievalQuery, _filters, plan) => {
+    providerQuery = retrievalQuery;
+    retrievalPlan = plan;
+    return [];
+  });
+  await engine.search(query);
+
+  assert.match(providerQuery, /contador/i);
+  assert.match(providerQuery, /administracion de empresas/i);
+  assert.match(providerQuery, /economista/i);
+  assert.match(providerQuery, /administrativ/i);
+  assert.ok(retrievalPlan.requiredGroups.some((group) => group.includes("economista")));
+});
+
+test("acepta cualquiera de las carreras solicitadas y exige tres años administrativos", () => {
+  const interpreted = interpretTalentQuery(`Estudiante
+Contador; Administración de empresas; Economista
+3 años de experiencia en tareas administrativas`);
+  const ranked = rerankCandidates([
+    {
+      id: "contabilidad",
+      fullName: "Laura Contable",
+      currentRole: "Auxiliar administrativa",
+      tags: ["administracion"],
+      qualityScore: 70,
+      documentCount: 1,
+      documentSnippet: "Estudiante de Contador Público. Auxiliar administrativa enero 2020 - diciembre 2023.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "administracion-empresas",
+      fullName: "Martin Empresa",
+      currentRole: "Asistente administrativo",
+      tags: ["back office"],
+      qualityScore: 65,
+      documentCount: 1,
+      documentSnippet: "Licenciatura en Administración de Empresas en curso. Asistente administrativo marzo 2019 - abril 2022.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "experiencia-insuficiente",
+      fullName: "Sofia Economia",
+      currentRole: "Administrativa",
+      tags: ["economia"],
+      qualityScore: 90,
+      documentCount: 1,
+      documentSnippet: "Estudiante de Economía. Administrativa enero 2024 - diciembre 2025.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "sin-formacion",
+      fullName: "Pedro Oficina",
+      currentRole: "Administrativo",
+      tags: ["administracion"],
+      qualityScore: 95,
+      documentCount: 1,
+      documentSnippet: "Administrativo enero 2015 - diciembre 2024. Secundaria completa.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "contador-solo-laboral",
+      fullName: "Ana Oficina",
+      currentRole: "Administrativa",
+      tags: ["administracion"],
+      qualityScore: 92,
+      documentCount: 1,
+      documentSnippet: "Administrativa enero 2018 - diciembre 2023. Reportaba al contador de la empresa. Formación: Secundaria completa.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.deepEqual(ranked.map((candidate) => candidate.id).sort(), ["administracion-empresas", "contabilidad"]);
+  assert.ok(ranked.every((candidate) => (candidate.relevantExperienceMonths ?? 0) >= 36));
+});
+
+test("no repite la misma persona importada desde más de una fuente", () => {
+  const interpreted = interpretTalentQuery("auxiliar administrativo");
+  const base = {
+    fullName: "María Paula Comunale",
+    currentRole: "Administración",
+    tags: ["administracion"],
+    email: ["maria@example.com"],
+    summary: "Experiencia administrativa comprobable en atención, archivo, facturación y tareas de oficina.",
+    documentCount: 1,
+    primaryDocumentName: "CV Maria Comunale.pdf",
+    qualityScore: 80,
+    score: 0,
+    matchReason: ""
+  };
+  const ranked = rerankCandidates([
+    { ...base, id: "gmail", fullName: "Maria Paula Comunale" },
+    { ...base, id: "aglh", fullName: "María Paula Comunale", qualityScore: 90 }
+  ], interpreted);
+
+  assert.equal(ranked.length, 1);
+  assert.equal(ranked[0].id, "aglh");
+});
+
 test("suma períodos separados del área y no cuenta experiencia de otros rubros", () => {
   const interpreted = interpretTalentQuery("Telemarketer con 3 años de experiencia");
   const ranked = rerankCandidates([

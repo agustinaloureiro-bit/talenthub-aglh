@@ -26,6 +26,8 @@ export type InterpretedTalentQuery = {
   ignoredCriteria: string[];
   mustHave: string[];
   requiredGroups: string[][];
+  academicGroups: string[][];
+  experienceAreas: string[];
   minimumRelevantExperienceMonths?: number | null;
   experienceComparator?: "at_least" | "more_than" | null;
 };
