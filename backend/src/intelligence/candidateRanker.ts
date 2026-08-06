@@ -2,6 +2,11 @@ import type { InterpretedTalentQuery, TalentCandidateResult } from "./types.js";
 import { extractCvResidence } from "../services/cvAnalysis.js";
 import { evaluateUruguayProximity, findUruguayPlace, normalizePlaceName } from "./uruguayGeography.js";
 import { calculateRelevantExperienceMonths, meetsExperienceMinimum } from "./experienceDuration.js";
+import {
+  employerAliasesForConcepts,
+  employerEvidenceForConcepts,
+  enrichWithEmployerConcepts
+} from "./employerKnowledge.js";
 
 function normalizeSearchValue(value: string) {
   return value.toLowerCase()
@@ -151,7 +156,7 @@ function includesAny(text: string, values: string[]) {
 }
 
 function candidateHaystack(candidate: TalentCandidateResult) {
-  return [
+  return enrichWithEmployerConcepts([
     candidate.fullName,
     candidate.currentRole ?? "",
     candidate.city ?? "",
@@ -163,7 +168,7 @@ function candidateHaystack(candidate: TalentCandidateResult) {
     candidate.seniority ?? "",
     candidate.primaryDocumentName ?? "",
     candidate.documentSnippet ?? ""
-  ].join(" ");
+  ].join(" "));
 }
 
 function relevantExperience(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
@@ -171,8 +176,9 @@ function relevantExperience(candidate: TalentCandidateResult, interpreted: Inter
     ? interpreted.roles
     : [...interpreted.skills, ...interpreted.industries].slice(0, 3);
   const areaTerms = [...new Set(requestedAreas.flatMap(experienceEquivalentValues))];
+  const employerAliases = employerAliasesForConcepts(areaTerms);
   const documentedEvidence = [candidate.documentSnippet ?? "", candidate.summary ?? ""].join("\n");
-  return calculateRelevantExperienceMonths(documentedEvidence, areaTerms);
+  return calculateRelevantExperienceMonths(documentedEvidence, [...areaTerms, ...employerAliases]);
 }
 
 function candidateProfileText(candidate: TalentCandidateResult) {
@@ -197,7 +203,13 @@ function recencyBonus(value?: string | null) {
 
 function primaryRoleMatches(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
   const requestedAreas = [...interpreted.roles, ...interpreted.skills, ...interpreted.industries];
-  return requestedAreas.length === 0 || includesAny(candidate.currentRole ?? "", requestedAreas);
+  if (requestedAreas.length === 0 || includesAny(candidate.currentRole ?? "", requestedAreas)) return true;
+  const genericCustomerRole = /\b(?:ventas?|vendedor(?:a)?|comercial|operador(?:a)?|atenci[oó]n al cliente)\b/i
+    .test(candidate.currentRole ?? "");
+  if (!genericCustomerRole) return false;
+  const evidence = [candidate.documentSnippet ?? "", candidate.summary ?? ""].join(" ");
+  const expandedAreas = [...new Set(requestedAreas.flatMap(experienceEquivalentValues))];
+  return employerEvidenceForConcepts(evidence, expandedAreas).length > 0;
 }
 
 function conceptMatchesProfile(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery, concept: string) {
@@ -241,10 +253,11 @@ function satisfiesResidualKeywords(candidate: TalentCandidateResult, interpreted
 }
 
 function conceptMatchesText(text: string, interpreted: InterpretedTalentQuery, concept: string) {
+  const enrichedText = enrichWithEmployerConcepts(text);
   const isSpecializedRole = interpreted.requiredGroups.length > 1
     && interpreted.roles.some((role) => normalizeSearchValue(role) === normalizeSearchValue(concept));
-  if (isSpecializedRole) return interpreted.requiredGroups.every((group) => includesAny(text, group));
-  return includesAny(text, [concept]);
+  if (isSpecializedRole) return interpreted.requiredGroups.every((group) => includesAny(enrichedText, group));
+  return includesAny(enrichedText, [concept]);
 }
 
 function isAmbulanceDriverQuery(interpreted: InterpretedTalentQuery) {
@@ -458,6 +471,9 @@ export function explainCandidateMatch(candidate: TalentCandidateResult, interpre
   const evidenceText = candidate.documentSnippet ?? "";
   const evidenceConcepts = resultCoverage.concepts.filter((concept) => conceptMatchesText(evidenceText, interpreted, concept));
   const reasons: string[] = [];
+  const requestedAreas = [...interpreted.roles, ...interpreted.skills, ...interpreted.industries]
+    .flatMap(experienceEquivalentValues);
+  const employerEvidence = employerEvidenceForConcepts(evidenceText, requestedAreas);
   if (interpreted.roles.length && primaryRoleMatches(candidate, interpreted)) reasons.push("área principal alineada");
   else if (interpreted.roles.length && includesAny(evidenceText, interpreted.roles)) reasons.push("el área aparece en el CV, pero no como perfil principal");
   if (interpreted.skills.length && includesAny(profileText, interpreted.skills)) reasons.push("competencias principales alineadas");
@@ -479,6 +495,7 @@ export function explainCandidateMatch(candidate: TalentCandidateResult, interpre
     const years = candidate.relevantExperienceMonths / 12;
     reasons.push(`${Number.isInteger(years) ? years : years.toFixed(1)} años comprobables en el área`);
   }
+  if (employerEvidence.length) reasons.push(`experiencia en ${employerEvidence.map((item) => item.evidenceLabel).join(", ")}`);
   const matched = resultCoverage.matchedConcepts.length ? resultCoverage.matchedConcepts.join(", ") : "coincidencia textual parcial";
   const evidence = evidenceConcepts.length ? " Evidencia encontrada en el CV." : " La coincidencia proviene de los datos indexados; conviene revisar el CV.";
   return `Coincide con: ${matched}.${reasons.length ? ` ${reasons.join(", ")}.` : ""}${evidence}`;

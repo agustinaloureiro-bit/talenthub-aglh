@@ -210,6 +210,57 @@ test("reconoce meses abreviados y la palabra de en los períodos", () => {
   assert.equal(ranked[0].relevantExperienceMonths, 39);
 });
 
+test("reconoce vendedor en Casa Tres como experiencia de telemarketing", () => {
+  const interpreted = interpretTalentQuery("Busco telemarketer");
+  const ranked = rerankCandidates([
+    {
+      id: "casa-tres",
+      fullName: "Lucia Telefonica",
+      currentRole: "Vendedora",
+      tags: ["ventas"],
+      qualityScore: 60,
+      documentCount: 1,
+      documentSnippet: "Experiencia laboral: Vendedora en Casa Tres. Gestión telefónica de clientes.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "venta-generica",
+      fullName: "Maria Comercio",
+      currentRole: "Vendedora",
+      tags: ["ventas"],
+      qualityScore: 90,
+      documentCount: 1,
+      documentSnippet: "Vendedora de salón en Casa Verde.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.deepEqual(ranked.map((candidate) => candidate.id), ["casa-tres"]);
+  assert.ok(ranked[0].score >= 70);
+  assert.match(ranked[0].matchReason, /Casa Tres \(contact center\)/i);
+});
+
+test("cuenta los períodos de vendedor en una empresa de contact center", () => {
+  const interpreted = interpretTalentQuery("Telemarketer con 3 años de experiencia");
+  const ranked = rerankCandidates([{
+    id: "casa-tres-periodo",
+    fullName: "Martin Contacto",
+    currentRole: "Vendedor",
+    tags: ["ventas"],
+    qualityScore: 70,
+    documentCount: 1,
+    documentSnippet: "Vendedor - Casa Tres, enero 2020 - diciembre 2023.",
+    score: 0,
+    matchReason: ""
+  }], interpreted);
+
+  assert.equal(ranked.length, 1);
+  assert.equal(ranked[0].relevantExperienceMonths, 48);
+  assert.match(ranked[0].matchReason, /4 años comprobables/i);
+});
+
 test("la recuperacion conserva competencias no catalogadas de la consulta original", async () => {
   let providerQuery = "";
   const engine = new RecruitmentIntelligenceEngine(async (query) => {

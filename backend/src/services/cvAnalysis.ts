@@ -1,4 +1,5 @@
 import { knownUruguayLocationNames } from "../intelligence/uruguayGeography.js";
+import { employerConceptsInText } from "../intelligence/employerKnowledge.js";
 
 export type CvLanguageEvidence = {
   lang: string;
@@ -285,7 +286,14 @@ export function analyzeCvText(input: string): CvAnalysis {
   const referenceCut = compact.search(/\b(?:referencias laborales|referencias personales)\b/i);
   const mainText = referenceCut > 0 ? compact.slice(0, referenceCut) : compact;
   const roles = unique(labelsFor(mainText, ROLE_RULES));
-  const primaryRole = primaryRoleFor(mainText);
+  const employerConcepts = employerConceptsInText(mainText);
+  const hasEmployerSalesEvidence = employerConcepts.length > 0
+    && /\b(?:ventas?|vendedor(?:a)?|comercial|operador(?:a)?|atenci[oó]n al cliente)\b/i.test(mainText);
+  if (hasEmployerSalesEvidence && !roles.includes("call center")) roles.push("call center");
+  const detectedPrimaryRole = primaryRoleFor(mainText);
+  const primaryRole = hasEmployerSalesEvidence && (!detectedPrimaryRole || detectedPrimaryRole === "ventas")
+    ? "call center"
+    : detectedPrimaryRole;
   const skills = unique(labelsFor(mainText, SKILL_RULES));
   const languages = extractLanguageEvidence(mainText);
   const years = extractYears(mainText);

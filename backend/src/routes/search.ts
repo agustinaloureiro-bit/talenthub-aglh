@@ -7,6 +7,7 @@ import type { CandidateRetrievalPlan } from "../intelligence/intelligenceEngine.
 import type { TalentSearchFilters } from "../intelligence/types.js";
 import { extractCvResidence } from "../services/cvAnalysis.js";
 import { knownUruguayLocationNames, nearbyUruguayLocations, normalizePlaceName } from "../intelligence/uruguayGeography.js";
+import { employerAliasesForConcepts } from "../intelligence/employerKnowledge.js";
 
 export const searchRouter = Router();
 
@@ -140,8 +141,9 @@ function expandedSearchTerms(query: string) {
   const semanticExpansions = isRichQuery
     ? []
     : baseWords.flatMap((word) => (extras[word] ?? []).slice(0, 4));
+  const employerExpansions = employerAliasesForConcepts([...baseWords, ...semanticExpansions]);
   const maxTerms = isRichQuery ? 18 : 28;
-  const terms = [...new Set([...baseWords, ...semanticExpansions, ...geographicTerms].map(normalizeSearchText))]
+  const terms = [...new Set([...baseWords, ...semanticExpansions, ...employerExpansions, ...geographicTerms].map(normalizeSearchText))]
     .filter(Boolean);
   return terms.length ? terms.slice(0, maxTerms) : [normalizedQuery];
 }

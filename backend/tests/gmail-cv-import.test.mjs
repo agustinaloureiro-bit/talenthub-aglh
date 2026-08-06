@@ -896,6 +896,17 @@ Ingles intermedio.`);
   assert.equal(analysis.languages[0]?.level, "intermedio");
 });
 
+test("analisis de CV reconoce el rubro por la empresa declarada", async () => {
+  const { analyzeCvText } = await import("../dist/services/cvAnalysis.js");
+  const analysis = analyzeCvText(`Camila Perez
+Experiencia laboral
+Vendedora en Casa Tres desde enero de 2021 hasta diciembre de 2024.
+Atencion y seguimiento telefonico de clientes.`);
+
+  assert.equal(analysis.primaryRole, "call center");
+  assert.ok(analysis.roles.includes("call center"));
+});
+
 test("analisis de CV conserva solo formacion explicitamente mencionada", async () => {
   const { analyzeCvText } = await import("../dist/services/cvAnalysis.js");
   const analysis = analyzeCvText(`Valeria Gomez Montevideo
