@@ -3,8 +3,17 @@ import { config } from "../config.js";
 
 export const pool = new pg.Pool({
   connectionString: config.databaseUrl,
-  max: 20,
+  max: 12,
   connectionTimeoutMillis: 5_000,
+  idleTimeoutMillis: 30_000
+});
+
+// Candidate searches must remain responsive while historical CV ingestion is
+// using the general pool. Keep the total connection budget unchanged.
+export const searchPool = new pg.Pool({
+  connectionString: config.databaseUrl,
+  max: 8,
+  connectionTimeoutMillis: 2_000,
   idleTimeoutMillis: 30_000
 });
 
@@ -31,8 +40,13 @@ export async function q<T extends QueryResultRow = any>(text: string, params: un
   return pool.query<T>(text, params);
 }
 
-export async function qWithTimeout<T extends QueryResultRow = any>(text: string, params: unknown[] = [], timeoutMs = 15_000) {
-  const client = await pool.connect();
+async function queryWithPoolTimeout<T extends QueryResultRow = any>(
+  selectedPool: pg.Pool,
+  text: string,
+  params: unknown[],
+  timeoutMs: number
+) {
+  const client = await selectedPool.connect();
   try {
     await client.query("BEGIN");
     await client.query("SELECT set_config('statement_timeout', $1, true)", [`${Math.max(1_000, timeoutMs)}ms`]);
@@ -45,4 +59,12 @@ export async function qWithTimeout<T extends QueryResultRow = any>(text: string,
   } finally {
     client.release();
   }
+}
+
+export async function qWithTimeout<T extends QueryResultRow = any>(text: string, params: unknown[] = [], timeoutMs = 15_000) {
+  return queryWithPoolTimeout<T>(pool, text, params, timeoutMs);
+}
+
+export async function qSearchWithTimeout<T extends QueryResultRow = any>(text: string, params: unknown[] = [], timeoutMs = 15_000) {
+  return queryWithPoolTimeout<T>(searchPool, text, params, timeoutMs);
 }

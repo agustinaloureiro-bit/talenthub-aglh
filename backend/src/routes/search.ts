@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { qWithTimeout } from "../db/pool.js";
+import { q, qSearchWithTimeout } from "../db/pool.js";
 import { asyncHandler } from "../middleware/errors.js";
 import { RecruitmentIntelligenceEngine } from "../intelligence/intelligenceEngine.js";
 import type { CandidateRetrievalPlan } from "../intelligence/intelligenceEngine.js";
@@ -208,7 +208,7 @@ function mergeRankedMatches(...groups: RankedCandidateMatch[][]) {
 
 async function findProfileMatches(candidateFilter: string, params: unknown[], queryParameter: 2 | 3, timeoutMs: number) {
   const queryExpression = `$${queryParameter}`;
-  return qWithTimeout(
+  return qSearchWithTimeout(
     `WITH search_terms AS MATERIALIZED (
        SELECT websearch_to_tsquery('spanish', ${queryExpression}) AS query,
          $1::text AS original_query,
@@ -230,7 +230,7 @@ async function findProfileMatches(candidateFilter: string, params: unknown[], qu
 }
 
 async function findDocumentMatches(candidateFilter: string, params: unknown[]) {
-  return qWithTimeout(
+  return qSearchWithTimeout(
     `WITH search_terms AS MATERIALIZED (
        SELECT websearch_to_tsquery('spanish', $2) AS query,
          $1::text AS original_query,
@@ -290,7 +290,7 @@ async function hydrateCandidateMatches(matches: RankedCandidateMatch[]) {
   const ids = matches.map((match) => match.id);
   const ranks = matches.map((match) => match.rank);
   const documentIds = matches.map((match) => match.matched_document_id ?? null);
-  return qWithTimeout(
+  return qSearchWithTimeout(
     `WITH requested AS MATERIALIZED (
        SELECT *
        FROM unnest($1::uuid[], $2::double precision[], $3::uuid[])
@@ -425,10 +425,9 @@ export async function searchTalent(query: string, filters: TalentSearchFilters =
 
 searchRouter.post("/talent", asyncHandler(async (req, res) => {
   const body = searchSchema.parse(req.body);
-  void qWithTimeout(
+  void q(
     "INSERT INTO saved_searches (user_id, query, filters) VALUES ($1,$2,$3)",
-    [req.user!.id, body.query, JSON.stringify(body.filters)],
-    1_000
+    [req.user!.id, body.query, JSON.stringify(body.filters)]
   ).catch(() => undefined);
   let result;
   try {
