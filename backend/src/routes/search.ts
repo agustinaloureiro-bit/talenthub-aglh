@@ -127,6 +127,9 @@ function expandedSearchTerms(query: string) {
     picking: ["preparacion de pedidos", "preparación de pedidos", "deposito", "depósito", "logistica", "logística"],
     packing: ["embalaje", "empaque", "deposito", "depósito"],
     cobranzas: ["cobranza", "gestion de morosos", "gestión de morosos", "recuperacion de deuda", "recuperación de deuda"],
+    telemarketer: ["telemarketing", "call center", "contact center", "operador telefonico", "operadora telefonica", "ventas telefonicas"],
+    telemarketing: ["telemarketer", "call center", "contact center", "operador telefonico", "operadora telefonica", "ventas telefonicas"],
+    call: ["call center", "contact center", "telemarketer", "telemarketing", "operador telefonico"],
     payroll: ["liquidacion de sueldos", "liquidación de sueldos", "nomina", "nómina", "bops"]
   };
   const geographicTerms = knownUruguayLocationNames()
@@ -308,6 +311,12 @@ async function hydrateCandidateMatches(matches: RankedCandidateMatch[]) {
          (d.id=requested.matched_document_id) DESC,
          d.is_primary_cv DESC,
          d.created_at DESC
+     ), document_evidence AS MATERIALIZED (
+       SELECT d.candidate_id,
+         left(string_agg(left(coalesce(d.raw_text, ''), 12000), E'\n\n' ORDER BY d.is_primary_cv DESC, d.created_at DESC), 30000) AS raw_text
+       FROM documents d
+       WHERE d.candidate_id = ANY($1::uuid[])
+       GROUP BY d.candidate_id
      ), source_summary AS MATERIALIZED (
        SELECT cs.candidate_id,
          count(DISTINCT cs.source_type)::int AS source_count,
@@ -326,13 +335,14 @@ async function hydrateCandidateMatches(matches: RankedCandidateMatch[]) {
        primary_documents.id AS primary_document_id,
        primary_documents.mime_type AS primary_document_mime_type,
        primary_documents.source_type AS primary_document_source_type,
-       left(coalesce(primary_documents.raw_text, ''), 8000) AS document_snippet,
+       coalesce(document_evidence.raw_text, left(coalesce(primary_documents.raw_text, ''), 8000)) AS document_snippet,
        source_summary.latest_source_at,
        requested.rank
      FROM requested
      JOIN candidates c ON c.id=requested.id
      LEFT JOIN document_counts ON document_counts.candidate_id=c.id
      LEFT JOIN primary_documents ON primary_documents.candidate_id=c.id
+     LEFT JOIN document_evidence ON document_evidence.candidate_id=c.id
      LEFT JOIN source_summary ON source_summary.candidate_id=c.id
      ORDER BY requested.rank DESC, c.quality_score DESC, c.updated_at DESC`,
     [ids, ranks, documentIds],

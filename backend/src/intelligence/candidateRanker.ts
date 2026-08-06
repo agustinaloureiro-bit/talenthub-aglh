@@ -1,6 +1,7 @@
 import type { InterpretedTalentQuery, TalentCandidateResult } from "./types.js";
 import { extractCvResidence } from "../services/cvAnalysis.js";
 import { evaluateUruguayProximity, findUruguayPlace, normalizePlaceName } from "./uruguayGeography.js";
+import { calculateRelevantExperienceMonths, meetsExperienceMinimum } from "./experienceDuration.js";
 
 function normalizeSearchValue(value: string) {
   return value.toLowerCase()
@@ -107,6 +108,8 @@ const EQUIVALENT_TERMS: Record<string, string[]> = {
   psicologo: ["psicologa", "psicologia", "licenciado en psicologia"],
   psicologa: ["psicologo", "psicologia", "licenciada en psicologia"],
   "auxiliar de farmacia": ["idoneo en farmacia", "farmacia", "farmaceutico"],
+  telemarketer: ["telemarketing", "call center", "contact center", "operador telefonico", "operadora telefonica", "ventas telefonicas"],
+  telemarketing: ["telemarketer", "call center", "contact center", "operador telefonico", "operadora telefonica", "ventas telefonicas"],
   "call center": ["contact center", "telemarketer", "telemarketing", "operador telefonico"],
   autoelevador: ["montacargas", "forklift", "apilador electrico", "equipos de movimiento de materiales", "baterias de traccion"],
   montacargas: ["autoelevador", "forklift", "apilador electrico", "equipos de movimiento de materiales"],
@@ -120,6 +123,20 @@ const EQUIVALENT_TERMS: Record<string, string[]> = {
 function equivalentValues(value: string) {
   const normalized = normalizeSearchValue(value);
   return [normalized, ...(EQUIVALENT_TERMS[normalized] ?? [])].map(normalizeSearchValue);
+}
+
+function experienceEquivalentValues(value: string) {
+  const normalized = normalizeSearchValue(value);
+  const equivalents = new Set<string>([normalized]);
+  for (const [concept, variants] of Object.entries(EQUIVALENT_TERMS)) {
+    const normalizedConcept = normalizeSearchValue(concept);
+    const normalizedVariants = variants.map(normalizeSearchValue);
+    if (normalizedConcept === normalized || normalizedVariants.includes(normalized)) {
+      equivalents.add(normalizedConcept);
+      normalizedVariants.forEach((variant) => equivalents.add(variant));
+    }
+  }
+  return [...equivalents];
 }
 
 function includesAny(text: string, values: string[]) {
@@ -147,6 +164,15 @@ function candidateHaystack(candidate: TalentCandidateResult) {
     candidate.primaryDocumentName ?? "",
     candidate.documentSnippet ?? ""
   ].join(" ");
+}
+
+function relevantExperience(candidate: TalentCandidateResult, interpreted: InterpretedTalentQuery) {
+  const requestedAreas = interpreted.roles.length
+    ? interpreted.roles
+    : [...interpreted.skills, ...interpreted.industries].slice(0, 3);
+  const areaTerms = [...new Set(requestedAreas.flatMap(experienceEquivalentValues))];
+  const documentedEvidence = [candidate.documentSnippet ?? "", candidate.summary ?? ""].join("\n");
+  return calculateRelevantExperienceMonths(documentedEvidence, areaTerms);
 }
 
 function candidateProfileText(candidate: TalentCandidateResult) {
@@ -449,17 +475,31 @@ export function explainCandidateMatch(candidate: TalentCandidateResult, interpre
     reasons.push("ubicación pendiente de verificar");
   }
   if (interpreted.seniority && normalizeSearchValue(haystack).includes(normalizeSearchValue(interpreted.seniority))) reasons.push("seniority compatible");
+  if (interpreted.minimumRelevantExperienceMonths && candidate.relevantExperienceMonths != null) {
+    const years = candidate.relevantExperienceMonths / 12;
+    reasons.push(`${Number.isInteger(years) ? years : years.toFixed(1)} años comprobables en el área`);
+  }
   const matched = resultCoverage.matchedConcepts.length ? resultCoverage.matchedConcepts.join(", ") : "coincidencia textual parcial";
   const evidence = evidenceConcepts.length ? " Evidencia encontrada en el CV." : " La coincidencia proviene de los datos indexados; conviene revisar el CV.";
   return `Coincide con: ${matched}.${reasons.length ? ` ${reasons.join(", ")}.` : ""}${evidence}`;
 }
 
 export function rerankCandidates(candidates: TalentCandidateResult[], interpreted: InterpretedTalentQuery) {
-  const qualified = candidates
+  const withExperience = candidates.map((candidate) => ({
+    ...candidate,
+    relevantExperienceMonths: relevantExperience(candidate, interpreted)
+  }));
+  const qualified = withExperience
     .filter((candidate) => isCredibleCandidateName(candidate.fullName))
     .filter((candidate) => satisfiesRequiredGroups(candidate, interpreted))
     .filter((candidate) => satisfiesResidualKeywords(candidate, interpreted))
-    .filter((candidate) => basicProfileSuitability(candidate, interpreted).allowed);
+    .filter((candidate) => basicProfileSuitability(candidate, interpreted).allowed)
+    .filter((candidate) => !interpreted.minimumRelevantExperienceMonths
+      || meetsExperienceMinimum(
+        candidate.relevantExperienceMonths ?? null,
+        interpreted.minimumRelevantExperienceMonths,
+        interpreted.experienceComparator ?? "at_least"
+      ));
   const hasVerifiedLocationMatch = qualified.some((candidate) => {
     const location = candidateLocationMatch(candidate, interpreted);
     return location.matches && !["unknown", "broad"].includes(location.confidence);

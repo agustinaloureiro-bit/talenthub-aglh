@@ -439,7 +439,7 @@ function residualKeywords(query: string, knownConcepts: string[]) {
     "realizar", "efectuar", "ejecutar", "general", "generales", "diaria", "diarias",
     "registrar", "detectar", "reparar", "posible", "posibles", "requisito", "requisitos",
     "secundaria", "completa", "equivalente", "formacion", "tecnica", "tecnico",
-    "profesional", "deseable", "areas", "afines", "minima", "minimo", "anos", "valora",
+    "profesional", "deseable", "area", "areas", "afines", "minima", "minimo", "anos", "valora",
     "valorara", "especialmente", "sistemas", "maquinas", "niveles", "consumos",
     "busqueda", "esta", "orientada", "canal", "persona", "sera", "desarrollar",
     "gestionar", "estructura", "definida", "actividades", "objetivos", "incluyendo",
@@ -453,6 +453,18 @@ function residualKeywords(query: string, knownConcepts: string[]) {
     .split(/[^\p{L}\p{N}]+/u)
     .filter((word) => word.length >= 4 && !ignoredWords.has(word) && !knownTokens.has(word)))];
   return keywords.slice(0, isDetailedJobDescription(query) ? 8 : 20);
+}
+
+function experienceRequirement(query: string) {
+  const normalized = normalizeHint(query);
+  const match = normalized.match(/\b(?:(mas de|superior a|mayor a|al menos|minim[oa]|como minimo)\s*)?(\d{1,2})\s*(anos?|mes(?:es)?)\s*(?:de\s*)?(?:experiencia|trayectoria)?\b/);
+  if (!match) return { months: null, comparator: null } as const;
+  const amount = Number(match[2]);
+  if (!amount || amount > 59) return { months: null, comparator: null } as const;
+  return {
+    months: /ano/.test(match[3]) ? amount * 12 : amount,
+    comparator: /^(?:mas de|superior a|mayor a)$/.test(match[1] ?? "") ? "more_than" as const : "at_least" as const
+  };
 }
 
 export function interpretTalentQuery(query: string): InterpretedTalentQuery {
@@ -475,6 +487,7 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   const locations = findHints(normalizedQuery, LOCATION_HINTS);
   const profileLevel = basicProfileRequested(normalizedQuery) ? "basic" : null;
   const keywords = residualKeywords(normalizedQuery, [...roles, ...skills, ...languages, ...industries, ...locations]);
+  const experience = experienceRequirement(normalizedQuery);
 
   return {
     originalQuery: query,
@@ -491,6 +504,8 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
     profileLevel,
     ignoredCriteria: ignoredSensitiveCriteria(normalizedQuery),
     mustHave: [...roles, ...skills, ...languages, ...locations, ...keywords],
-    requiredGroups: requiredGroupsForQuery(normalizedQuery, roles, skills, languages, industries)
+    requiredGroups: requiredGroupsForQuery(normalizedQuery, roles, skills, languages, industries),
+    minimumRelevantExperienceMonths: experience.months,
+    experienceComparator: experience.comparator
   };
 }

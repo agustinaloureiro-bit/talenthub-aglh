@@ -97,6 +97,119 @@ test("interpreta auxiliar administrativo con facturacion sin palabras de relleno
   assert.doesNotMatch(providerQuery, /\bbusco\b|\bexperiencia\b/);
 });
 
+test("interpreta los años de experiencia como requisito cuantitativo del área", () => {
+  const interpreted = interpretTalentQuery("Busco telemarketer con 3 años de experiencia en el área");
+
+  assert.ok(interpreted.roles.includes("telemarketer"));
+  assert.equal(interpreted.minimumRelevantExperienceMonths, 36);
+  assert.equal(interpreted.experienceComparator, "at_least");
+  assert.ok(!interpreted.keywords.includes("años"));
+});
+
+test("suma períodos separados del área y no cuenta experiencia de otros rubros", () => {
+  const interpreted = interpretTalentQuery("Telemarketer con 3 años de experiencia");
+  const ranked = rerankCandidates([
+    {
+      id: "acumulada",
+      fullName: "Laura Telefonica",
+      currentRole: "Telemarketer",
+      tags: ["call center"],
+      qualityScore: 70,
+      documentCount: 2,
+      documentSnippet: "Telemarketer en Ventas SA enero 2018 - diciembre 2019.\n" + "detalle ".repeat(30) + "Operadora de call center marzo 2020 - abril 2022.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "otro-rubro",
+      fullName: "Mario Administrativo",
+      currentRole: "Administrativo",
+      tags: ["telemarketing"],
+      qualityScore: 95,
+      documentCount: 1,
+      documentSnippet: "Administrativo enero 2015 - diciembre 2022. " + "tareas de oficina ".repeat(30) + "Telemarketer enero 2023 - diciembre 2023.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.deepEqual(ranked.map((candidate) => candidate.id), ["acumulada"]);
+  assert.ok(ranked[0].relevantExperienceMonths >= 48);
+  assert.match(ranked[0].matchReason, /años comprobables en el área/i);
+});
+
+test("no cuenta dos veces meses superpuestos de experiencia relevante", () => {
+  const interpreted = interpretTalentQuery("Telemarketer con más de 3 años de experiencia");
+  const ranked = rerankCandidates([{
+    id: "superpuesta",
+    fullName: "Ana Telefonica",
+    currentRole: "Telemarketer",
+    tags: ["call center"],
+    qualityScore: 80,
+    documentCount: 2,
+    documentSnippet: "Telemarketer enero 2020 - diciembre 2022.\nOperadora de call center enero 2021 - diciembre 2022.",
+    score: 0,
+    matchReason: ""
+  }], interpreted);
+
+  assert.equal(interpreted.experienceComparator, "more_than");
+  assert.deepEqual(ranked, []);
+});
+
+test("acepta experiencia relevante declarada explícitamente sin fechas", () => {
+  const interpreted = interpretTalentQuery("Telemarketer con más de 3 años de experiencia");
+  const ranked = rerankCandidates([{
+    id: "explicita",
+    fullName: "Sofia Contacto",
+    currentRole: "Operadora de call center",
+    tags: ["telemarketing"],
+    qualityScore: 65,
+    documentCount: 1,
+    documentSnippet: "Cuento con 5 años de experiencia como telemarketer en campañas de ventas y atención.",
+    score: 0,
+    matchReason: ""
+  }], interpreted);
+
+  assert.equal(ranked.length, 1);
+  assert.equal(ranked[0].relevantExperienceMonths, 60);
+});
+
+test("no usa los años totales de carrera para completar experiencia del área", () => {
+  const interpreted = interpretTalentQuery("Telemarketer con 3 años de experiencia");
+  const ranked = rerankCandidates([{
+    id: "trayectoria-global",
+    fullName: "Lucia Telefonica",
+    currentRole: "Telemarketer",
+    years: 12,
+    tags: ["call center"],
+    qualityScore: 90,
+    documentCount: 1,
+    documentSnippet: "Telemarketer enero 2025 - diciembre 2025. Antes trabajó varios años en administración.",
+    score: 0,
+    matchReason: ""
+  }], interpreted);
+
+  assert.deepEqual(ranked, []);
+});
+
+test("reconoce meses abreviados y la palabra de en los períodos", () => {
+  const interpreted = interpretTalentQuery("Telemarketer con más de 3 años de experiencia");
+  const ranked = rerankCandidates([{
+    id: "meses-abreviados",
+    fullName: "Mario Contacto",
+    currentRole: "Operador telefónico",
+    tags: ["call center"],
+    qualityScore: 75,
+    documentCount: 1,
+    documentSnippet: "Operador de call center: ene. de 2019 - mar. de 2022.",
+    score: 0,
+    matchReason: ""
+  }], interpreted);
+
+  assert.equal(ranked.length, 1);
+  assert.equal(ranked[0].relevantExperienceMonths, 39);
+});
+
 test("la recuperacion conserva competencias no catalogadas de la consulta original", async () => {
   let providerQuery = "";
   const engine = new RecruitmentIntelligenceEngine(async (query) => {

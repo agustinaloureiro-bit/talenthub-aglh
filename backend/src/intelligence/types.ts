@@ -26,6 +26,8 @@ export type InterpretedTalentQuery = {
   ignoredCriteria: string[];
   mustHave: string[];
   requiredGroups: string[][];
+  minimumRelevantExperienceMonths?: number | null;
+  experienceComparator?: "at_least" | "more_than" | null;
 };
 
 export type TalentCandidateResult = {
@@ -52,6 +54,7 @@ export type TalentCandidateResult = {
   matchDistanceKm?: number | null;
   score: number;
   matchReason: string;
+  relevantExperienceMonths?: number | null;
 };
 
 export type TalentSearchResult = {
