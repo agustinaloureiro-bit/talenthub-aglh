@@ -99,6 +99,10 @@ const ROLE_HINTS = [
 const LOCATION_HINTS = [...new Set(knownUruguayLocationNames().map(normalizeHint))];
 
 const SKILL_HINTS = [
+  "sistemas de facturacion",
+  "sistemas de facturación",
+  "sistema de facturacion",
+  "sistema de facturación",
   "refrigeracion industrial",
   "refrigeración industrial",
   "aire acondicionado",
@@ -194,6 +198,7 @@ const SKILL_HINTS = [
 ];
 
 const CONCEPT_PATTERNS: Array<{ pattern: RegExp; skill: string }> = [
+  { pattern: /\b(?:sistemas?|programas?|software)\s+(?:de\s+)?facturaci[oó]n\b/i, skill: "sistemas de facturacion" },
   { pattern: /\b(?:refrigeraci[oó]n industrial|sistemas? de refrigeraci[oó]n|m[aá]quinas? de fr[ií]o|generaci[oó]n de fr[ií]o|equipos? de fr[ií]o|frigorista)\b/i, skill: "refrigeracion industrial" },
   { pattern: /\b(?:mantenimiento (?:preventivo|correctivo)|mantenimiento de (?:m[aá]quinas|equipos|sistemas)|mantenimiento industrial)\b/i, skill: "mantenimiento industrial" },
   { pattern: /\b(?:mec[aá]nica industrial|mec[aá]nico industrial|electromec[aá]nic[oa]|mantenimiento mec[aá]nico)\b/i, skill: "mecanica industrial" },
@@ -243,6 +248,17 @@ function findHints(query: string, hints: string[]) {
     if (!unique.has(normalizedHint)) unique.set(normalizedHint, hint);
   }
   return [...unique.values()];
+}
+
+function canonicalSkill(skill: string) {
+  const normalized = normalizeHint(skill);
+  if ([
+    "sistema de facturacion",
+    "sistemas de facturacion",
+    "software de facturacion",
+    "programa de facturacion"
+  ].includes(normalized)) return "sistemas de facturacion";
+  return normalized;
 }
 
 function isDetailedJobDescription(query: string) {
@@ -324,9 +340,16 @@ function requiredGroupsForQuery(
 ) {
   const normalized = normalizeHint(query);
   const optionalConcepts = optionalConceptsForQuery(query, [...skills, ...industries]);
+  const requiredConceptAliases: Record<string, string[]> = {
+    "sistemas de facturacion": [
+      "sistema de facturacion", "sistemas de facturacion", "software de facturacion",
+      "programa de facturacion", "facturacion electronica", "emision de facturas",
+      "facturacion", "memory", "tango", "gns", "nodum", "odoo", "sap", "erp"
+    ]
+  };
   const groups = [...roles, ...skills, ...languages, ...industries]
     .filter((concept) => !optionalConcepts.has(normalizeHint(concept)))
-    .map((concept) => [concept]);
+    .map((concept) => requiredConceptAliases[normalizeHint(concept)] ?? [concept]);
   if (isIndustrialRefrigerationDescription(query)) {
     return [
       [
@@ -402,11 +425,10 @@ function basicProfileRequested(query: string) {
 
 function strictLocationRequested(query: string) {
   const normalized = normalizeHint(query);
-  return /\b(?:tiene que|debe|deben|preciso que|necesito que)\s+(?:vivir|viva|vivan|ser|sean|residir)\b/.test(normalized)
-    || /\bque\s+(?:viva|vivan|resida|residan)\b/.test(normalized)
-    || /\b(?:vivir|residir)\s+cerca\b/.test(normalized)
+  return /\b(?:excluyente|obligatorio|obligatoria|indispensable|unicamente|solo)\b.{0,50}\b(?:vivir|viva|vivan|residir|resida|residan|domicilio|residencia)\b/.test(normalized)
+    || /\b(?:tiene que|debe|deben|preciso que|necesito que)\s+(?:vivir|viva|vivan|ser|sean|residir)\b/.test(normalized)
     || /\bresidentes?\s+de\b/.test(normalized)
-    || /\bde\s+[^,.;\n]{2,60}\s+o\s+alrededores\b/.test(normalized);
+    || /\b(?:domicilio|residencia)\s+(?:obligatorio|obligatoria|excluyente)\b/.test(normalized);
 }
 
 function ignoredSensitiveCriteria(query: string) {
@@ -424,7 +446,7 @@ function residualKeywords(query: string, knownConcepts: string[]) {
     "perfil", "candidato", "candidata", "con", "sin", "para", "por", "experiencia",
     "experiencias", "tener", "tenga", "tengan", "que", "una", "uno", "trabajar", "trabajo",
     "necesita", "necesitan", "requiere", "requieren", "especifica", "especifico", "alguna",
-    "algun", "alguno", "tiene", "debe", "deben", "sean", "sea", "ser", "puesto", "cargo",
+    "algun", "alguno", "tiene", "tenido", "haya", "hayan", "debe", "deben", "sean", "sea", "ser", "puesto", "cargo",
     "cerca", "alrededores", "vivir", "vive", "viva", "residir", "residente", "residentes",
     "manejo", "conocimiento", "conocimientos", "nivel", "buen", "buena", "muy", "del", "las",
     "los", "como", "hombre", "hombres", "mujer", "mujeres", "organizada", "organizado",
@@ -480,7 +502,7 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   const skills = [...new Set([
     ...findHints(normalizedQuery, SKILL_HINTS),
     ...CONCEPT_PATTERNS.filter(({ pattern }) => pattern.test(normalizedQuery)).map(({ skill }) => skill)
-  ])];
+  ].map(canonicalSkill))];
   const languages = LANGUAGE_PATTERNS.filter(([pattern]) => pattern.test(normalizedQuery)).map(([, language]) => language);
   const seniority = SENIORITY_PATTERNS.find(([pattern]) => pattern.test(normalizedQuery))?.[1] ?? null;
   const industries = findHints(normalizedQuery, ["supermercado", "industria", "fabrica", "fábrica", "retail", "logistica", "logística", "manufactura", "tecnologia", "tecnología", "gastronomia", "gastronomía", "restaurante", "lubricantes", "consumo masivo"]);

@@ -75,6 +75,7 @@ function expandedSearchTerms(query: string) {
     negociacion: ["negociación", "ventas", "comercial", "compras", "cuentas"],
     administrativo: ["administrativa", "administracion", "administración", "auxiliar administrativo", "back office", "oficina"],
     administracion: ["administración", "administrativo", "administrativa", "auxiliar administrativo", "back office", "oficina"],
+    facturacion: ["facturación", "facturacion electronica", "emision de facturas", "memory", "tango", "gns", "nodum", "odoo", "sap", "erp"],
     logistica: ["logística", "deposito", "depósito", "almacen", "almacén", "inventario", "distribucion", "distribución", "supply chain"],
     deposito: ["depósito", "almacen", "almacén", "logistica", "logística", "stock", "inventario", "auxiliar de deposito", "operario de deposito"],
     depositos: ["depósitos", "almacen", "almacén", "logistica", "logística", "stock", "inventario"],

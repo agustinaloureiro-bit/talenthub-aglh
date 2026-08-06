@@ -747,6 +747,63 @@ test("no exige que el nombre del lugar de trabajo aparezca en el CV", () => {
   assert.equal(interpreted.locationStrict, true);
 });
 
+test("interpreta cercania y sistemas de facturacion sin reducir la busqueda a un nombre literal", () => {
+  const interpreted = interpretTalentQuery("auxiliar administrativo que viva cerca de Carrasco y que haya tenido experiencia con algun sistema de facturacion");
+
+  assert.ok(interpreted.roles.includes("auxiliar administrativo"));
+  assert.ok(interpreted.skills.includes("sistemas de facturacion"));
+  assert.ok(interpreted.locations.includes("carrasco"));
+  assert.equal(interpreted.locationStrict, false);
+  assert.ok(interpreted.requiredGroups.some((group) => group.includes("memory")));
+  assert.ok(interpreted.requiredGroups.some((group) => group.includes("facturacion")));
+});
+
+test("prioriza cercania verificada, conserva domicilios sin barrio y descarta ubicaciones incompatibles", () => {
+  const interpreted = interpretTalentQuery("auxiliar administrativo que viva cerca de Carrasco y que haya usado un sistema de facturacion");
+  const ranked = rerankCandidates([
+    {
+      id: "sin-barrio",
+      fullName: "Ana Sin Barrio",
+      currentRole: "Auxiliar administrativa",
+      city: "Montevideo",
+      tags: ["memory"],
+      qualityScore: 90,
+      documentCount: 1,
+      documentSnippet: "Auxiliar administrativa. Manejo de Memory y emision de facturas.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "cercana",
+      fullName: "Beatriz Carrasco",
+      currentRole: "Auxiliar administrativa",
+      city: "San Jose de Carrasco",
+      tags: ["facturacion"],
+      qualityScore: 70,
+      documentCount: 1,
+      documentSnippet: "Auxiliar administrativa con experiencia en facturacion electronica.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "incompatible",
+      fullName: "Carla Maldonado",
+      currentRole: "Auxiliar administrativa",
+      city: "Maldonado",
+      tags: ["sap"],
+      qualityScore: 99,
+      documentCount: 1,
+      documentSnippet: "Auxiliar administrativa con SAP y facturacion.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.deepEqual(ranked.map((candidate) => candidate.id), ["cercana", "sin-barrio"]);
+  assert.ok(ranked[0].score > ranked[1].score);
+  assert.match(ranked[1].matchReason, /confirmar el barrio/i);
+});
+
 test("Carrasco incluye barrios cercanos en una distancia laboral razonable", () => {
   const sanJose = evaluateUruguayProximity("San Jose de Carrasco", "Carrasco");
   const maldonado = evaluateUruguayProximity("Maldonado", "Carrasco");

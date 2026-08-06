@@ -78,6 +78,11 @@ const EQUIVALENT_TERMS: Record<string, string[]> = {
   "carga y descarga": ["carga", "descarga", "mercaderia", "contenedores", "deposito", "logistica", "peon"],
   "control de mercaderia": ["control de stock", "inventario", "verificacion", "mercaderia", "contenedores", "recepcion", "despacho"],
   "control documental": ["documentacion", "documentos", "remitos", "facturas", "archivo", "control administrativo"],
+  "sistemas de facturacion": [
+    "sistema de facturacion", "software de facturacion", "programa de facturacion",
+    "facturacion electronica", "emision de facturas", "facturacion", "memory", "tango",
+    "gns", "nodum", "odoo", "sap", "erp"
+  ],
   pesaje: ["balanza", "control de peso", "pesaje de mercaderia"],
   "operativa portuaria": ["puerto", "portuario", "contenedores", "terminal de cargas", "deposito", "logistica"],
   apuntador: ["verificador", "controlador de deposito", "auxiliar de deposito", "control de mercaderia", "administrativo de deposito"],
@@ -451,6 +456,13 @@ function candidateLocationMatch(candidate: TalentCandidateResult, interpreted: I
     : { matches: !interpreted.locationStrict, distanceKm: null, confidence: "unknown" as const };
 }
 
+function requestsCandidateResidence(interpreted: InterpretedTalentQuery) {
+  const query = normalizeSearchValue(interpreted.originalQuery);
+  return /\b(?:vivir|vive|viva|vivan|residir|resida|residan|residente|residentes|domicilio|residencia)\b/.test(query)
+    || /\bcerca de\b/.test(query)
+    || /\b(?:de|en)\b.{0,80}\bo alrededores\b/.test(query);
+}
+
 const BASIC_WORK_PATTERN = /\b(?:operari[oa]|cajer[oa]|repositor[oa]|auxiliar|pe[oó]n|deposito|dep[oó]sito|stock|almac[eé]n|limpieza|atenci[oó]n al cliente|ventas|mozo|moza|cocina|producci[oó]n|log[ií]stica|supermercado|retail)\b/i;
 const PROFESSIONAL_ROLE_PATTERN = /\b(?:contador(?:a)?|abogad[oa]|ingenier[oa]|arquitect[oa]|m[eé]dic[oa]|psic[oó]log[oa]|licenciad[oa]|director(?:a)?|gerente|consultor(?:a) senior)\b/i;
 
@@ -482,7 +494,7 @@ export function explainCandidateMatch(candidate: TalentCandidateResult, interpre
   const locationMatch = candidateLocationMatch(candidate, interpreted);
   if (interpreted.locations.length && locationMatch.matches) {
     if (locationMatch.distanceKm != null) reasons.push(`ubicación solicitada (a ${locationMatch.distanceKm} km)`);
-    else if (locationMatch.confidence === "broad") reasons.push("vive en Montevideo, pero el barrio no está declarado");
+    else if (locationMatch.confidence === "broad") reasons.push("vive en Montevideo, pero conviene confirmar el barrio");
     else if (locationMatch.confidence === "unknown") reasons.push("ubicación pendiente de verificar");
     else reasons.push("ubicación solicitada");
   } else if (interpreted.locations.length && locationMatch.confidence === "broad") {
@@ -517,20 +529,21 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
         interpreted.minimumRelevantExperienceMonths,
         interpreted.experienceComparator ?? "at_least"
       ));
+  const residenceRequested = requestsCandidateResidence(interpreted);
   const hasVerifiedLocationMatch = qualified.some((candidate) => {
     const location = candidateLocationMatch(candidate, interpreted);
     return location.matches && !["unknown", "broad"].includes(location.confidence);
   });
-  const allowUnverifiedLocationFallback = interpreted.locationStrict
-    && interpreted.locations.length > 0
-    && !hasVerifiedLocationMatch;
-
   return qualified
     .filter((candidate) => {
-      if (!interpreted.locationStrict) return true;
+      if (!interpreted.locations.length || !residenceRequested) return true;
       const location = candidateLocationMatch(candidate, interpreted);
-      return location.matches
-        || (allowUnverifiedLocationFallback && ["unknown", "broad"].includes(location.confidence));
+      if (interpreted.locationStrict && hasVerifiedLocationMatch) {
+        return location.matches && !["unknown", "broad"].includes(location.confidence);
+      }
+      // For a preferred residential area, retain profiles whose precise barrio is unknown,
+      // while excluding residences known to be incompatible with the requested area.
+      return location.confidence !== "incompatible";
     })
     .map((candidate) => {
       const locationMatch = candidateLocationMatch(candidate, interpreted);
@@ -577,8 +590,8 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
           : rawScore;
       const locationVerified = !interpreted.locations.length
         || (locationMatch.matches && !["unknown", "broad"].includes(locationMatch.confidence));
-      const score = interpreted.locationStrict && !locationVerified
-        ? Math.min(69, roleScore)
+      const score = interpreted.locations.length && !locationVerified
+        ? Math.min(interpreted.locationStrict ? 69 : 79, roleScore)
         : roleScore;
       return {
         ...candidate,
@@ -592,7 +605,14 @@ export function rerankCandidates(candidates: TalentCandidateResult[], interprete
         mechanicFit
       };
     })
-    .sort((a, b) => b.mechanicFit - a.mechanicFit
+    .sort((a, b) => Number(
+      candidateLocationMatch(b, interpreted).matches
+        && !["unknown", "broad"].includes(candidateLocationMatch(b, interpreted).confidence)
+    ) - Number(
+      candidateLocationMatch(a, interpreted).matches
+        && !["unknown", "broad"].includes(candidateLocationMatch(a, interpreted).confidence)
+    )
+      || b.mechanicFit - a.mechanicFit
       || b.refrigerationFit - a.refrigerationFit
       || b.warehouseFit - a.warehouseFit
       || Number(b.primaryRoleAligned) - Number(a.primaryRoleAligned)
