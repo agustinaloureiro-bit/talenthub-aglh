@@ -16,6 +16,8 @@ test("no une personas distintas aunque compartan un contacto contaminado", () =>
 
 test("normaliza telefonos uruguayos para comparar identidades", () => {
   assert.equal(identity.normalizePhoneIdentity("+598 99 123 456"), "099123456");
+  assert.equal(identity.normalizePhoneIdentity("00598 99 123 456"), "099123456");
+  assert.equal(identity.normalizePhoneIdentity("99 123 456"), "099123456");
   assert.equal(identity.normalizePhoneIdentity("099 123 456"), "099123456");
 });
 

@@ -84,6 +84,24 @@ function normalizedDirectoryFieldSql(field: string) {
   return `lower(translate(coalesce(${field}, ''), 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN'))`;
 }
 
+function normalizedDirectoryPhoneSql(value: string) {
+  const digits = `regexp_replace(coalesce(${value}, ''), '[^0-9]', '', 'g')`;
+  return `CASE
+    WHEN ${digits} ~ '^00598[0-9]{8}$' THEN '0' || right(${digits}, 8)
+    WHEN ${digits} ~ '^598[0-9]{8}$' THEN '0' || right(${digits}, 8)
+    WHEN ${digits} ~ '^9[0-9]{7}$' THEN '0' || ${digits}
+    ELSE ${digits}
+  END`;
+}
+
+export function candidateDirectoryPhoneMatch(searchParam: number, phoneExpression = "tel") {
+  const normalizedQuery = normalizedDirectoryPhoneSql(`$${searchParam}::text`);
+  const normalizedPhone = normalizedDirectoryPhoneSql(phoneExpression);
+  return `${normalizedQuery} <> ''
+    AND length(${normalizedQuery}) >= 7
+    AND ${normalizedPhone} = ${normalizedQuery}`;
+}
+
 export function candidateDirectorySearchOrder(searchParam: number) {
   const normalizedName = normalizedDirectoryFieldSql("candidates.full_name");
   const normalizedRole = normalizedDirectoryFieldSql(`candidates."current_role"`);
@@ -101,8 +119,7 @@ export function candidateDirectorySearchOrder(searchParam: number) {
       WHERE lower(mail) = ${normalizedQuery}
     ) OR EXISTS (
       SELECT 1 FROM unnest(coalesce(candidates.phone, '{}'::text[])) tel
-      WHERE regexp_replace(tel, '[^0-9]', '', 'g') = regexp_replace($${searchParam}::text, '[^0-9]', '', 'g')
-        AND regexp_replace($${searchParam}::text, '[^0-9]', '', 'g') <> ''
+      WHERE ${candidateDirectoryPhoneMatch(searchParam)}
     ) THEN 4
     WHEN EXISTS (
       SELECT 1 FROM unnest(coalesce(candidates.email, '{}'::text[])) mail
@@ -476,7 +493,34 @@ candidatesRouter.get("/", asyncHandler(async (req, res) => {
       OR coalesce(ai_summary,'') ILIKE $${params.length - 1}
       OR EXISTS (SELECT 1 FROM unnest(coalesce(ai_tags, '{}'::text[])) tag WHERE tag ILIKE $${params.length - 1})
       OR EXISTS (SELECT 1 FROM unnest(coalesce(email, '{}'::text[])) mail WHERE mail ILIKE $${params.length - 1})
-      OR EXISTS (SELECT 1 FROM unnest(coalesce(phone, '{}'::text[])) tel WHERE tel ILIKE $${params.length - 1})
+      OR EXISTS (
+        SELECT 1 FROM unnest(coalesce(phone, '{}'::text[])) tel
+        WHERE tel ILIKE $${params.length - 1}
+          OR (${candidateDirectoryPhoneMatch(params.length)})
+      )
+      OR coalesce(linkedin_url,'') ILIKE $${params.length - 1}
+      OR coalesce(ai_languages::text,'') ILIKE $${params.length - 1}
+      OR EXISTS (SELECT 1 FROM unnest(coalesce(ai_strengths, '{}'::text[])) strength WHERE strength ILIKE $${params.length - 1})
+      OR EXISTS (SELECT 1 FROM unnest(coalesce(ai_weaknesses, '{}'::text[])) weakness WHERE weakness ILIKE $${params.length - 1})
+      OR EXISTS (
+        SELECT 1 FROM documents search_doc
+        WHERE search_doc.candidate_id=candidates.id
+          AND (
+            coalesce(search_doc.file_name,'') ILIKE $${params.length - 1}
+            OR to_tsvector(
+              'spanish'::regconfig,
+              coalesce(search_doc.raw_text, '') || ' ' || coalesce(search_doc.file_name, '')
+            ) @@ websearch_to_tsquery('spanish'::regconfig, $${params.length}::text)
+          )
+      )
+      OR EXISTS (
+        SELECT 1 FROM candidate_sources search_source
+        WHERE search_source.candidate_id=candidates.id
+          AND (
+            coalesce(search_source.source_id,'') ILIKE $${params.length - 1}
+            OR coalesce(search_source.source_url,'') ILIKE $${params.length - 1}
+          )
+      )
     )`;
   }
   if (source) {

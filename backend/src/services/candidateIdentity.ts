@@ -9,9 +9,11 @@ function normalizedWords(value: string | null | undefined) {
 }
 
 export function normalizePhoneIdentity(value: string | null | undefined) {
-  const digits = String(value ?? "").replace(/\D/g, "");
+  let digits = String(value ?? "").replace(/\D/g, "");
   if (digits.length < 7) return "";
+  if (digits.startsWith("00598") && digits.length === 13) digits = digits.slice(2);
   if (digits.startsWith("598") && digits.length === 11) return `0${digits.slice(3)}`;
+  if (digits.startsWith("9") && digits.length === 8) return `0${digits}`;
   return digits;
 }
 

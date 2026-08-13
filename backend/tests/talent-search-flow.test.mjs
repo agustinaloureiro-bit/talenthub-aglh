@@ -11,7 +11,7 @@ process.env.ALLOWED_GOOGLE_DOMAINS ??= "aglh.com.uy,yoiners.com";
 const { interpretTalentQuery } = await import("../dist/intelligence/queryInterpreter.js");
 const { isCredibleCandidateName, rerankCandidates } = await import("../dist/intelligence/candidateRanker.js");
 const { RecruitmentIntelligenceEngine } = await import("../dist/intelligence/intelligenceEngine.js");
-const { candidateDirectorySearchOrder, downloadContentDisposition } = await import("../dist/routes/candidates.js");
+const { candidateDirectoryPhoneMatch, candidateDirectorySearchOrder, downloadContentDisposition } = await import("../dist/routes/candidates.js");
 const { evaluateUruguayProximity, nearbyUruguayLocations } = await import("../dist/intelligence/uruguayGeography.js");
 
 test("el directorio prioriza el nombre antes que menciones conceptuales del CV", () => {
@@ -26,6 +26,15 @@ test("el directorio prioriza el nombre antes que menciones conceptuales del CV",
   assert.match(order, /trim\(\$7::text\)/);
   assert.match(order, /THEN 0/);
   assert.match(order, /THEN 20/);
+});
+
+test("el directorio busca el mismo telefono uruguayo con o sin codigo de pais", () => {
+  const match = candidateDirectoryPhoneMatch(4);
+
+  assert.match(match, /\^598\[0-9\]\{8\}\$/);
+  assert.match(match, /right\(regexp_replace/);
+  assert.match(match, /\$4::text/);
+  assert.match(match, /length/);
 });
 
 test("interpreta abogado con ingles como rol e idioma", () => {

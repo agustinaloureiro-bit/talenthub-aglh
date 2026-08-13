@@ -367,7 +367,7 @@ function Candidates({ onView }: { onView: (id: string) => void }) {
   const updateFilter = (key: string, value: string | number) => filterSetters[key]?.(String(value));
   const filterValues = { search, source, contact, location, document, status, recency, sort };
   const primaryFields: FilterField[] = [
-    { key: "search", type: "text", placeholder: "Buscar por nombre, experiencia, rol o contacto" },
+    { key: "search", type: "text", placeholder: "Buscar por nombre, teléfono, email, ubicación, rol o datos del CV" },
     { key: "location", type: "text", placeholder: "Ciudad o país" }
   ];
   const secondaryFields: FilterField[] = [
