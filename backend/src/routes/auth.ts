@@ -4,6 +4,7 @@ import { z } from "zod";
 import { config, isAllowedGoogleEmail } from "../config.js";
 import { q } from "../db/pool.js";
 import { asyncHandler } from "../middleware/errors.js";
+import { getDatabaseStatus } from "../db/status.js";
 import {
   createSessionToken,
   OAUTH_STATE_COOKIE,
@@ -27,11 +28,12 @@ function appOrigin() {
   return new URL(config.googleCallbackUrl).origin;
 }
 
-function authErrorRedirect(res: Response, reason: "domain" | "inactive" | "oauth") {
+function authErrorRedirect(res: Response, reason: "domain" | "inactive" | "oauth" | "database") {
   res.redirect(303, `${appOrigin()}/login?auth_error=${reason}`);
 }
 
 authRouter.get("/google", (_req, res) => {
+  if (getDatabaseStatus().state === "unavailable") return authErrorRedirect(res, "database");
   const state = crypto.randomBytes(32).toString("base64url");
   res.cookie(OAUTH_STATE_COOKIE, state, {
     ...sessionCookieOptions(),

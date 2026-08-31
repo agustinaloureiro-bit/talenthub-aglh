@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { candidateContentHash } = await import("../dist/services/candidateIngestion.js");
+const { candidateContentHash } = await import("../dist/services/candidateHash.js");
 
 function candidate(overrides = {}) {
   return {

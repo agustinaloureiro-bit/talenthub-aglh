@@ -266,6 +266,8 @@ function Login() {
       ? "Tu usuario está desactivado. Contactá a un administrador."
       : errorCode === "oauth"
         ? "Google no pudo validar el acceso. Volvé a intentarlo."
+        : errorCode === "database"
+          ? "TalentHub está temporalmente en mantenimiento porque no puede acceder a la base de candidatos."
         : "";
   return (
     <div className="login-shell grid min-h-screen place-items-center p-6">

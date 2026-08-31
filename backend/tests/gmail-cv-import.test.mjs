@@ -10,7 +10,7 @@ process.env.GOOGLE_CALLBACK_URL ??= "http://localhost:4000/api/auth/google/callb
 process.env.ALLOWED_GOOGLE_DOMAINS ??= "aglh.com.uy,yoiners.com";
 
 test("genera la misma huella para el mismo CV y distingue contenido diferente", async () => {
-  const { documentContentHash } = await import("../dist/services/candidateIngestion.js");
+  const { documentContentHash } = await import("../dist/services/candidateHash.js");
   const first = documentContentHash(Buffer.from("mismo archivo"), null);
   const repeated = documentContentHash(Buffer.from("mismo archivo"), "texto ignorado porque existe archivo");
   const different = documentContentHash(Buffer.from("archivo diferente"), null);
@@ -21,7 +21,7 @@ test("genera la misma huella para el mismo CV y distingue contenido diferente", 
 });
 
 test("usa el texto extraido como identidad estable cuando no hay archivo guardado", async () => {
-  const { documentContentHash } = await import("../dist/services/candidateIngestion.js");
+  const { documentContentHash } = await import("../dist/services/candidateHash.js");
   const first = documentContentHash(null, "CV de la misma persona");
   const repeated = documentContentHash(null, "CV de la misma persona");
 

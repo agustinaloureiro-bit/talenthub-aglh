@@ -26,4 +26,4 @@ RUN npm install --omit=dev
 COPY backend/migrations ./migrations
 COPY --from=backend-build /app/backend/dist ./dist
 COPY --from=frontend-build /app/frontend/dist ./public
-CMD ["sh", "-c", "node dist/db/migrate.js && node dist/server.js"]
+CMD ["node", "dist/server.js"]
