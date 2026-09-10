@@ -81,6 +81,10 @@ const ROLE_HINTS = [
   "mecánico",
   "soldador",
   "soldadora",
+  "auxiliar de enfermeria",
+  "auxiliar de enfermería",
+  "enfermeria",
+  "enfermería",
   "enfermero",
   "enfermera",
   "cuidador",
@@ -250,12 +254,39 @@ function normalizeHint(value: string) {
   return value.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "");
 }
 
+function singularSpanishWord(value: string) {
+  if (value.length <= 4) return value;
+  if (/ces$/.test(value)) return `${value.slice(0, -3)}z`;
+  if (/(?:ores|ares|eres|ires|ures)$/.test(value)) return value.slice(0, -2);
+  if (/[aeiou]s$/.test(value)) return value.slice(0, -1);
+  if (/[bcdfghjklmnpqrstvwxyz]es$/.test(value)) return value.slice(0, -2);
+  return value;
+}
+
+function singularizedSearchText(value: string) {
+  return normalizeHint(value)
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .split(/\s+/)
+    .map(singularSpanishWord)
+    .join(" ");
+}
+
+function canonicalRole(value: string) {
+  const normalized = singularizedSearchText(value);
+  if (["enfermera", "enfermeria", "auxiliar de enfermeria"].includes(normalized)) return "enfermero";
+  return value;
+}
+
 function findHints(query: string, hints: string[]) {
   const normalized = ` ${normalizeHint(query).replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
+  const singularized = ` ${singularizedSearchText(query)} `;
   const matches = hints
     .filter((hint) => {
       const normalizedHint = normalizeHint(hint).replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-      return normalized.includes(` ${normalizedHint} `);
+      const singularizedHint = singularizedSearchText(hint);
+      return normalized.includes(` ${normalizedHint} `)
+        || singularized.includes(` ${singularizedHint} `);
     })
     .sort((left, right) => normalizeHint(right).length - normalizeHint(left).length);
   const filtered = matches.filter((hint, index) => !matches.slice(0, index).some((longer) => {
@@ -497,10 +528,14 @@ function residualKeywords(query: string, knownConcepts: string[]) {
   ]);
   const knownTokens = new Set(knownConcepts
     .flatMap((concept) => normalizeHint(concept).split(/[^\p{L}\p{N}]+/u))
-    .filter(Boolean));
+    .filter(Boolean)
+    .flatMap((word) => [word, singularSpanishWord(word)]));
   const keywords = [...new Set(normalizeHint(queryWithoutWorkplace)
     .split(/[^\p{L}\p{N}]+/u)
-    .filter((word) => word.length >= 4 && !ignoredWords.has(word) && !knownTokens.has(word)))];
+    .filter((word) => word.length >= 4
+      && !ignoredWords.has(word)
+      && !knownTokens.has(word)
+      && !knownTokens.has(singularSpanishWord(word))))];
   return keywords.slice(0, isDetailedJobDescription(query) ? 8 : 20);
 }
 
@@ -542,7 +577,10 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   const academicGroups = academicRequirements(normalizedQuery);
   const experienceAreas = requestedExperienceAreas(normalizedQuery);
   const academicAliases = new Set(academicGroups.flat().map(normalizeHint));
-  const detectedRoles = findHints(normalizedQuery, ROLE_HINTS)
+  const roleSearchQuery = normalizedQuery.replace(/\b(?:tareas?|funciones?|labores?)\s+administrativ[oa]s?\b/giu, " ");
+  const rawDetectedRoles = findHints(roleSearchQuery, ROLE_HINTS);
+  const detectedRoles = rawDetectedRoles
+    .map(canonicalRole)
     .filter((role) => !academicAliases.has(normalizeHint(role)));
   const roles = [...new Set([
     ...detectedRoles,
@@ -561,7 +599,7 @@ export function interpretTalentQuery(query: string): InterpretedTalentQuery {
   const locations = findHints(normalizedQuery, LOCATION_HINTS);
   const profileLevel = basicProfileRequested(normalizedQuery) ? "basic" : null;
   const keywords = residualKeywords(normalizedQuery, [
-    ...roles, ...skills, ...languages, ...industries, ...locations,
+    ...rawDetectedRoles, ...roles, ...skills, ...languages, ...industries, ...locations,
     ...academicGroups.flat(), ...experienceAreas, "estudiante", "estudiando", "cursando"
   ]);
   const experience = experienceRequirement(normalizedQuery);

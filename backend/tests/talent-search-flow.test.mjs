@@ -48,6 +48,57 @@ test("interpreta abogado con ingles como rol e idioma", () => {
   assert.ok(interpreted.requiredGroups.some((group) => group.includes("ingles")));
 });
 
+test("normaliza cargos profesionales en plural sin convertirlos en palabras residuales", () => {
+  for (const query of ["Busco enfermeros", "Busco enfermeras", "Necesito auxiliares de enfermería"]) {
+    const interpreted = interpretTalentQuery(query);
+    assert.deepEqual(interpreted.roles, ["enfermero"]);
+    assert.deepEqual(interpreted.keywords, []);
+    assert.ok(interpreted.requiredGroups.some((group) => group.includes("enfermero")));
+  }
+});
+
+test("normaliza plurales de otros cargos con la misma regla general", () => {
+  for (const [query, expectedRole] of [
+    ["Busco mecánicos", "mecanico"],
+    ["Necesito administrativos", "administrativo"],
+    ["Busco vendedores", "vendedor"]
+  ]) {
+    const interpreted = interpretTalentQuery(query);
+    assert.ok(interpreted.roles.includes(expectedRole), `${query} debe reconocer ${expectedRole}`);
+    assert.deepEqual(interpreted.keywords, []);
+  }
+});
+
+test("encuentra perfiles de enfermeria aunque la consulta use el plural", () => {
+  const interpreted = interpretTalentQuery("Busco enfermeros");
+  const ranked = rerankCandidates([
+    {
+      id: "enfermeria",
+      fullName: "Laura Pereira",
+      currentRole: "Auxiliar de enfermería",
+      tags: ["salud", "enfermeria"],
+      qualityScore: 80,
+      documentCount: 1,
+      documentSnippet: "Auxiliar de enfermería con experiencia en cuidados y atención de pacientes.",
+      score: 0,
+      matchReason: ""
+    },
+    {
+      id: "administracion",
+      fullName: "Mario Rodriguez",
+      currentRole: "Administrativo",
+      tags: ["administracion"],
+      qualityScore: 90,
+      documentCount: 1,
+      documentSnippet: "Experiencia en tareas administrativas y archivo.",
+      score: 0,
+      matchReason: ""
+    }
+  ], interpreted);
+
+  assert.deepEqual(ranked.map((candidate) => candidate.id), ["enfermeria"]);
+});
+
 test("abogado con ingles exige evidencia de ambos criterios", () => {
   const interpreted = interpretTalentQuery("Necesito un abogado con inglés.");
   const ranked = rerankCandidates([
