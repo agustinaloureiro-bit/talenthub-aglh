@@ -45,8 +45,7 @@ authRouter.get("/google", (_req, res) => {
     response_type: "code",
     scope: "openid email profile",
     state,
-    access_type: "online",
-    prompt: "select_account"
+    access_type: "online"
   });
   res.redirect(302, `https://accounts.google.com/o/oauth2/v2/auth?${params}`);
 });

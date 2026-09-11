@@ -23,6 +23,8 @@ declare global {
 
 export const SESSION_COOKIE = "talenthub_session";
 export const OAUTH_STATE_COOKIE = "talenthub_oauth_state";
+export const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
+const SESSION_REFRESH_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 
 export function parseCookieHeader(header: string | undefined) {
   return Object.fromEntries((header ?? "").split(";").flatMap((part) => {
@@ -40,7 +42,7 @@ export function parseCookieHeader(header: string | undefined) {
 
 export function createSessionToken(user: AuthUser) {
   return jwt.sign({ sub: user.id }, config.sessionSecret, {
-    expiresIn: "12h",
+    expiresIn: "30d",
     issuer: "talenthub-aglh",
     audience: "talenthub-web"
   });
@@ -52,7 +54,7 @@ export function sessionCookieOptions() {
     secure: config.isProduction,
     sameSite: "lax" as const,
     path: "/",
-    maxAge: 12 * 60 * 60 * 1000
+    maxAge: SESSION_DURATION_MS
   };
 }
 
@@ -82,6 +84,12 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       role: user.role,
       avatarUrl: user.avatar_url
     };
+    const secondsRemaining = typeof payload.exp === "number"
+      ? payload.exp - Math.floor(Date.now() / 1000)
+      : 0;
+    if (secondsRemaining < SESSION_REFRESH_WINDOW_SECONDS) {
+      res.cookie(SESSION_COOKIE, createSessionToken(req.user), sessionCookieOptions());
+    }
     next();
   } catch {
     res.status(401).json({ error: "Sesión inválida o expirada" });

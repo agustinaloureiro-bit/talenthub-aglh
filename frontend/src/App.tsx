@@ -558,7 +558,15 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
     }
     setSearchStatus("Buscando en los candidatos ya procesados...");
     try {
-      const response = await api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[]; locations?: string[]; ignoredCriteria?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean } }>("/search/talent", { method: "POST", timeoutMs: 20_000, body: JSON.stringify({ query, page, pageSize: 50, filters: { source: source ? [source] : undefined, location: location || undefined, contact: contact || undefined, document: document || undefined, minScore: minScore || undefined, activeOnly, recency: recency || undefined, sort } }) });
+      const requestSearch = () => api<{ data: any[]; query?: { roles?: string[]; skills?: string[]; languages?: string[]; industries?: string[]; locations?: string[]; ignoredCriteria?: string[] }; meta: { total: number; page: number; pageSize: number; hasMore: boolean } }>("/search/talent", { method: "POST", timeoutMs: 35_000, body: JSON.stringify({ query, page, pageSize: 50, filters: { source: source ? [source] : undefined, location: location || undefined, contact: contact || undefined, document: document || undefined, minScore: minScore || undefined, activeOnly, recency: recency || undefined, sort } }) });
+      let response;
+      try {
+        response = await requestSearch();
+      } catch (error: any) {
+        if (![408, 429, 502, 503, 504].includes(Number(error?.status))) throw error;
+        setSearchStatus("La primera consulta demoró más de lo esperado. Reintentando...");
+        response = await requestSearch();
+      }
       setResults((previous) => append
         ? [...new Map([...previous, ...response.data].map((candidate) => [candidate.id, candidate])).values()]
         : response.data);

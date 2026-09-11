@@ -36,11 +36,18 @@ test("la sesión no contiene tokens de Google ni datos innecesarios", async () =
 });
 
 test("las cookies de sesión son HttpOnly y SameSite Lax", async () => {
-  const { sessionCookieOptions } = await import("../dist/middleware/auth.js");
+  const { SESSION_DURATION_MS, sessionCookieOptions } = await import("../dist/middleware/auth.js");
   const options = sessionCookieOptions();
   assert.equal(options.httpOnly, true);
   assert.equal(options.sameSite, "lax");
   assert.equal(options.path, "/");
+  assert.equal(options.maxAge, SESSION_DURATION_MS);
+  assert.equal(options.maxAge, 30 * 24 * 60 * 60 * 1000);
+});
+
+test("Google reutiliza la sesión existente sin forzar el selector de cuenta", async () => {
+  const source = await readFile(new URL("../src/routes/auth.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /prompt:\s*["']select_account["']/);
 });
 
 test("todo usuario corporativo autenticado puede sincronizar sin acceder a credenciales", async () => {
