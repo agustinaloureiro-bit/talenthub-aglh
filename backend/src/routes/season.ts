@@ -61,6 +61,23 @@ function candidateContainsExcluded(candidate: any, excludeKeywords: string[]) {
   return exclusions.some((term) => searchable.includes(term));
 }
 
+function cleanScore(value: unknown) {
+  const score = Number(value);
+  if (!Number.isFinite(score)) return 0;
+  return Math.min(100, Math.max(0, Math.round(score)));
+}
+
+function cleanOptionalText(value: unknown, maxLength = 500) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  return text.slice(0, maxLength);
+}
+
+function cleanTextArray(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => String(item ?? "").trim()).filter(Boolean))].slice(0, 20);
+}
+
 function mapSeason(row: any) {
   return {
     id: row.id,
@@ -307,25 +324,57 @@ seasonRouter.post("/:id/run", asyncHandler(async (req, res) => {
   const candidates = result.data
     .filter((candidate) => !candidateContainsExcluded(candidate, search.exclude_keywords ?? []))
     .slice(0, 200);
+  let imported = 0;
+  let skipped = 0;
   for (const candidate of candidates) {
-    await q(
-      `INSERT INTO season_search_results (season_search_id, candidate_id, score, match_reason, source_types, profile_url)
-       VALUES ($1,$2,$3,$4,$5,$6)
-       ON CONFLICT (season_search_id, candidate_id)
-       DO UPDATE SET score=EXCLUDED.score,
-         match_reason=EXCLUDED.match_reason,
-         source_types=EXCLUDED.source_types,
-         profile_url=coalesce(EXCLUDED.profile_url, season_search_results.profile_url),
-         last_found_at=now()`,
-      [search.id, candidate.id, candidate.score, candidate.matchReason, candidate.sourceTypes ?? [], null]
-    );
+    const candidateId = cleanOptionalText(candidate.id, 80);
+    if (!candidateId) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      await q(
+        `INSERT INTO season_search_results (season_search_id, candidate_id, score, match_reason, source_types, profile_url)
+         VALUES ($1,$2,$3,$4,$5::text[],$6)
+         ON CONFLICT (season_search_id, candidate_id)
+         DO UPDATE SET score=EXCLUDED.score,
+           match_reason=EXCLUDED.match_reason,
+           source_types=EXCLUDED.source_types,
+           profile_url=coalesce(EXCLUDED.profile_url, season_search_results.profile_url),
+           last_found_at=now()`,
+        [
+          search.id,
+          candidateId,
+          cleanScore(candidate.score),
+          cleanOptionalText(candidate.matchReason, 1000),
+          cleanTextArray(candidate.sourceTypes),
+          null
+        ]
+      );
+      imported += 1;
+    } catch (error) {
+      skipped += 1;
+      console.error("Season candidate import skipped", {
+        seasonSearchId: search.id,
+        candidateId,
+        error
+      });
+    }
   }
   await q(
     "UPDATE season_searches SET query_text=$2, last_run_at=now(), updated_at=now() WHERE id=$1",
     [search.id, queryText]
   );
   const detail = await getSeasonDetail(search.id);
-  res.json({ data: detail, meta: { reviewed: result.data.length, imported: candidates.length, excluded: result.data.length - candidates.length } });
+  res.json({
+    data: detail,
+    meta: {
+      reviewed: result.data.length,
+      imported,
+      excluded: result.data.length - candidates.length,
+      skipped
+    }
+  });
 }));
 
 seasonRouter.post("/:id/results/:candidateId/reserve", asyncHandler(async (req, res) => {

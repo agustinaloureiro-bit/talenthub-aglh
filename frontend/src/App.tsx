@@ -761,16 +761,18 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
     setError("");
     setMessage("Buscando candidatos existentes que coincidan con la temporada...");
     try {
-      const response = await api<{ data: { search: SeasonSearch; results: SeasonResult[] }; meta?: { reviewed: number; imported: number; excluded: number } }>(`/season-searches/${id}/run`, {
+      const response = await api<{ data: { search: SeasonSearch; results: SeasonResult[] }; meta?: { reviewed: number; imported: number; excluded: number; skipped?: number } }>(`/season-searches/${id}/run`, {
         method: "POST",
         timeoutMs: 60_000
       });
       setDetail(response.data);
       await load(false);
       const meta = response.meta;
-      setMessage(meta ? `Temporada actualizada: ${meta.imported} perfiles en bandeja, ${meta.excluded} excluidos por palabras bloqueadas.` : "Temporada actualizada.");
+      const skippedText = meta?.skipped ? ` ${meta.skipped} perfiles omitidos por datos incompletos.` : "";
+      setMessage(meta ? `Temporada actualizada: ${meta.imported} perfiles en bandeja, ${meta.excluded} excluidos por palabras bloqueadas.${skippedText}` : "Temporada actualizada.");
     } catch (err: any) {
       setError(err.message || "No se pudo ejecutar la búsqueda de temporada.");
+      setMessage("");
     } finally {
       setRunning("");
     }
