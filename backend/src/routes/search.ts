@@ -229,13 +229,14 @@ function mergeRankedMatches(...groups: RankedCandidateMatch[][]) {
 }
 
 async function findFastProfileMatches(candidateFilter: string, params: unknown[], queryParameter: number, timeoutMs: number) {
-  const queryExpression = `$${queryParameter}`;
+  const queryExpression = `$${queryParameter}::text`;
   return qSearchWithTimeout(
-    `WITH search_terms AS MATERIALIZED (
+     `WITH search_terms AS MATERIALIZED (
        SELECT websearch_to_tsquery('spanish', ${queryExpression}) AS query,
          $1::text AS original_query,
          $2::text AS planned_query,
-         $3::text AS broad_query
+         $3::text AS broad_query,
+         $4::text AS loose_query
      ), matching_ids AS MATERIALIZED (
        SELECT c.id
        FROM candidates c CROSS JOIN search_terms
@@ -254,13 +255,14 @@ async function findFastProfileMatches(candidateFilter: string, params: unknown[]
 }
 
 async function findDocumentMatches(candidateFilter: string, params: unknown[], queryParameter = 2, timeoutMs = 2_500) {
-  const queryExpression = `$${queryParameter}`;
+  const queryExpression = `$${queryParameter}::text`;
   return qSearchWithTimeout(
-    `WITH search_terms AS MATERIALIZED (
+     `WITH search_terms AS MATERIALIZED (
        SELECT websearch_to_tsquery('spanish', ${queryExpression}) AS query,
          $1::text AS original_query,
          $2::text AS planned_query,
-         $3::text AS broad_query
+         $3::text AS broad_query,
+         $4::text AS loose_query
      ), raw_matches AS MATERIALIZED (
        SELECT d.candidate_id AS id,
          0.04 + ts_rank_cd(
