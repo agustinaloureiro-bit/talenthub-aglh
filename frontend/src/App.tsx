@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { AlertCircle, Briefcase, CalendarDays, CheckCircle2, ChevronLeft, Database, Download, ExternalLink, Eye, FileText, GraduationCap, Languages, LogOut, Mail, MapPin, MessageCircle, Plug, Plus, RotateCcw, Save, Search, Settings, UserRound, Users, X } from "lucide-react";
+import { AlertCircle, Briefcase, CalendarDays, CheckCircle2, ChevronLeft, Copy, Database, Download, ExternalLink, Eye, FileText, GraduationCap, Languages, LogOut, Mail, MapPin, MessageCircle, Plug, Plus, RotateCcw, Save, Search, Settings, UserRound, Users, X } from "lucide-react";
 import { API_URL, api, authHeaders, loadCurrentUser, loginWithGoogle, logout, type User } from "./lib/api";
 
 type Page = "finder" | "season" | "candidates" | "candidate" | "integrations" | "settings";
@@ -707,6 +707,7 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [previewCandidate, setPreviewCandidate] = useState<Candidate | null>(null);
+  const [showReservedPhones, setShowReservedPhones] = useState(false);
   const [seasonFilters, setSeasonFilters] = useState<SeasonUiState>(initialSeasonState);
   const [form, setForm] = useState({
     name: "Auxiliares de supermercado - Maldonado - Verano 2026/27",
@@ -926,6 +927,7 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
   const availableCount = results.filter((result) => !result.reservedAt).length;
   const myReservedCount = results.filter((result) => result.isReservedByMe).length;
   const otherReservedCount = results.filter((result) => result.reservedAt && !result.isReservedByMe).length;
+  const visibleMyReservedResults = filteredResults.filter((result) => result.isReservedByMe);
 
   return (
     <PagePad>
@@ -1036,6 +1038,18 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
                     <span>{otherReservedCount} reservados por otros</span>
                     <span>Mostrando {filteredResults.length} de {results.length}</span>
                   </div>
+                  {seasonFilters.reservation === "mine" && (
+                    <div className="mt-4 flex flex-wrap items-center gap-3">
+                      <button
+                        className="btn-primary bg-[#0f5132] hover:bg-[#0b3f27]"
+                        onClick={() => setShowReservedPhones(true)}
+                        disabled={visibleMyReservedResults.length === 0}
+                      >
+                        <MessageCircle size={16} /> Ver celulares reservados
+                      </button>
+                      <span className="text-xs text-slate-500">{visibleMyReservedResults.length} perfiles reservados por mí en esta vista</span>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1087,7 +1101,96 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
         </section>
       </div>
       {previewCandidate && <CvPreviewModal candidate={previewCandidate} onClose={() => setPreviewCandidate(null)} onView={() => { const id = previewCandidate.id; setPreviewCandidate(null); onView(id); }} />}
+      {showReservedPhones && <ReservedPhonesModal results={visibleMyReservedResults} onClose={() => setShowReservedPhones(false)} />}
     </PagePad>
+  );
+}
+
+function ReservedPhonesModal({ results, onClose }: { results: SeasonResult[]; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const rows = results.filter((result) => result.isReservedByMe);
+  const withPhones = rows.filter((result) => result.candidate.phone?.length);
+  const copyText = rows.map((result) => {
+    const candidate = result.candidate;
+    const phones = candidate.phone?.length ? candidate.phone.join(" / ") : "sin celular cargado";
+    const city = [candidate.city, candidate.country].filter(Boolean).join(", ");
+    return `${candidate.fullName} - ${phones}${city ? ` - ${city}` : ""}`;
+  }).join("\n");
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = "";
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  async function copyPhones() {
+    if (!copyText.trim() || !navigator.clipboard) return;
+    await navigator.clipboard.writeText(copyText);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4" onClick={onClose}>
+      <div className="max-h-[86vh] w-full max-w-3xl overflow-hidden rounded-3xl bg-white shadow-2xl" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 p-5">
+          <div>
+            <h3 className="text-xl font-extrabold text-slate-900">Celulares de mis reservados</h3>
+            <p className="mt-1 text-sm text-slate-500">{withPhones.length} con celular disponible · {rows.length} reservados visibles</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button className="btn-ghost" onClick={copyPhones} disabled={!rows.length}><Copy size={16} /> {copied ? "Copiado" : "Copiar lista"}</button>
+            <button className="btn-ghost h-11 w-11 justify-center rounded-2xl p-0" onClick={onClose} aria-label="Cerrar"><X size={18} /></button>
+          </div>
+        </div>
+        <div className="max-h-[68vh] overflow-y-auto p-5">
+          {rows.length === 0 && <Empty text="No hay perfiles reservados por mí en esta vista." />}
+          {rows.length > 0 && (
+            <div className="grid gap-3">
+              {rows.map((result) => {
+                const candidate = result.candidate;
+                const phones = candidate.phone ?? [];
+                const reservedAt = result.reservedAt ? new Date(result.reservedAt).toLocaleString("es-UY") : "";
+                return (
+                  <div key={result.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="font-extrabold text-slate-900">{candidate.fullName}</div>
+                        <div className="mt-1 text-sm text-slate-500">{[candidate.currentRole, candidate.city, candidate.country].filter(Boolean).join(" · ") || "Sin datos de ubicación/rol"}</div>
+                        {reservedAt && <div className="mt-1 text-xs text-slate-400">Reservado {reservedAt}</div>}
+                      </div>
+                      <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">{Math.round(result.score)}% coincidencia</span>
+                    </div>
+                    <div className="mt-3 grid gap-2">
+                      {phones.length === 0 && <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">Sin celular cargado</div>}
+                      {phones.map((phone) => {
+                        const whatsapp = whatsappUrlForPhone(phone);
+                        return (
+                          <div key={`${result.id}-${phone}`} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white bg-white px-3 py-2 text-sm">
+                            <span className="font-bold text-slate-800">{phone}</span>
+                            {whatsapp && (
+                              <a className="inline-flex items-center gap-2 font-bold text-emerald-700 hover:underline" href={whatsapp} target="_blank" rel="noreferrer">
+                                <MessageCircle size={16} /> WhatsApp
+                              </a>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
