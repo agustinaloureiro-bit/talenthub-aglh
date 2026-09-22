@@ -143,10 +143,10 @@ function expandedSearchTerms(query: string) {
   const isRichQuery = words.length >= 10;
   const baseWords = words.slice(0, isRichQuery ? 16 : 12);
   const semanticExpansions = isRichQuery
-    ? []
+    ? baseWords.flatMap((word) => (extras[word] ?? []).slice(0, 2))
     : baseWords.flatMap((word) => (extras[word] ?? []).slice(0, 4));
   const employerExpansions = employerAliasesForConcepts([...baseWords, ...semanticExpansions]);
-  const maxTerms = isRichQuery ? 18 : 28;
+  const maxTerms = isRichQuery ? 34 : 28;
   const terms = [...new Set([...baseWords, ...semanticExpansions, ...employerExpansions, ...geographicTerms].map(normalizeSearchText))]
     .filter(Boolean);
   return terms.length ? terms.slice(0, maxTerms) : [normalizedQuery];
@@ -167,6 +167,20 @@ function plannedWebsearchQuery(query: string, plan?: CandidateRetrievalPlan) {
   return groups
     .map((group) => `(${group.map((term) => `"${term.replace(/"/g, " ")}"`).join(" OR ")})`)
     .join(" AND ");
+}
+
+function loosePlannedWebsearchQuery(query: string, plan?: CandidateRetrievalPlan) {
+  const plannedTerms = (plan?.requiredGroups ?? [])
+    .flatMap((group) => group)
+    .map(normalizeSearchText)
+    .filter(Boolean);
+  const expandedTerms = expandedSearchTerms(query);
+  const terms = [...new Set([...plannedTerms, ...expandedTerms])]
+    .filter((term) => term.length >= 3)
+    .slice(0, 42);
+  return terms.length
+    ? terms.map((term) => `"${term.replace(/"/g, " ")}"`).join(" OR ")
+    : expandedWebsearchQuery(query);
 }
 
 function cleanResultContacts(values: unknown, maxItems: number) {
@@ -239,10 +253,11 @@ async function findFastProfileMatches(candidateFilter: string, params: unknown[]
   );
 }
 
-async function findDocumentMatches(candidateFilter: string, params: unknown[]) {
+async function findDocumentMatches(candidateFilter: string, params: unknown[], queryParameter = 2, timeoutMs = 2_500) {
+  const queryExpression = `$${queryParameter}`;
   return qSearchWithTimeout(
     `WITH search_terms AS MATERIALIZED (
-       SELECT websearch_to_tsquery('spanish', $2) AS query,
+       SELECT websearch_to_tsquery('spanish', ${queryExpression}) AS query,
          $1::text AS original_query,
          $2::text AS planned_query,
          $3::text AS broad_query
@@ -281,7 +296,7 @@ async function findDocumentMatches(candidateFilter: string, params: unknown[]) {
      ORDER BY rank DESC
      LIMIT ${MAX_RETRIEVAL_CANDIDATES}`,
     params,
-    2_500
+    timeoutMs
   );
 }
 
@@ -378,7 +393,7 @@ async function hydrateCandidateMatches(matches: RankedCandidateMatch[]) {
 }
 
 export async function findCandidates(query: string, filters: TalentSearchFilters = {}, plan?: CandidateRetrievalPlan) {
-  const params: unknown[] = [query, plannedWebsearchQuery(query, plan), expandedWebsearchQuery(query)];
+  const params: unknown[] = [query, plannedWebsearchQuery(query, plan), expandedWebsearchQuery(query), loosePlannedWebsearchQuery(query, plan)];
   let candidateFilter = "c.duplicate_of IS NULL";
   if (filters.activeOnly !== false) candidateFilter += " AND c.status='active'";
   if (filters.seniority) {
@@ -414,6 +429,7 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
   const profileQueries = [
     { queryParameter: 2, params },
     { queryParameter: 3, params },
+    { queryParameter: 4, params },
     ...groupQueries.map((groupQuery) => ({
       queryParameter: params.length + 1,
       params: [...params, groupQuery]
@@ -431,17 +447,24 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
   const plannedMatches = plannedPass.rows;
   const plannedRetrievalMs = Date.now() - retrievalStartedAt;
   const broadPass = profilePasses[1];
-  const groupPasses = profilePasses.slice(2);
-  const additionalPasses: SearchPass[] = [broadPass, ...groupPasses];
+  const loosePass = profilePasses[2];
+  const groupPasses = profilePasses.slice(3);
+  const additionalPasses: SearchPass[] = [broadPass, loosePass, ...groupPasses];
   const broadMatches = broadPass.rows;
+  const looseMatches = loosePass.rows;
   const groupMatches = groupPasses.flatMap((pass) => pass.rows);
   let documentMatches: RankedCandidateMatch[] = [];
-  if (mergeRankedMatches(plannedMatches, broadMatches, groupMatches).length < MIN_DOCUMENT_FALLBACK_CANDIDATES) {
-    const documentPass = await searchRows(() => findDocumentMatches(candidateFilter, params));
-    additionalPasses.push(documentPass);
+  let looseDocumentMatches: RankedCandidateMatch[] = [];
+  if (mergeRankedMatches(plannedMatches, broadMatches, looseMatches, groupMatches).length < MIN_DOCUMENT_FALLBACK_CANDIDATES) {
+    const [documentPass, looseDocumentPass] = await Promise.all([
+      searchRows(() => findDocumentMatches(candidateFilter, params, 2, 3_000)),
+      searchRows(() => findDocumentMatches(candidateFilter, params, 4, 4_500))
+    ]);
+    additionalPasses.push(documentPass, looseDocumentPass);
     documentMatches = documentPass.rows;
+    looseDocumentMatches = looseDocumentPass.rows;
   }
-  let matches = mergeRankedMatches(plannedMatches, groupMatches, broadMatches, documentMatches);
+  let matches = mergeRankedMatches(plannedMatches, groupMatches, broadMatches, looseMatches, documentMatches, looseDocumentMatches);
   const timedOutPasses = [plannedPass, ...additionalPasses].filter((pass) => pass.timedOut).length;
   if (!matches.length && timedOutPasses) {
     const fastPass = await searchRows(() => findFastProfileMatches(candidateFilter, params, 3, 6_000));
@@ -469,7 +492,9 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     plannedMatches: plannedMatches.length,
     groupMatches: groupMatches.length,
     broadMatches: broadMatches.length,
+    looseMatches: looseMatches.length,
     documentMatches: documentMatches.length,
+    looseDocumentMatches: looseDocumentMatches.length,
     timedOutPasses: [plannedPass, ...additionalPasses].filter((pass) => pass.timedOut).length,
     hydratedCandidates: rows.length
   });

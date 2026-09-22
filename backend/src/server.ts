@@ -13,6 +13,7 @@ import { candidatesRouter } from "./routes/candidates.js";
 import { integrationsPublicRouter, integrationsRouter, startDocumentBackfillWorker } from "./routes/integrations.js";
 import { settingsRouter } from "./routes/settings.js";
 import { searchRouter } from "./routes/search.js";
+import { seasonRouter } from "./routes/season.js";
 import { usersRouter } from "./routes/users.js";
 import { intelligenceRouter } from "./routes/intelligence.js";
 import { migrate } from "./db/migrate.js";
@@ -20,7 +21,7 @@ import { databaseErrorDetail, getDatabaseStatus, setDatabaseStatus } from "./db/
 
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const release = "2026-08-31.1";
+const release = "2026-09-22.1";
 
 app.use(helmet({
   contentSecurityPolicy: {
@@ -54,6 +55,7 @@ app.get("/ready", (_req, res) => {
 app.use("/api/auth", authRouter);
 app.use("/api/candidates", requireAuth, candidatesRouter);
 app.use("/api/search", requireAuth, searchRouter);
+app.use("/api/season-searches", requireAuth, seasonRouter);
 app.use("/api/intelligence", requireAuth, intelligenceRouter);
 app.use("/api/integrations", requireAuth, integrationsPublicRouter, integrationsRouter);
 app.use("/api/settings", requireAuth, settingsRouter);

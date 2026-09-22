@@ -1,8 +1,8 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { AlertCircle, Briefcase, CheckCircle2, ChevronLeft, Database, Download, ExternalLink, Eye, FileText, GraduationCap, Languages, LogOut, Mail, MapPin, MessageCircle, Plug, Plus, RotateCcw, Save, Search, Settings, UserRound, Users, X } from "lucide-react";
+import { AlertCircle, Briefcase, CalendarDays, CheckCircle2, ChevronLeft, Database, Download, ExternalLink, Eye, FileText, GraduationCap, Languages, LogOut, Mail, MapPin, MessageCircle, Plug, Plus, RotateCcw, Save, Search, Settings, UserRound, Users, X } from "lucide-react";
 import { API_URL, api, authHeaders, loadCurrentUser, loginWithGoogle, logout, type User } from "./lib/api";
 
-type Page = "finder" | "candidates" | "candidate" | "integrations" | "settings";
+type Page = "finder" | "season" | "candidates" | "candidate" | "integrations" | "settings";
 
 const TALENT_FINDER_STATE_KEY = "talenthub:finder-state:v2";
 
@@ -88,6 +88,39 @@ type CandidateDocument = {
   created_at?: string;
   is_primary_cv?: boolean;
   has_stored_file?: boolean;
+};
+
+type SeasonSearch = {
+  id: string;
+  name: string;
+  department?: string | null;
+  city?: string | null;
+  radiusKm?: number | null;
+  role: string;
+  experienceLevel?: string | null;
+  keywords: string[];
+  excludeKeywords: string[];
+  queryText?: string | null;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  lastRunAt?: string | null;
+  resultCount: number;
+  reservedCount: number;
+};
+
+type SeasonResult = {
+  id: string;
+  score: number;
+  matchReason?: string | null;
+  sourceTypes: string[];
+  profileUrl?: string | null;
+  firstFoundAt: string;
+  lastFoundAt: string;
+  reservedAt?: string | null;
+  reservedBy?: string | null;
+  reservedByName?: string | null;
+  candidate: Candidate;
 };
 
 type CvAnalysis = {
@@ -183,6 +216,7 @@ const recencyOptions: FilterOption[] = [
 
 const nav = [
   ["finder", Search, "Talent Finder"],
+  ["season", CalendarDays, "Temporada"],
   ["candidates", Users, "Candidatos"],
   ["integrations", Plug, "Integraciones"],
   ["settings", Settings, "Configuración"]
@@ -245,6 +279,7 @@ export function App() {
           </div>
         </header>
         {page === "finder" && <TalentFinder onView={openCandidate} />}
+        {page === "season" && <SeasonPage onView={openCandidate} />}
         {page === "candidates" && <Candidates onView={openCandidate} />}
         {page === "candidate" && candidateId && <CandidateProfile id={candidateId} canEdit={user.role !== "viewer"} />}
         {page === "integrations" && <Integrations canEdit={user.role === "admin"} />}
@@ -255,7 +290,7 @@ export function App() {
 }
 
 function titleFor(page: Page) {
-  return ({ finder: "Talent Finder", candidates: "Candidatos", candidate: "Ficha de candidato", integrations: "Integraciones", settings: "Configuración" } as Record<Page, string>)[page];
+  return ({ finder: "Talent Finder", season: "Temporada", candidates: "Candidatos", candidate: "Ficha de candidato", integrations: "Integraciones", settings: "Configuración" } as Record<Page, string>)[page];
 }
 
 function Login() {
@@ -633,6 +668,262 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
       })}</div>
       {results.length < totalResults && <div className="mt-4 flex justify-center"><button className="btn-ghost" onClick={() => run(currentPage + 1, true)} disabled={loading}>{loading ? "Cargando..." : `Cargar 50 más (${totalResults - results.length} restantes)`}</button></div>}
       {previewCandidate && <CvPreviewModal candidate={previewCandidate} onClose={() => setPreviewCandidate(null)} onView={() => { setPreviewCandidate(null); openCandidateFromResults(previewCandidate.id); }} />}
+    </PagePad>
+  );
+}
+
+function SeasonPage({ onView }: { onView: (id: string) => void }) {
+  const [searches, setSearches] = useState<SeasonSearch[]>([]);
+  const [selectedId, setSelectedId] = useState("");
+  const [detail, setDetail] = useState<{ search: SeasonSearch; results: SeasonResult[] } | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [running, setRunning] = useState("");
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [previewCandidate, setPreviewCandidate] = useState<Candidate | null>(null);
+  const [form, setForm] = useState({
+    name: "Auxiliares de supermercado - Maldonado - Verano 2026/27",
+    department: "Maldonado",
+    city: "",
+    radiusKm: "",
+    role: "Auxiliar de supermercado",
+    experienceLevel: "Junior / poca experiencia",
+    keywords: "supermercado, repositor, auxiliar, atención al cliente, caja, depósito, góndolas",
+    excludeKeywords: "gerente, jefe, encargado, supervisor"
+  });
+
+  async function load(openFirst = true) {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await api<{ data: SeasonSearch[] }>("/season-searches");
+      setSearches(response.data);
+      if (openFirst && response.data.length > 0 && !selectedId) {
+        await openSearch(response.data[0].id);
+      }
+    } catch (err: any) {
+      setError(err.message || "No se pudieron cargar las búsquedas de temporada.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function openSearch(id: string) {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await api<{ data: { search: SeasonSearch; results: SeasonResult[] } }>(`/season-searches/${id}`);
+      setSelectedId(id);
+      setDetail(response.data);
+    } catch (err: any) {
+      setError(err.message || "No se pudo abrir la búsqueda de temporada.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function createSearch(event: FormEvent) {
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+    setMessage("");
+    try {
+      const response = await api<{ data: SeasonSearch }>("/season-searches", {
+        method: "POST",
+        body: JSON.stringify({
+          name: form.name,
+          department: form.department || null,
+          city: form.city || null,
+          radiusKm: form.radiusKm ? Number(form.radiusKm) : null,
+          role: form.role,
+          experienceLevel: form.experienceLevel || null,
+          keywords: listFlexible(form.keywords),
+          excludeKeywords: listFlexible(form.excludeKeywords)
+        })
+      });
+      setShowForm(false);
+      setMessage("Búsqueda de temporada creada. Ya podés ejecutarla y reservar perfiles.");
+      await load(false);
+      await openSearch(response.data.id);
+    } catch (err: any) {
+      setError(err.message || "No se pudo crear la búsqueda de temporada.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function runSearch(id = selectedId) {
+    if (!id) return;
+    setRunning(id);
+    setError("");
+    setMessage("Buscando candidatos existentes que coincidan con la temporada...");
+    try {
+      const response = await api<{ data: { search: SeasonSearch; results: SeasonResult[] }; meta?: { reviewed: number; imported: number; excluded: number } }>(`/season-searches/${id}/run`, {
+        method: "POST",
+        timeoutMs: 60_000
+      });
+      setDetail(response.data);
+      await load(false);
+      const meta = response.meta;
+      setMessage(meta ? `Temporada actualizada: ${meta.imported} perfiles en bandeja, ${meta.excluded} excluidos por palabras bloqueadas.` : "Temporada actualizada.");
+    } catch (err: any) {
+      setError(err.message || "No se pudo ejecutar la búsqueda de temporada.");
+    } finally {
+      setRunning("");
+    }
+  }
+
+  async function reserve(candidateId: string) {
+    if (!selectedId) return;
+    setError("");
+    try {
+      await api(`/season-searches/${selectedId}/results/${candidateId}/reserve`, { method: "POST" });
+      await openSearch(selectedId);
+    } catch (err: any) {
+      setError(err.message || "No se pudo reservar el candidato.");
+    }
+  }
+
+  const selected = detail?.search;
+  const results = detail?.results ?? [];
+
+  return (
+    <PagePad>
+      <section className="mb-5 rounded-3xl bg-[#0f5132] p-6 text-white">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="mb-2 inline-flex rounded-full bg-lime-300/20 px-3 py-1 text-xs font-bold text-lime-100">Base anticipada AGLH + Yoiners</div>
+            <h2 className="text-2xl font-extrabold">Búsquedas de temporada</h2>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-white/80">Definí un perfil estacional, ejecutalo contra la base unificada y armá una lista de contacto sin duplicar candidatos.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <SyncAllButton compact onComplete={() => selectedId && runSearch(selectedId)} />
+            <button className="btn-primary bg-lime-400 text-[#123e2b] hover:bg-lime-300" onClick={() => setShowForm(!showForm)}><Plus size={16} /> Crear búsqueda</button>
+          </div>
+        </div>
+      </section>
+
+      {error && <ErrorBox message={error} />}
+      {message && <div className="mb-4 rounded-xl border border-slate-200 bg-white p-3 text-sm text-slate-600">{message}</div>}
+
+      {showForm && (
+        <form onSubmit={createSearch} className="card mb-5 grid gap-4 p-5">
+          <div className="grid gap-3 lg:grid-cols-2">
+            <Input label="Nombre" value={form.name} onChange={(value) => setForm({ ...form, name: value })} required />
+            <Input label="Perfil / puesto" value={form.role} onChange={(value) => setForm({ ...form, role: value })} required />
+            <Input label="Departamento" value={form.department} onChange={(value) => setForm({ ...form, department: value })} />
+            <Input label="Ciudad/localidad" value={form.city} onChange={(value) => setForm({ ...form, city: value })} />
+            <Input label="Radio aproximado en km" type="number" value={form.radiusKm} onChange={(value) => setForm({ ...form, radiusKm: value })} />
+            <div>
+              <label className="label">Nivel de experiencia</label>
+              <select className="field" value={form.experienceLevel} onChange={(event) => setForm({ ...form, experienceLevel: event.target.value })}>
+                <option value="Sin experiencia">Sin experiencia</option>
+                <option value="Junior / poca experiencia">Junior / poca experiencia</option>
+                <option value="0-1 año">0-1 año</option>
+                <option value="1-2 años">1-2 años</option>
+                <option value="2+ años">2+ años</option>
+              </select>
+            </div>
+          </div>
+          <div className="grid gap-3 lg:grid-cols-2">
+            <div>
+              <label className="label">Palabras clave</label>
+              <textarea className="field min-h-28" value={form.keywords} onChange={(event) => setForm({ ...form, keywords: event.target.value })} placeholder="supermercado, repositor, caja..." />
+            </div>
+            <div>
+              <label className="label">Palabras a excluir</label>
+              <textarea className="field min-h-28" value={form.excludeKeywords} onChange={(event) => setForm({ ...form, excludeKeywords: event.target.value })} placeholder="gerente, jefe, supervisor..." />
+            </div>
+          </div>
+          <button className="btn-primary w-fit" disabled={loading}><Save size={16} /> Guardar búsqueda</button>
+        </form>
+      )}
+
+      <div className="grid gap-5 xl:grid-cols-[380px_minmax(0,1fr)]">
+        <section className="grid content-start gap-3">
+          {loading && searches.length === 0 && <Skeleton />}
+          {!loading && searches.length === 0 && <Empty text="Todavía no hay búsquedas de temporada. Creá la primera para empezar a armar la base." />}
+          {searches.map((search) => (
+            <button key={search.id} onClick={() => openSearch(search.id)} className={`card text-left transition hover:border-emerald-300 ${selectedId === search.id ? "border-emerald-400 ring-2 ring-emerald-100" : ""}`}>
+              <div className="p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="font-bold text-slate-900">{search.name}</div>
+                  <span className="rounded-full bg-lime-100 px-2 py-1 text-xs font-bold text-[#355326]">{search.resultCount} perfiles</span>
+                </div>
+                <div className="mt-2 text-sm text-slate-500">{[search.department, search.city, search.role, search.experienceLevel].filter(Boolean).join(" · ")}</div>
+                <div className="mt-3 flex flex-wrap gap-1">{search.keywords.slice(0, 5).map((keyword) => <span key={keyword} className="rounded-full bg-[#eef4e4] px-2 py-0.5 text-xs font-semibold text-[#355326]">{keyword}</span>)}</div>
+                <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
+                  <span>{search.reservedCount} reservados</span>
+                  <span>{search.lastRunAt ? `Ejecutada ${new Date(search.lastRunAt).toLocaleDateString("es-UY")}` : "Sin ejecutar"}</span>
+                </div>
+              </div>
+            </button>
+          ))}
+        </section>
+
+        <section className="min-w-0">
+          {!selected && <Empty text="Elegí una búsqueda de temporada para ver la bandeja de perfiles." />}
+          {selected && (
+            <div className="grid gap-4">
+              <div className="card p-5">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <h2 className="text-xl font-extrabold text-slate-900">{selected.name}</h2>
+                    <p className="mt-1 text-sm text-slate-500">{selected.queryText || [selected.role, selected.city, selected.department].filter(Boolean).join(" · ")}</p>
+                    <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                      <span className="rounded-full bg-slate-100 px-2 py-1 font-semibold text-slate-600">{selected.resultCount} perfiles en bandeja</span>
+                      <span className="rounded-full bg-emerald-50 px-2 py-1 font-semibold text-emerald-700">{selected.reservedCount} reservados</span>
+                      {selected.lastRunAt && <span className="rounded-full bg-blue-50 px-2 py-1 font-semibold text-blue-700">Última ejecución {new Date(selected.lastRunAt).toLocaleString("es-UY")}</span>}
+                    </div>
+                  </div>
+                  <button className="btn-primary" onClick={() => runSearch(selected.id)} disabled={running === selected.id}><Search size={16} /> {running === selected.id ? "Ejecutando..." : "Ejecutar búsqueda"}</button>
+                </div>
+              </div>
+
+              {results.length === 0 && <Empty text="Todavía no hay perfiles para esta temporada. Ejecutá la búsqueda para armar la bandeja." />}
+              {results.map((result) => {
+                const candidate = {
+                  ...result.candidate,
+                  score: result.score,
+                  matchReason: result.matchReason ?? "",
+                  sourceTypes: result.candidate.sourceTypes?.length ? result.candidate.sourceTypes : result.sourceTypes,
+                  languages: result.candidate.languages ?? [],
+                  strengths: result.candidate.strengths ?? [],
+                  weaknesses: result.candidate.weaknesses ?? [],
+                  tags: result.candidate.tags ?? [],
+                  email: result.candidate.email ?? [],
+                  phone: result.candidate.phone ?? [],
+                  status: result.candidate.status ?? "active"
+                } as Candidate;
+                return (
+                  <div key={result.id} className="grid gap-2">
+                    <CandidateRow
+                      candidate={candidate}
+                      onView={onView}
+                      onPreview={candidate.primaryDocumentId ? () => setPreviewCandidate(candidate) : undefined}
+                      reason={result.matchReason ?? undefined}
+                      matchScore={result.score}
+                    />
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                      <div className="text-xs text-slate-500">
+                        Encontrado {new Date(result.lastFoundAt).toLocaleString("es-UY")}
+                        {result.reservedAt && <> · Reservado por {result.reservedByName || "TalentHub"} el {new Date(result.reservedAt).toLocaleString("es-UY")}</>}
+                      </div>
+                      <button className={result.reservedAt ? "btn-ghost" : "btn-primary"} onClick={() => reserve(candidate.id)} disabled={Boolean(result.reservedAt)}>
+                        {result.reservedAt ? "✓ Reservado" : "Reservar"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      </div>
+      {previewCandidate && <CvPreviewModal candidate={previewCandidate} onClose={() => setPreviewCandidate(null)} onView={() => { const id = previewCandidate.id; setPreviewCandidate(null); onView(id); }} />}
     </PagePad>
   );
 }
@@ -1423,3 +1714,4 @@ function MatchScore({ score }: { score: number }) { return <div className="min-w
 function InfoCard({ title, text }: { title: string; text: string }) { return <div className="card whitespace-pre-line p-4"><h3 className="mb-2 font-bold">{title}</h3><p className="text-sm text-slate-600">{text}</p></div>; }
 function Table({ title, rows, empty, columns }: any) { return <div className="card overflow-hidden"><div className="border-b border-slate-200 p-4 font-bold">{title}</div>{rows.length === 0 ? <div className="p-4 text-sm text-slate-500">{empty}</div> : <div className="overflow-auto"><table className="w-full text-left text-sm"><thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>{columns.map((c: string) => <th className="px-4 py-2" key={c}>{c}</th>)}</tr></thead><tbody>{rows.map((r: any) => <tr className="border-t border-slate-100" key={r.id}>{columns.map((c: string) => <td className={`px-4 py-2 align-top ${c === "message" || c === "reason" ? "max-w-xl whitespace-normal break-words text-xs leading-relaxed" : "whitespace-nowrap"}`} key={c} title={String(r[c] ?? "")}>{c === "message" || c === "reason" ? shortText(String(r[c] ?? ""), 220) : String(r[c] ?? "")}</td>)}</tr>)}</tbody></table></div>}</div>; }
 function list(value: string) { return value.split(",").map((x) => x.trim()).filter(Boolean); }
+function listFlexible(value: string) { return value.split(/[,;\n]+/).map((x) => x.trim()).filter(Boolean); }
