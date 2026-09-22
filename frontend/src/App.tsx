@@ -5,6 +5,7 @@ import { API_URL, api, authHeaders, loadCurrentUser, loginWithGoogle, logout, ty
 type Page = "finder" | "season" | "candidates" | "candidate" | "integrations" | "settings";
 
 const TALENT_FINDER_STATE_KEY = "talenthub:finder-state:v2";
+const SEASON_STATE_KEY = "talenthub:season-state:v1";
 
 type TalentFinderSnapshot = {
   query: string;
@@ -107,6 +108,7 @@ type SeasonSearch = {
   lastRunAt?: string | null;
   resultCount: number;
   reservedCount: number;
+  myReservedCount: number;
 };
 
 type SeasonResult = {
@@ -120,8 +122,30 @@ type SeasonResult = {
   reservedAt?: string | null;
   reservedBy?: string | null;
   reservedByName?: string | null;
+  reservedByEmail?: string | null;
+  isReservedByMe?: boolean;
   candidate: Candidate;
 };
+
+type SeasonUiState = {
+  selectedId: string;
+  text: string;
+  reservation: string;
+  source: string;
+  contact: string;
+  recency: string;
+  sort: string;
+};
+
+function readSeasonState(): SeasonUiState {
+  const empty: SeasonUiState = { selectedId: "", text: "", reservation: "", source: "", contact: "", recency: "", sort: "score" };
+  try {
+    const stored = window.localStorage.getItem(SEASON_STATE_KEY);
+    return stored ? { ...empty, ...JSON.parse(stored) } : empty;
+  } catch {
+    return empty;
+  }
+}
 
 type CvAnalysis = {
   hasReadableText: boolean;
@@ -673,8 +697,9 @@ function TalentFinder({ onView }: { onView: (id: string) => void }) {
 }
 
 function SeasonPage({ onView }: { onView: (id: string) => void }) {
+  const initialSeasonState = readSeasonState();
   const [searches, setSearches] = useState<SeasonSearch[]>([]);
-  const [selectedId, setSelectedId] = useState("");
+  const [selectedId, setSelectedId] = useState(initialSeasonState.selectedId);
   const [detail, setDetail] = useState<{ search: SeasonSearch; results: SeasonResult[] } | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -682,6 +707,7 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [previewCandidate, setPreviewCandidate] = useState<Candidate | null>(null);
+  const [seasonFilters, setSeasonFilters] = useState<SeasonUiState>(initialSeasonState);
   const [form, setForm] = useState({
     name: "Auxiliares de supermercado - Maldonado - Verano 2026/27",
     department: "Maldonado",
@@ -693,37 +719,58 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
     excludeKeywords: "gerente, jefe, encargado, supervisor"
   });
 
-  async function load(openFirst = true) {
-    setLoading(true);
+  async function load(openFirst = true, silent = false) {
+    if (!silent) setLoading(true);
     setError("");
     try {
       const response = await api<{ data: SeasonSearch[] }>("/season-searches");
       setSearches(response.data);
-      if (openFirst && response.data.length > 0 && !selectedId) {
-        await openSearch(response.data[0].id);
+      if (openFirst && response.data.length > 0) {
+        const targetId = selectedId && response.data.some((search) => search.id === selectedId)
+          ? selectedId
+          : seasonFilters.selectedId && response.data.some((search) => search.id === seasonFilters.selectedId)
+            ? seasonFilters.selectedId
+            : response.data[0].id;
+        if (targetId && targetId !== detail?.search.id) await openSearch(targetId, { silent });
       }
     } catch (err: any) {
       setError(err.message || "No se pudieron cargar las búsquedas de temporada.");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }
 
-  async function openSearch(id: string) {
-    setLoading(true);
-    setError("");
+  async function openSearch(id: string, options: { silent?: boolean } = {}) {
+    if (!options.silent) setLoading(true);
+    if (!options.silent) setError("");
     try {
       const response = await api<{ data: { search: SeasonSearch; results: SeasonResult[] } }>(`/season-searches/${id}`);
       setSelectedId(id);
       setDetail(response.data);
+      setSeasonFilters((current) => ({ ...current, selectedId: id }));
     } catch (err: any) {
-      setError(err.message || "No se pudo abrir la búsqueda de temporada.");
+      if (!options.silent) setError(err.message || "No se pudo abrir la búsqueda de temporada.");
     } finally {
-      setLoading(false);
+      if (!options.silent) setLoading(false);
     }
   }
 
   useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(SEASON_STATE_KEY, JSON.stringify({ ...seasonFilters, selectedId }));
+  }, [seasonFilters, selectedId]);
+
+  useEffect(() => {
+    if (!selectedId) return undefined;
+    const refresh = () => openSearch(selectedId, { silent: true });
+    const timer = window.setInterval(refresh, 12_000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [selectedId]);
 
   async function createSearch(event: FormEvent) {
     event.preventDefault();
@@ -766,7 +813,7 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
         timeoutMs: 60_000
       });
       setDetail(response.data);
-      await load(false);
+      await load(false, true);
       const meta = response.meta;
       const skippedText = meta?.skipped ? ` ${meta.skipped} perfiles omitidos por datos incompletos.` : "";
       setMessage(meta ? `Temporada actualizada: ${meta.imported} perfiles en bandeja, ${meta.excluded} excluidos por palabras bloqueadas.${skippedText}` : "Temporada actualizada.");
@@ -783,14 +830,102 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
     setError("");
     try {
       await api(`/season-searches/${selectedId}/results/${candidateId}/reserve`, { method: "POST" });
-      await openSearch(selectedId);
+      await openSearch(selectedId, { silent: true });
+      await load(false, true);
     } catch (err: any) {
       setError(err.message || "No se pudo reservar el candidato.");
     }
   }
 
+  async function releaseReservation(candidateId: string) {
+    if (!selectedId) return;
+    setError("");
+    try {
+      await api(`/season-searches/${selectedId}/results/${candidateId}/reserve`, { method: "DELETE" });
+      await openSearch(selectedId, { silent: true });
+      await load(false, true);
+    } catch (err: any) {
+      setError(err.message || "No se pudo liberar la reserva.");
+    }
+  }
+
   const selected = detail?.search;
   const results = detail?.results ?? [];
+  const seasonFilterFields: FilterField[] = [
+    { key: "text", type: "text", placeholder: "Filtrar por nombre, ciudad, rol, email, teléfono..." },
+    { key: "reservation", type: "select", options: [
+      { value: "", label: "Todos los perfiles" },
+      { value: "available", label: "Disponibles" },
+      { value: "mine", label: "Mis reservados" },
+      { value: "reserved", label: "Todos los reservados" },
+      { value: "others", label: "Reservados por otros" }
+    ] },
+    { key: "source", type: "select", options: sourceOptions },
+    { key: "contact", type: "select", options: contactOptions },
+    { key: "recency", type: "select", options: recencyOptions },
+    { key: "sort", type: "select", options: [
+      { value: "score", label: "Mayor coincidencia" },
+      { value: "recent", label: "Encontrados recientemente" },
+      { value: "name", label: "Nombre A-Z" },
+      { value: "reserved", label: "Reservados recientes" }
+    ] }
+  ];
+  const updateSeasonFilter = (key: string, value: string | number) => setSeasonFilters((current) => ({ ...current, [key]: String(value) }));
+  const recencyLimit = (() => {
+    if (!seasonFilters.recency) return 0;
+    const days = Number(seasonFilters.recency.replace("d", ""));
+    return Number.isFinite(days) ? Date.now() - days * 24 * 60 * 60 * 1000 : 0;
+  })();
+  const filteredResults = results
+    .filter((result) => {
+      const candidate = result.candidate;
+      const haystack = [
+        candidate.fullName,
+        candidate.currentRole,
+        candidate.city,
+        candidate.country,
+        candidate.summary,
+        candidate.primaryDocumentName,
+        candidate.documentSnippet,
+        result.matchReason,
+        result.reservedByName,
+        result.reservedByEmail,
+        ...(candidate.email ?? []),
+        ...(candidate.phone ?? []),
+        ...(candidate.tags ?? []),
+        ...(candidate.sourceTypes ?? []),
+        ...result.sourceTypes
+      ].join(" ").toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "");
+      const text = seasonFilters.text.trim().toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "");
+      if (text && !text.split(/\s+/).every((part) => haystack.includes(part))) return false;
+      if (seasonFilters.reservation === "available" && result.reservedAt) return false;
+      if (seasonFilters.reservation === "mine" && !result.isReservedByMe) return false;
+      if (seasonFilters.reservation === "reserved" && !result.reservedAt) return false;
+      if (seasonFilters.reservation === "others" && (!result.reservedAt || result.isReservedByMe)) return false;
+      if (seasonFilters.source) {
+        const sources = [...(candidate.sourceTypes ?? []), ...result.sourceTypes].map((source) => source.toLowerCase());
+        if (!sources.some((source) => source.includes(seasonFilters.source))) return false;
+      }
+      const hasPhone = Boolean(candidate.phone?.length);
+      const hasEmail = Boolean(candidate.email?.length);
+      if (seasonFilters.contact === "phone" && !hasPhone) return false;
+      if (seasonFilters.contact === "email" && !hasEmail) return false;
+      if (seasonFilters.contact === "both" && (!hasPhone || !hasEmail)) return false;
+      if (recencyLimit) {
+        const seenAt = new Date(candidate.latestSourceAt || result.lastFoundAt).getTime();
+        if (!Number.isFinite(seenAt) || seenAt < recencyLimit) return false;
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      if (seasonFilters.sort === "recent") return new Date(b.lastFoundAt).getTime() - new Date(a.lastFoundAt).getTime();
+      if (seasonFilters.sort === "name") return a.candidate.fullName.localeCompare(b.candidate.fullName, "es");
+      if (seasonFilters.sort === "reserved") return new Date(b.reservedAt ?? 0).getTime() - new Date(a.reservedAt ?? 0).getTime();
+      return b.score - a.score;
+    });
+  const availableCount = results.filter((result) => !result.reservedAt).length;
+  const myReservedCount = results.filter((result) => result.isReservedByMe).length;
+  const otherReservedCount = results.filter((result) => result.reservedAt && !result.isReservedByMe).length;
 
   return (
     <PagePad>
@@ -859,6 +994,7 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
                 <div className="mt-3 flex flex-wrap gap-1">{search.keywords.slice(0, 5).map((keyword) => <span key={keyword} className="rounded-full bg-[#eef4e4] px-2 py-0.5 text-xs font-semibold text-[#355326]">{keyword}</span>)}</div>
                 <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
                   <span>{search.reservedCount} reservados</span>
+                  <span>{search.myReservedCount} míos</span>
                   <span>{search.lastRunAt ? `Ejecutada ${new Date(search.lastRunAt).toLocaleDateString("es-UY")}` : "Sin ejecutar"}</span>
                 </div>
               </div>
@@ -878,6 +1014,7 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
                     <div className="mt-3 flex flex-wrap gap-2 text-xs">
                       <span className="rounded-full bg-slate-100 px-2 py-1 font-semibold text-slate-600">{selected.resultCount} perfiles en bandeja</span>
                       <span className="rounded-full bg-emerald-50 px-2 py-1 font-semibold text-emerald-700">{selected.reservedCount} reservados</span>
+                      <span className="rounded-full bg-lime-100 px-2 py-1 font-semibold text-[#355326]">{selected.myReservedCount} reservados por mí</span>
                       {selected.lastRunAt && <span className="rounded-full bg-blue-50 px-2 py-1 font-semibold text-blue-700">Última ejecución {new Date(selected.lastRunAt).toLocaleString("es-UY")}</span>}
                     </div>
                   </div>
@@ -885,8 +1022,26 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
                 </div>
               </div>
 
+              {results.length > 0 && (
+                <div className="card p-4">
+                  <FilterControls
+                    fields={seasonFilterFields}
+                    values={seasonFilters}
+                    onChange={updateSeasonFilter}
+                    className="grid gap-2 md:grid-cols-2 xl:grid-cols-6"
+                  />
+                  <div className="mt-3 flex flex-wrap gap-3 text-xs text-slate-500">
+                    <span>{availableCount} disponibles</span>
+                    <span>{myReservedCount} reservados por mí</span>
+                    <span>{otherReservedCount} reservados por otros</span>
+                    <span>Mostrando {filteredResults.length} de {results.length}</span>
+                  </div>
+                </div>
+              )}
+
               {results.length === 0 && <Empty text="Todavía no hay perfiles para esta temporada. Ejecutá la búsqueda para armar la bandeja." />}
-              {results.map((result) => {
+              {results.length > 0 && filteredResults.length === 0 && <Empty text="No hay perfiles que coincidan con esos filtros dentro de esta búsqueda." />}
+              {filteredResults.map((result) => {
                 const candidate = {
                   ...result.candidate,
                   score: result.score,
@@ -900,25 +1055,31 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
                   phone: result.candidate.phone ?? [],
                   status: result.candidate.status ?? "active"
                 } as Candidate;
+                const reservedBy = result.reservedByName || result.reservedByEmail || "otro reclutador";
                 return (
-                  <div key={result.id} className="grid gap-2">
-                    <CandidateRow
-                      candidate={candidate}
-                      onView={onView}
-                      onPreview={candidate.primaryDocumentId ? () => setPreviewCandidate(candidate) : undefined}
-                      reason={result.matchReason ?? undefined}
-                      matchScore={result.score}
-                    />
-                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                      <div className="text-xs text-slate-500">
+                  <CandidateRow
+                    key={result.id}
+                    candidate={candidate}
+                    onView={onView}
+                    onPreview={candidate.primaryDocumentId ? () => setPreviewCandidate(candidate) : undefined}
+                    reason={result.matchReason ?? undefined}
+                    matchScore={result.score}
+                    statusLine={(
+                      <span>
                         Encontrado {new Date(result.lastFoundAt).toLocaleString("es-UY")}
-                        {result.reservedAt && <> · Reservado por {result.reservedByName || "TalentHub"} el {new Date(result.reservedAt).toLocaleString("es-UY")}</>}
-                      </div>
-                      <button className={result.reservedAt ? "btn-ghost" : "btn-primary"} onClick={() => reserve(candidate.id)} disabled={Boolean(result.reservedAt)}>
-                        {result.reservedAt ? "✓ Reservado" : "Reservar"}
-                      </button>
-                    </div>
-                  </div>
+                        {result.reservedAt && <> · Reservado por {result.isReservedByMe ? "mí" : reservedBy} el {new Date(result.reservedAt).toLocaleString("es-UY")}</>}
+                      </span>
+                    )}
+                    extraAction={(
+                      result.isReservedByMe ? (
+                        <button className="btn-primary justify-center bg-lime-400 text-[#123e2b] hover:bg-lime-300" onClick={() => releaseReservation(candidate.id)}>✓ Reservado por mí</button>
+                      ) : result.reservedAt ? (
+                        <button className="btn-ghost justify-center" disabled title={`Reservado por ${reservedBy}`}>Reservado por {shortText(reservedBy, 22)}</button>
+                      ) : (
+                        <button className="btn-primary justify-center" onClick={() => reserve(candidate.id)}>Reservar</button>
+                      )
+                    )}
+                  />
                 );
               })}
             </div>
@@ -1675,14 +1836,30 @@ function CvPreviewModal({ candidate, onClose, onView }: { candidate: Candidate; 
   </div>;
 }
 
-function CandidateRow({ candidate, onView, onPreview, reason, matchScore }: { candidate: Candidate; onView: (id: string) => void; onPreview?: () => void; reason?: string; matchScore?: number }) {
+function CandidateRow({
+  candidate,
+  onView,
+  onPreview,
+  reason,
+  matchScore,
+  statusLine,
+  extraAction
+}: {
+  candidate: Candidate;
+  onView: (id: string) => void;
+  onPreview?: () => void;
+  reason?: string;
+  matchScore?: number;
+  statusLine?: ReactNode;
+  extraAction?: ReactNode;
+}) {
   const role = shortText(candidate.currentRole || "Sin rol", 90);
   const location = shortText(candidate.city || candidate.country || "Sin ciudad", 45);
   const documents = Number(candidate.documentCount ?? 0);
   const whatsappUrl = candidate.phone?.[0] ? whatsappUrlForPhone(candidate.phone[0]) : null;
   const summary = cleanDisplayText(candidate.summary);
   const submitted = candidate.latestSourceAt ? new Date(candidate.latestSourceAt).toLocaleDateString("es-UY") : "";
-  return <div className="card candidate-card flex flex-wrap items-start justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div>{candidate.status === "needs_review" && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">Revisar datos</span>}</div><div className="truncate text-sm text-slate-500">{role} · {location}{candidate.years ? ` · ${candidate.years} años declarados` : ""}</div>{summary && <p className="mt-2 max-w-3xl text-sm leading-5 text-slate-700">{shortText(summary, 260)}</p>}<div className="mt-2 flex flex-wrap items-center gap-2">{documents > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600"><FileText size={13} /> {documents} CV/doc</span>}{candidate.primaryDocumentName && <span className="max-w-sm truncate text-xs text-slate-500">{shortText(candidate.primaryDocumentName, 70)}</span>}{whatsappUrl && <a className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:underline" href={whatsappUrl} target="_blank" rel="noreferrer" title="Abrir conversación en WhatsApp"><MessageCircle size={13} /> {shortText(candidate.phone[0], 35)}</a>}{candidate.email?.[0] && <a className="max-w-xs truncate text-xs text-slate-500 hover:underline" href={`mailto:${candidate.email[0]}`}>{shortText(candidate.email[0], 45)}</a>}{submitted && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">CV recibido {submitted}</span>}</div><div className="mt-2 flex flex-wrap gap-1">{(candidate.sourceTypes ?? []).map((source) => <span className={sourceBadgeClass(source)} key={source}>{source}</span>)}</div><TagList tags={candidate.tags ?? []} />{reason && <p className="match-reason mt-2 px-3 py-2 text-xs">{shortText(reason, 240)}</p>}</div></div><div className="flex shrink-0 items-center gap-3">{typeof matchScore === "number" && <MatchScore score={matchScore} />}<div className="grid gap-2">{onPreview && documents > 0 && <button className="btn-primary justify-center" onClick={onPreview}><Eye size={16} /> Ver CV</button>}<button className="btn-ghost justify-center" onClick={() => onView(candidate.id)}>Ver ficha</button></div></div></div>;
+  return <div className="card candidate-card flex flex-wrap items-start justify-between gap-4 p-4"><div className="flex min-w-0 flex-1 gap-3"><Avatar name={candidate.fullName} small /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><div className="truncate font-bold">{shortText(candidate.fullName, 90)}</div>{candidate.status === "needs_review" && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">Revisar datos</span>}</div><div className="truncate text-sm text-slate-500">{role} · {location}{candidate.years ? ` · ${candidate.years} años declarados` : ""}</div>{summary && <p className="mt-2 max-w-3xl text-sm leading-5 text-slate-700">{shortText(summary, 260)}</p>}<div className="mt-2 flex flex-wrap items-center gap-2">{documents > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600"><FileText size={13} /> {documents} CV/doc</span>}{candidate.primaryDocumentName && <span className="max-w-sm truncate text-xs text-slate-500">{shortText(candidate.primaryDocumentName, 70)}</span>}{whatsappUrl && <a className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:underline" href={whatsappUrl} target="_blank" rel="noreferrer" title="Abrir conversación en WhatsApp"><MessageCircle size={13} /> {shortText(candidate.phone[0], 35)}</a>}{candidate.email?.[0] && <a className="max-w-xs truncate text-xs text-slate-500 hover:underline" href={`mailto:${candidate.email[0]}`}>{shortText(candidate.email[0], 45)}</a>}{submitted && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">CV recibido {submitted}</span>}</div><div className="mt-2 flex flex-wrap gap-1">{(candidate.sourceTypes ?? []).map((source) => <span className={sourceBadgeClass(source)} key={source}>{source}</span>)}</div><TagList tags={candidate.tags ?? []} />{reason && <p className="match-reason mt-2 px-3 py-2 text-xs">{shortText(reason, 240)}</p>}{statusLine && <div className="mt-2 text-xs text-slate-500">{statusLine}</div>}</div></div><div className="flex shrink-0 items-center gap-3">{typeof matchScore === "number" && <MatchScore score={matchScore} />}<div className="grid gap-2">{extraAction}{onPreview && documents > 0 && <button className="btn-primary justify-center" onClick={onPreview}><Eye size={16} /> Ver CV</button>}<button className="btn-ghost justify-center" onClick={() => onView(candidate.id)}>Ver ficha</button></div></div></div>;
 }
 
 function sourceBadgeClass(source: string) {

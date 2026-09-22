@@ -95,11 +95,12 @@ function mapSeason(row: any) {
     updatedAt: row.updated_at,
     lastRunAt: row.last_run_at,
     resultCount: Number(row.result_count ?? 0),
-    reservedCount: Number(row.reserved_count ?? 0)
+    reservedCount: Number(row.reserved_count ?? 0),
+    myReservedCount: Number(row.my_reserved_count ?? 0)
   };
 }
 
-function mapSeasonResult(row: any) {
+function mapSeasonResult(row: any, viewerId?: string) {
   return {
     id: row.result_id,
     score: Number(row.score ?? 0),
@@ -111,6 +112,8 @@ function mapSeasonResult(row: any) {
     reservedAt: row.reserved_at,
     reservedBy: row.reserved_by,
     reservedByName: row.reserved_by_name,
+    reservedByEmail: row.reserved_by_email,
+    isReservedByMe: Boolean(row.reserved_by && viewerId && row.reserved_by === viewerId),
     candidate: {
       id: row.candidate_id,
       fullName: candidateDisplayName(row.full_name),
@@ -144,30 +147,33 @@ function mapSeasonResult(row: any) {
   };
 }
 
-async function getSeasonList() {
+async function getSeasonList(viewerId: string) {
   const { rows } = await q(
     `SELECT ss.*,
       count(ssr.id)::int AS result_count,
-      count(ssr.id) FILTER (WHERE ssr.reserved_at IS NOT NULL)::int AS reserved_count
+      count(ssr.id) FILTER (WHERE ssr.reserved_at IS NOT NULL)::int AS reserved_count,
+      count(ssr.id) FILTER (WHERE ssr.reserved_by=$1)::int AS my_reserved_count
      FROM season_searches ss
      LEFT JOIN season_search_results ssr ON ssr.season_search_id=ss.id
      WHERE ss.status <> 'archived'
      GROUP BY ss.id
-     ORDER BY ss.updated_at DESC, ss.created_at DESC`
+     ORDER BY ss.updated_at DESC, ss.created_at DESC`,
+    [viewerId]
   );
   return rows.map(mapSeason);
 }
 
-async function getSeasonDetail(id: string) {
+async function getSeasonDetail(id: string, viewerId: string) {
   const { rows: searchRows } = await q(
     `SELECT ss.*,
       count(ssr.id)::int AS result_count,
-      count(ssr.id) FILTER (WHERE ssr.reserved_at IS NOT NULL)::int AS reserved_count
+      count(ssr.id) FILTER (WHERE ssr.reserved_at IS NOT NULL)::int AS reserved_count,
+      count(ssr.id) FILTER (WHERE ssr.reserved_by=$2)::int AS my_reserved_count
      FROM season_searches ss
      LEFT JOIN season_search_results ssr ON ssr.season_search_id=ss.id
      WHERE ss.id=$1
      GROUP BY ss.id`,
-    [id]
+    [id, viewerId]
   );
   const search = searchRows[0];
   if (!search) return null;
@@ -210,6 +216,7 @@ async function getSeasonDetail(id: string) {
        ssr.reserved_at,
        ssr.reserved_by,
        reserved_user.name AS reserved_by_name,
+       reserved_user.email AS reserved_by_email,
        c.id AS candidate_id,
        c.*,
        coalesce(source_summary.source_count, 0)::int AS source_count,
@@ -229,15 +236,22 @@ async function getSeasonDetail(id: string) {
      LEFT JOIN source_summary ON source_summary.candidate_id=c.id
      WHERE ssr.season_search_id=$1
        AND c.duplicate_of IS NULL
-     ORDER BY ssr.reserved_at DESC NULLS LAST, ssr.score DESC, ssr.last_found_at DESC
+     ORDER BY
+       CASE
+         WHEN ssr.reserved_at IS NULL THEN 0
+         WHEN ssr.reserved_by=$2 THEN 1
+         ELSE 2
+       END,
+       ssr.score DESC,
+       ssr.last_found_at DESC
      LIMIT 300`,
-    [id]
+    [id, viewerId]
   );
-  return { search: mapSeason(search), results: resultRows.map(mapSeasonResult) };
+  return { search: mapSeason(search), results: resultRows.map((row) => mapSeasonResult(row, viewerId)) };
 }
 
-seasonRouter.get("/", asyncHandler(async (_req, res) => {
-  res.json({ data: await getSeasonList() });
+seasonRouter.get("/", asyncHandler(async (req, res) => {
+  res.json({ data: await getSeasonList(req.user!.id) });
 }));
 
 seasonRouter.post("/", asyncHandler(async (req, res) => {
@@ -261,11 +275,11 @@ seasonRouter.post("/", asyncHandler(async (req, res) => {
      RETURNING *`,
     [values.name, values.department ?? null, values.city ?? null, values.radiusKm ?? null, values.role, values.experienceLevel ?? null, values.keywords, values.excludeKeywords, queryText, req.user!.id]
   );
-  res.status(201).json({ data: mapSeason({ ...rows[0], result_count: 0, reserved_count: 0 }) });
+  res.status(201).json({ data: mapSeason({ ...rows[0], result_count: 0, reserved_count: 0, my_reserved_count: 0 }) });
 }));
 
 seasonRouter.get("/:id", asyncHandler(async (req, res) => {
-  const detail = await getSeasonDetail(routeParam(req.params.id));
+  const detail = await getSeasonDetail(routeParam(req.params.id), req.user!.id);
   if (!detail) return res.status(404).json({ error: "Búsqueda de temporada no encontrada" });
   res.json({ data: detail });
 }));
@@ -301,7 +315,7 @@ seasonRouter.patch("/:id", asyncHandler(async (req, res) => {
      RETURNING *`,
     [id, next.name, next.department, next.city, next.radiusKm, next.role, next.experienceLevel, next.keywords, next.excludeKeywords, queryText]
   );
-  res.json({ data: mapSeason({ ...updated.rows[0], result_count: 0, reserved_count: 0 }) });
+  res.json({ data: mapSeason({ ...updated.rows[0], result_count: 0, reserved_count: 0, my_reserved_count: 0 }) });
 }));
 
 seasonRouter.post("/:id/run", asyncHandler(async (req, res) => {
@@ -365,7 +379,7 @@ seasonRouter.post("/:id/run", asyncHandler(async (req, res) => {
     "UPDATE season_searches SET query_text=$2, last_run_at=now(), updated_at=now() WHERE id=$1",
     [search.id, queryText]
   );
-  const detail = await getSeasonDetail(search.id);
+  const detail = await getSeasonDetail(search.id, req.user!.id);
   res.json({
     data: detail,
     meta: {
@@ -384,11 +398,39 @@ seasonRouter.post("/:id/results/:candidateId/reserve", asyncHandler(async (req, 
     `INSERT INTO season_search_results (season_search_id, candidate_id, reserved_at, reserved_by)
      VALUES ($1,$2,now(),$3)
      ON CONFLICT (season_search_id, candidate_id)
-     DO UPDATE SET reserved_at=coalesce(season_search_results.reserved_at, now()),
-       reserved_by=coalesce(season_search_results.reserved_by, EXCLUDED.reserved_by),
+     DO UPDATE SET reserved_at=now(),
+       reserved_by=EXCLUDED.reserved_by,
        last_found_at=now()
+     WHERE season_search_results.reserved_by IS NULL
+       OR season_search_results.reserved_by=EXCLUDED.reserved_by
      RETURNING *`,
     [id, candidateId, req.user!.id]
   );
+  if (!rows[0]) {
+    const existing = await q(
+      `SELECT users.name AS reserved_by_name, users.email AS reserved_by_email
+       FROM season_search_results ssr
+       LEFT JOIN users ON users.id=ssr.reserved_by
+       WHERE ssr.season_search_id=$1 AND ssr.candidate_id=$2`,
+      [id, candidateId]
+    );
+    const reservation = existing.rows[0];
+    const reserver = reservation?.reserved_by_name || reservation?.reserved_by_email || "otro reclutador";
+    return res.status(409).json({ error: `Este candidato ya fue reservado por ${reserver}.` });
+  }
+  res.json({ data: rows[0] });
+}));
+
+seasonRouter.delete("/:id/results/:candidateId/reserve", asyncHandler(async (req, res) => {
+  const id = routeParam(req.params.id);
+  const candidateId = routeParam(req.params.candidateId);
+  const { rows } = await q(
+    `UPDATE season_search_results
+     SET reserved_at=NULL, reserved_by=NULL, last_found_at=now()
+     WHERE season_search_id=$1 AND candidate_id=$2 AND reserved_by=$3
+     RETURNING *`,
+    [id, candidateId, req.user!.id]
+  );
+  if (!rows[0]) return res.status(404).json({ error: "No encontré una reserva tuya para liberar." });
   res.json({ data: rows[0] });
 }));
