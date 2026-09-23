@@ -1109,8 +1109,9 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
 function ReservedPhonesModal({ results, onClose }: { results: SeasonResult[]; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
   const rows = results.filter((result) => result.isReservedByMe);
-  const withPhones = rows.filter((result) => result.candidate.phone?.length);
-  const phonesToCopy = Array.from(new Set(rows.flatMap((result) => (result.candidate.phone ?? []).map(phoneForClipboard).filter(Boolean))));
+  const phoneRows = rows.map((result) => ({ result, phones: uniqueCandidatePhones(result.candidate) }));
+  const withPhones = phoneRows.filter((row) => row.phones.length);
+  const phonesToCopy = Array.from(new Set(phoneRows.flatMap((row) => row.phones)));
   const copyText = phonesToCopy.join("\n");
 
   useEffect(() => {
@@ -1149,9 +1150,8 @@ function ReservedPhonesModal({ results, onClose }: { results: SeasonResult[]; on
           {rows.length === 0 && <Empty text="No hay perfiles reservados por mí en esta vista." />}
           {rows.length > 0 && (
             <div className="grid gap-3">
-              {rows.map((result) => {
+              {phoneRows.map(({ result, phones }) => {
                 const candidate = result.candidate;
-                const phones = candidate.phone ?? [];
                 const reservedAt = result.reservedAt ? new Date(result.reservedAt).toLocaleString("es-UY") : "";
                 return (
                   <div key={result.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -1167,10 +1167,9 @@ function ReservedPhonesModal({ results, onClose }: { results: SeasonResult[]; on
                       {phones.length === 0 && <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">Sin celular cargado</div>}
                       {phones.map((phone) => {
                         const whatsapp = whatsappUrlForPhone(phone);
-                        const displayPhone = phoneForClipboard(phone) || phone;
                         return (
                           <div key={`${result.id}-${phone}`} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white bg-white px-3 py-2 text-sm">
-                            <span className="font-bold text-slate-800">{displayPhone}</span>
+                            <span className="font-bold text-slate-800">{phone}</span>
                             {whatsapp && (
                               <a className="inline-flex items-center gap-2 font-bold text-emerald-700 hover:underline" href={whatsapp} target="_blank" rel="noreferrer">
                                 <MessageCircle size={16} /> WhatsApp
@@ -1802,6 +1801,10 @@ function phoneForClipboard(value: string) {
   if (/^09\d{7}$/.test(digits)) return digits;
   if (/^0\d{8}$/.test(digits)) return digits;
   return digits;
+}
+
+function uniqueCandidatePhones(candidate: Candidate) {
+  return Array.from(new Set((candidate.phone ?? []).map(phoneForClipboard).filter(Boolean))).slice(0, 2);
 }
 
 function readableCandidateSummary(candidate: Candidate, document?: CandidateDocument) {
