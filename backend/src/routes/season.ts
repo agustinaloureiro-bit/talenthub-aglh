@@ -7,6 +7,16 @@ import { candidateDisplayLocation, candidateDisplayName } from "../services/cand
 
 export const seasonRouter = Router();
 
+const SEASON_RECENCY_FILTER = "730d" as const;
+const SEASON_RESULT_LIMIT = 300;
+const SEASON_RECENT_SOURCE_CONDITION = `EXISTS (
+  SELECT 1
+  FROM candidate_sources season_recent_source
+  WHERE season_recent_source.candidate_id=c.id
+    AND season_recent_source.is_active=true
+    AND season_recent_source.source_created_at >= now() - interval '2 years'
+)`;
+
 const seasonSearchSchema = z.object({
   name: z.string().trim().min(3),
   department: z.string().trim().optional().nullable(),
@@ -150,11 +160,12 @@ function mapSeasonResult(row: any, viewerId?: string) {
 async function getSeasonList(viewerId: string) {
   const { rows } = await q(
     `SELECT ss.*,
-      count(ssr.id)::int AS result_count,
-      count(ssr.id) FILTER (WHERE ssr.reserved_at IS NOT NULL)::int AS reserved_count,
-      count(ssr.id) FILTER (WHERE ssr.reserved_by=$1)::int AS my_reserved_count
+      count(ssr.id) FILTER (WHERE c.id IS NOT NULL AND ${SEASON_RECENT_SOURCE_CONDITION})::int AS result_count,
+      count(ssr.id) FILTER (WHERE c.id IS NOT NULL AND ${SEASON_RECENT_SOURCE_CONDITION} AND ssr.reserved_at IS NOT NULL)::int AS reserved_count,
+      count(ssr.id) FILTER (WHERE c.id IS NOT NULL AND ${SEASON_RECENT_SOURCE_CONDITION} AND ssr.reserved_by=$1)::int AS my_reserved_count
      FROM season_searches ss
      LEFT JOIN season_search_results ssr ON ssr.season_search_id=ss.id
+     LEFT JOIN candidates c ON c.id=ssr.candidate_id AND c.duplicate_of IS NULL
      WHERE ss.status <> 'archived'
      GROUP BY ss.id
      ORDER BY ss.updated_at DESC, ss.created_at DESC`,
@@ -166,11 +177,12 @@ async function getSeasonList(viewerId: string) {
 async function getSeasonDetail(id: string, viewerId: string) {
   const { rows: searchRows } = await q(
     `SELECT ss.*,
-      count(ssr.id)::int AS result_count,
-      count(ssr.id) FILTER (WHERE ssr.reserved_at IS NOT NULL)::int AS reserved_count,
-      count(ssr.id) FILTER (WHERE ssr.reserved_by=$2)::int AS my_reserved_count
+      count(ssr.id) FILTER (WHERE c.id IS NOT NULL AND ${SEASON_RECENT_SOURCE_CONDITION})::int AS result_count,
+      count(ssr.id) FILTER (WHERE c.id IS NOT NULL AND ${SEASON_RECENT_SOURCE_CONDITION} AND ssr.reserved_at IS NOT NULL)::int AS reserved_count,
+      count(ssr.id) FILTER (WHERE c.id IS NOT NULL AND ${SEASON_RECENT_SOURCE_CONDITION} AND ssr.reserved_by=$2)::int AS my_reserved_count
      FROM season_searches ss
      LEFT JOIN season_search_results ssr ON ssr.season_search_id=ss.id
+     LEFT JOIN candidates c ON c.id=ssr.candidate_id AND c.duplicate_of IS NULL
      WHERE ss.id=$1
      GROUP BY ss.id`,
     [id, viewerId]
@@ -236,6 +248,7 @@ async function getSeasonDetail(id: string, viewerId: string) {
      LEFT JOIN source_summary ON source_summary.candidate_id=c.id
      WHERE ssr.season_search_id=$1
        AND c.duplicate_of IS NULL
+       AND ${SEASON_RECENT_SOURCE_CONDITION}
      ORDER BY
        CASE
          WHEN ssr.reserved_at IS NULL THEN 0
@@ -244,7 +257,7 @@ async function getSeasonDetail(id: string, viewerId: string) {
        END,
        ssr.score DESC,
        ssr.last_found_at DESC
-     LIMIT 300`,
+     LIMIT ${SEASON_RESULT_LIMIT}`,
     [id, viewerId]
   );
   return { search: mapSeason(search), results: resultRows.map((row) => mapSeasonResult(row, viewerId)) };
@@ -329,6 +342,7 @@ seasonRouter.post("/:id/run", asyncHandler(async (req, res) => {
     result = await searchTalent(queryText, {
       location: search.city || search.department || undefined,
       activeOnly: true,
+      recency: SEASON_RECENCY_FILTER,
       sort: "relevance"
     });
   } catch (error: any) {
@@ -337,7 +351,7 @@ seasonRouter.post("/:id/run", asyncHandler(async (req, res) => {
   }
   const candidates = result.data
     .filter((candidate) => !candidateContainsExcluded(candidate, search.exclude_keywords ?? []))
-    .slice(0, 200);
+    .slice(0, SEASON_RESULT_LIMIT);
   let imported = 0;
   let skipped = 0;
   for (const candidate of candidates) {

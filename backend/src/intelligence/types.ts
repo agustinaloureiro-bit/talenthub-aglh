@@ -6,7 +6,7 @@ export type TalentSearchFilters = {
   document?: "pdf" | "word";
   minScore?: number;
   activeOnly?: boolean;
-  recency?: "7d" | "30d" | "90d" | "365d";
+  recency?: "7d" | "30d" | "90d" | "365d" | "730d";
   sort?: "relevance" | "recent" | "oldest" | "name";
 };
 
