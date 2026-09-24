@@ -184,6 +184,7 @@ async function getSeasonDetail(id: string, viewerId: string) {
      LEFT JOIN season_search_results ssr ON ssr.season_search_id=ss.id
      LEFT JOIN candidates c ON c.id=ssr.candidate_id AND c.duplicate_of IS NULL
      WHERE ss.id=$1
+       AND ss.status <> 'archived'
      GROUP BY ss.id`,
     [id, viewerId]
   );
@@ -300,7 +301,7 @@ seasonRouter.get("/:id", asyncHandler(async (req, res) => {
 seasonRouter.patch("/:id", asyncHandler(async (req, res) => {
   const body = seasonSearchSchema.partial().parse(req.body);
   const id = routeParam(req.params.id);
-  const { rows } = await q("SELECT * FROM season_searches WHERE id=$1", [id]);
+  const { rows } = await q("SELECT * FROM season_searches WHERE id=$1 AND status <> 'archived'", [id]);
   const current = rows[0];
   if (!current) return res.status(404).json({ error: "Búsqueda de temporada no encontrada" });
   const next = {
@@ -331,9 +332,26 @@ seasonRouter.patch("/:id", asyncHandler(async (req, res) => {
   res.json({ data: mapSeason({ ...updated.rows[0], result_count: 0, reserved_count: 0, my_reserved_count: 0 }) });
 }));
 
+seasonRouter.delete("/:id", asyncHandler(async (req, res) => {
+  const id = routeParam(req.params.id);
+  const { rows } = await q(
+    `UPDATE season_searches
+     SET status='archived', updated_at=now()
+     WHERE id=$1 AND status <> 'archived'
+     RETURNING *`,
+    [id]
+  );
+  if (!rows[0]) return res.status(404).json({ error: "Búsqueda de temporada no encontrada" });
+  await q(
+    "INSERT INTO audit_logs (user_id, action, entity_type, entity_id) VALUES ($1,'archive','season_search',$2)",
+    [req.user!.id, id]
+  );
+  res.json({ data: mapSeason({ ...rows[0], result_count: 0, reserved_count: 0, my_reserved_count: 0 }) });
+}));
+
 seasonRouter.post("/:id/run", asyncHandler(async (req, res) => {
   const id = routeParam(req.params.id);
-  const { rows } = await q("SELECT * FROM season_searches WHERE id=$1", [id]);
+  const { rows } = await q("SELECT * FROM season_searches WHERE id=$1 AND status <> 'archived'", [id]);
   const search = rows[0];
   if (!search) return res.status(404).json({ error: "Búsqueda de temporada no encontrada" });
   const queryText = seasonQuery(search);
@@ -409,6 +427,8 @@ seasonRouter.post("/:id/run", asyncHandler(async (req, res) => {
 seasonRouter.post("/:id/results/:candidateId/reserve", asyncHandler(async (req, res) => {
   const id = routeParam(req.params.id);
   const candidateId = routeParam(req.params.candidateId);
+  const activeSearch = await q("SELECT id FROM season_searches WHERE id=$1 AND status <> 'archived'", [id]);
+  if (!activeSearch.rows[0]) return res.status(404).json({ error: "Búsqueda de temporada no encontrada" });
   const { rows } = await q(
     `INSERT INTO season_search_results (season_search_id, candidate_id, reserved_at, reserved_by)
      VALUES ($1,$2,now(),$3)
@@ -439,6 +459,8 @@ seasonRouter.post("/:id/results/:candidateId/reserve", asyncHandler(async (req, 
 seasonRouter.delete("/:id/results/:candidateId/reserve", asyncHandler(async (req, res) => {
   const id = routeParam(req.params.id);
   const candidateId = routeParam(req.params.candidateId);
+  const activeSearch = await q("SELECT id FROM season_searches WHERE id=$1 AND status <> 'archived'", [id]);
+  if (!activeSearch.rows[0]) return res.status(404).json({ error: "Búsqueda de temporada no encontrada" });
   const { rows } = await q(
     `UPDATE season_search_results
      SET reserved_at=NULL, reserved_by=NULL, last_found_at=now()

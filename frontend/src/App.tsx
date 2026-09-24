@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { AlertCircle, Briefcase, CalendarDays, CheckCircle2, ChevronLeft, Copy, Database, Download, ExternalLink, Eye, FileText, GraduationCap, Languages, LogOut, Mail, MapPin, MessageCircle, Plug, Plus, RotateCcw, Save, Search, Settings, UserRound, Users, X } from "lucide-react";
+import { AlertCircle, Briefcase, CalendarDays, CheckCircle2, ChevronLeft, Copy, Database, Download, ExternalLink, Eye, FileText, GraduationCap, Languages, LogOut, Mail, MapPin, MessageCircle, Plug, Plus, RotateCcw, Save, Search, Settings, Trash2, UserRound, Users, X } from "lucide-react";
 import { API_URL, api, authHeaders, loadCurrentUser, loginWithGoogle, logout, type User } from "./lib/api";
 
 type Page = "finder" | "season" | "candidates" | "candidate" | "integrations" | "settings";
@@ -704,6 +704,7 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState("");
+  const [deleting, setDeleting] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [previewCandidate, setPreviewCandidate] = useState<Candidate | null>(null);
@@ -823,6 +824,31 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
       setMessage("");
     } finally {
       setRunning("");
+    }
+  }
+
+  async function deleteSearch(id: string) {
+    const search = searches.find((item) => item.id === id) || detail?.search;
+    const ok = window.confirm(`¿Borrar la búsqueda "${search?.name ?? "seleccionada"}"? No se borran candidatos ni CVs, solo esta bandeja de temporada.`);
+    if (!ok) return;
+    setDeleting(id);
+    setError("");
+    setMessage("");
+    try {
+      await api(`/season-searches/${id}`, { method: "DELETE" });
+      const remaining = searches.filter((item) => item.id !== id);
+      const nextId = remaining[0]?.id ?? "";
+      setSearches(remaining);
+      setSelectedId(nextId);
+      setDetail(null);
+      setSeasonFilters((current) => ({ ...current, selectedId: nextId }));
+      setMessage("Búsqueda de temporada borrada. Los candidatos y CVs siguen en la base general.");
+      if (nextId) await openSearch(nextId, { silent: true });
+      await load(false, true);
+    } catch (err: any) {
+      setError(err.message || "No se pudo borrar la búsqueda de temporada.");
+    } finally {
+      setDeleting("");
     }
   }
 
@@ -1020,7 +1046,10 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
                       {selected.lastRunAt && <span className="rounded-full bg-blue-50 px-2 py-1 font-semibold text-blue-700">Última ejecución {new Date(selected.lastRunAt).toLocaleString("es-UY")}</span>}
                     </div>
                   </div>
-                  <button className="btn-primary" onClick={() => runSearch(selected.id)} disabled={running === selected.id}><Search size={16} /> {running === selected.id ? "Ejecutando..." : "Ejecutar búsqueda"}</button>
+                  <div className="flex flex-wrap gap-2">
+                    <button className="btn-ghost text-red-700 hover:border-red-200 hover:bg-red-50" onClick={() => deleteSearch(selected.id)} disabled={Boolean(deleting)}><Trash2 size={16} /> {deleting === selected.id ? "Borrando..." : "Borrar"}</button>
+                    <button className="btn-primary" onClick={() => runSearch(selected.id)} disabled={running === selected.id}><Search size={16} /> {running === selected.id ? "Ejecutando..." : "Ejecutar búsqueda"}</button>
+                  </div>
                 </div>
               </div>
 
