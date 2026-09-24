@@ -8,7 +8,7 @@ import { candidateDisplayLocation, candidateDisplayName } from "../services/cand
 export const seasonRouter = Router();
 
 const SEASON_RECENCY_FILTER = "730d" as const;
-const SEASON_RESULT_LIMIT = 300;
+const SEASON_RESULT_LIMIT = 1200;
 const SEASON_RECENT_SOURCE_CONDITION = `EXISTS (
   SELECT 1
   FROM candidate_sources season_recent_source
@@ -343,7 +343,8 @@ seasonRouter.post("/:id/run", asyncHandler(async (req, res) => {
       location: search.city || search.department || undefined,
       activeOnly: true,
       recency: SEASON_RECENCY_FILTER,
-      sort: "relevance"
+      sort: "relevance",
+      maxResults: SEASON_RESULT_LIMIT
     });
   } catch (error: any) {
     if (error?.code === "57014") return res.status(503).json({ error: "La búsqueda demoró demasiado. Probá ejecutar con menos palabras clave." });

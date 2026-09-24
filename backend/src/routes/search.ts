@@ -204,12 +204,23 @@ type RankedCandidateMatch = {
   matched_document_id?: string | null;
 };
 
-const MAX_RETRIEVAL_CANDIDATES = 300;
+const DEFAULT_RETRIEVAL_CANDIDATES = 300;
+const MAX_RETRIEVAL_CANDIDATES = 1500;
 const MIN_DOCUMENT_FALLBACK_CANDIDATES = 80;
 const HYDRATION_RETRY_CANDIDATES = 160;
 const MAX_RANKING_DOCUMENT_CHARS = 12_000;
 
-function mergeRankedMatches(...groups: RankedCandidateMatch[][]) {
+function effectiveRetrievalLimit(filters: TalentSearchFilters) {
+  const requested = Number(filters.maxResults ?? DEFAULT_RETRIEVAL_CANDIDATES);
+  if (!Number.isFinite(requested)) return DEFAULT_RETRIEVAL_CANDIDATES;
+  return Math.min(MAX_RETRIEVAL_CANDIDATES, Math.max(50, Math.round(requested)));
+}
+
+function hydrationTimeoutMs(resultLimit: number) {
+  return Math.min(12_000, Math.max(5_000, 4_000 + resultLimit * 6));
+}
+
+function mergeRankedMatches(resultLimit: number, ...groups: RankedCandidateMatch[][]) {
   const merged = new Map<string, RankedCandidateMatch>();
   for (const match of groups.flat()) {
     const current = merged.get(match.id);
@@ -225,10 +236,10 @@ function mergeRankedMatches(...groups: RankedCandidateMatch[][]) {
   }
   return [...merged.values()]
     .sort((left, right) => right.rank - left.rank)
-    .slice(0, MAX_RETRIEVAL_CANDIDATES);
+    .slice(0, resultLimit);
 }
 
-async function findFastProfileMatches(candidateFilter: string, params: unknown[], queryParameter: number, timeoutMs: number) {
+async function findFastProfileMatches(candidateFilter: string, params: unknown[], queryParameter: number, timeoutMs: number, resultLimit = DEFAULT_RETRIEVAL_CANDIDATES) {
   const queryExpression = `$${queryParameter}::text`;
   return qSearchWithTimeout(
      `WITH search_terms AS MATERIALIZED (
@@ -243,7 +254,7 @@ async function findFastProfileMatches(candidateFilter: string, params: unknown[]
        WHERE ${candidateFilter}
          AND c.search_vector @@ search_terms.query
          AND EXISTS (SELECT 1 FROM documents available_doc WHERE available_doc.candidate_id=c.id)
-       LIMIT ${MAX_RETRIEVAL_CANDIDATES}
+       LIMIT ${resultLimit}
      )
      SELECT matching_ids.id,
        0.01::double precision AS rank,
@@ -254,8 +265,9 @@ async function findFastProfileMatches(candidateFilter: string, params: unknown[]
   );
 }
 
-async function findDocumentMatches(candidateFilter: string, params: unknown[], queryParameter = 2, timeoutMs = 2_500) {
+async function findDocumentMatches(candidateFilter: string, params: unknown[], queryParameter = 2, timeoutMs = 2_500, resultLimit = DEFAULT_RETRIEVAL_CANDIDATES) {
   const queryExpression = `$${queryParameter}::text`;
+  const rawLimit = Math.max(600, Math.min(resultLimit * 2, 3_000));
   return qSearchWithTimeout(
      `WITH search_terms AS MATERIALIZED (
        SELECT websearch_to_tsquery('spanish', ${queryExpression}) AS query,
@@ -281,7 +293,7 @@ async function findDocumentMatches(candidateFilter: string, params: unknown[], q
            coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')
          ) @@ search_terms.query
        ORDER BY rank DESC
-       LIMIT 600
+       LIMIT ${rawLimit}
      ), unique_matches AS MATERIALIZED (
        SELECT DISTINCT ON (raw_matches.id)
          raw_matches.id,
@@ -296,7 +308,7 @@ async function findDocumentMatches(candidateFilter: string, params: unknown[], q
      SELECT id, rank, matched_document_id
      FROM unique_matches
      ORDER BY rank DESC
-     LIMIT ${MAX_RETRIEVAL_CANDIDATES}`,
+     LIMIT ${resultLimit}`,
     params,
     timeoutMs
   );
@@ -333,7 +345,7 @@ function groupWebsearchQueries(plan?: CandidateRetrievalPlan) {
     .map((group) => group.map((term) => `"${term.replace(/"/g, " ")}"`).join(" OR "));
 }
 
-async function hydrateCandidateMatches(matches: RankedCandidateMatch[]) {
+async function hydrateCandidateMatches(matches: RankedCandidateMatch[], timeoutMs = 5_000) {
   if (!matches.length) return { rows: [] as any[] };
   const ids = matches.map((match) => match.id);
   const ranks = matches.map((match) => match.rank);
@@ -390,11 +402,12 @@ async function hydrateCandidateMatches(matches: RankedCandidateMatch[]) {
      LEFT JOIN source_summary ON source_summary.candidate_id=c.id
      ORDER BY requested.rank DESC, c.quality_score DESC, c.updated_at DESC`,
     [ids, ranks, documentIds],
-    5_000
+    timeoutMs
   );
 }
 
 export async function findCandidates(query: string, filters: TalentSearchFilters = {}, plan?: CandidateRetrievalPlan) {
+  const resultLimit = effectiveRetrievalLimit(filters);
   const params: unknown[] = [query, plannedWebsearchQuery(query, plan), expandedWebsearchQuery(query), loosePlannedWebsearchQuery(query, plan)];
   let candidateFilter = "c.duplicate_of IS NULL";
   if (filters.activeOnly !== false) candidateFilter += " AND c.status='active'";
@@ -442,7 +455,8 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
       candidateFilter,
       profileQuery.params,
       profileQuery.queryParameter,
-      4_000
+      4_000,
+      resultLimit
     )
   )));
   const plannedPass = profilePasses[0];
@@ -457,21 +471,21 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
   const groupMatches = groupPasses.flatMap((pass) => pass.rows);
   let documentMatches: RankedCandidateMatch[] = [];
   let looseDocumentMatches: RankedCandidateMatch[] = [];
-  if (mergeRankedMatches(plannedMatches, broadMatches, looseMatches, groupMatches).length < MIN_DOCUMENT_FALLBACK_CANDIDATES) {
+  if (mergeRankedMatches(resultLimit, plannedMatches, broadMatches, looseMatches, groupMatches).length < MIN_DOCUMENT_FALLBACK_CANDIDATES) {
     const [documentPass, looseDocumentPass] = await Promise.all([
-      searchRows(() => findDocumentMatches(candidateFilter, params, 2, 3_000)),
-      searchRows(() => findDocumentMatches(candidateFilter, params, 4, 4_500))
+      searchRows(() => findDocumentMatches(candidateFilter, params, 2, 3_000, resultLimit)),
+      searchRows(() => findDocumentMatches(candidateFilter, params, 4, 4_500, resultLimit))
     ]);
     additionalPasses.push(documentPass, looseDocumentPass);
     documentMatches = documentPass.rows;
     looseDocumentMatches = looseDocumentPass.rows;
   }
-  let matches = mergeRankedMatches(plannedMatches, groupMatches, broadMatches, looseMatches, documentMatches, looseDocumentMatches);
+  let matches = mergeRankedMatches(resultLimit, plannedMatches, groupMatches, broadMatches, looseMatches, documentMatches, looseDocumentMatches);
   const timedOutPasses = [plannedPass, ...additionalPasses].filter((pass) => pass.timedOut).length;
   if (!matches.length && timedOutPasses) {
-    const fastPass = await searchRows(() => findFastProfileMatches(candidateFilter, params, 3, 6_000));
+    const fastPass = await searchRows(() => findFastProfileMatches(candidateFilter, params, 3, 6_000, resultLimit));
     additionalPasses.push(fastPass);
-    matches = mergeRankedMatches(fastPass.rows);
+    matches = mergeRankedMatches(resultLimit, fastPass.rows);
   }
   if (!matches.length && [plannedPass, ...additionalPasses].some((pass) => pass.timedOut)) {
     const timeoutError = new Error("Talent search retrieval timed out") as Error & { code?: string };
@@ -481,10 +495,11 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
   const hydrationStartedAt = Date.now();
   let hydrated;
   try {
-    hydrated = await hydrateCandidateMatches(matches);
+    hydrated = await hydrateCandidateMatches(matches, hydrationTimeoutMs(resultLimit));
   } catch (error) {
     if (!isSearchTimeout(error) || matches.length <= HYDRATION_RETRY_CANDIDATES) throw error;
-    hydrated = await hydrateCandidateMatches(matches.slice(0, HYDRATION_RETRY_CANDIDATES));
+    const retryLimit = Math.min(matches.length, Math.max(HYDRATION_RETRY_CANDIDATES, Math.min(resultLimit, 500)));
+    hydrated = await hydrateCandidateMatches(matches.slice(0, retryLimit), hydrationTimeoutMs(retryLimit));
   }
   const { rows } = hydrated;
   console.info("Talent search completed", {
@@ -498,7 +513,8 @@ export async function findCandidates(query: string, filters: TalentSearchFilters
     documentMatches: documentMatches.length,
     looseDocumentMatches: looseDocumentMatches.length,
     timedOutPasses: [plannedPass, ...additionalPasses].filter((pass) => pass.timedOut).length,
-    hydratedCandidates: rows.length
+    hydratedCandidates: rows.length,
+    resultLimit
   });
   return rows.map((row) => {
     const cvResidence = extractCvResidence(row.document_snippet ?? "");
