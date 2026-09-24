@@ -1,14 +1,16 @@
 import { Router } from "express";
 import { z } from "zod";
-import { q } from "../db/pool.js";
+import { q, qSearchWithTimeout } from "../db/pool.js";
 import { asyncHandler } from "../middleware/errors.js";
 import { searchTalent } from "./search.js";
 import { candidateDisplayLocation, candidateDisplayName } from "../services/candidatePresentation.js";
+import { nearbyUruguayLocations } from "../intelligence/uruguayGeography.js";
 
 export const seasonRouter = Router();
 
 const SEASON_RECENCY_FILTER = "730d" as const;
-const SEASON_RESULT_LIMIT = 1200;
+const SEASON_RESULT_LIMIT = 2500;
+const SEASON_BROAD_RETRIEVAL_LIMIT = 6000;
 const SEASON_RECENT_SOURCE_CONDITION = `EXISTS (
   SELECT 1
   FROM candidate_sources season_recent_source
@@ -16,6 +18,26 @@ const SEASON_RECENT_SOURCE_CONDITION = `EXISTS (
     AND season_recent_source.is_active=true
     AND season_recent_source.source_created_at >= now() - interval '2 years'
 )`;
+
+const SEASON_STOPWORDS = new Set([
+  "de", "del", "la", "las", "los", "el", "un", "una", "para", "por", "con", "sin", "en", "y", "o",
+  "perfil", "perfiles", "persona", "personas", "experiencia", "experiencias", "junior", "poca", "poco",
+  "nivel", "anos", "años", "ano", "año", "temporada", "verano"
+]);
+
+const SEASON_TERM_SYNONYMS: Record<string, string[]> = {
+  supermercado: ["retail", "autoservicio", "cajero", "cajera", "caja", "repositor", "repositora", "reposicion", "reposición", "gondolas", "góndolas", "atencion al cliente", "atención al cliente", "deposito", "depósito", "stock"],
+  auxiliar: ["ayudante", "asistente", "operario", "operaria", "soporte", "apoyo"],
+  repositor: ["repositora", "reposicion", "reposición", "gondolas", "góndolas", "supermercado", "retail", "stock"],
+  caja: ["cajero", "cajera", "cobranza", "arqueo", "pos", "supermercado"],
+  cajero: ["cajera", "caja", "cobranza", "atencion al cliente", "atención al cliente"],
+  cajera: ["cajero", "caja", "cobranza", "atencion al cliente", "atención al cliente"],
+  atencion: ["atención", "cliente", "clientes", "publico", "público", "ventas", "mostrador"],
+  cliente: ["clientes", "publico", "público", "mostrador", "ventas", "atencion al cliente", "atención al cliente"],
+  deposito: ["depósito", "almacen", "almacén", "stock", "logistica", "logística", "carga", "descarga", "preparacion de pedidos", "preparación de pedidos"],
+  gondolas: ["góndolas", "reposicion", "reposición", "repositor", "repositora", "supermercado"],
+  maldonado: ["punta del este", "san carlos", "piriapolis", "piriápolis", "pan de azucar", "pan de azúcar", "la barra", "manantiales", "maldonado nuevo"]
+};
 
 const seasonSearchSchema = z.object({
   name: z.string().trim().min(3),
@@ -30,6 +52,63 @@ const seasonSearchSchema = z.object({
 
 function cleanList(values: string[]) {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))].slice(0, 40);
+}
+
+function normalizeForSearch(value: unknown) {
+  return normalized(value)
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function uniqueTerms(values: string[], limit = 120) {
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const value of values) {
+    const text = String(value ?? "").trim();
+    const key = normalizeForSearch(text);
+    if (!key || key.length < 3 || SEASON_STOPWORDS.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    terms.push(text);
+    if (terms.length >= limit) break;
+  }
+  return terms;
+}
+
+function seasonSearchTerms(search: any) {
+  const base = [
+    search.role,
+    search.experience_level,
+    ...(search.keywords ?? [])
+  ].filter(Boolean).map(String);
+  const splitWords = base.flatMap((value) => normalizeForSearch(value).split(" "));
+  const normalizedKeys = [...new Set([...base.map(normalizeForSearch), ...splitWords])];
+  const synonyms = normalizedKeys.flatMap((key) => SEASON_TERM_SYNONYMS[key] ?? []);
+  return uniqueTerms([...base, ...splitWords, ...synonyms]);
+}
+
+function seasonLocationTerms(search: any) {
+  const raw = [search.city, search.department].filter(Boolean).map(String);
+  const expanded = raw.flatMap((location) => nearbyUruguayLocations(location, Number(search.radius_km ?? 30)));
+  const normalizedKeys = [...new Set([...raw, ...expanded].map(normalizeForSearch))];
+  const synonyms = normalizedKeys.flatMap((key) => SEASON_TERM_SYNONYMS[key] ?? []);
+  return uniqueTerms([...raw, ...expanded, ...synonyms], 80);
+}
+
+function likePatterns(values: string[]) {
+  return values
+    .map((value) => normalizeForSearch(value))
+    .filter((value) => value.length >= 3)
+    .map((value) => `%${value}%`);
+}
+
+function websearchOrQuery(values: string[]) {
+  const parts = values
+    .map((value) => normalizeForSearch(value))
+    .filter((value) => value.length >= 3 && !SEASON_STOPWORDS.has(value))
+    .slice(0, 60)
+    .map((value) => value.includes(" ") ? `"${value}"` : value);
+  return parts.join(" OR ") || "curriculum OR experiencia";
 }
 
 function seasonQuery(search: any) {
@@ -56,19 +135,23 @@ function routeParam(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : String(value ?? "");
 }
 
-function candidateContainsExcluded(candidate: any, excludeKeywords: string[]) {
+export function candidateContainsExcluded(candidate: any, excludeKeywords: string[]) {
   const exclusions = cleanList(excludeKeywords).map(normalized).filter(Boolean);
   if (!exclusions.length) return false;
-  const searchable = normalized([
-    candidate.fullName,
+  const primaryProfile = normalized([
     candidate.currentRole,
-    candidate.city,
-    candidate.country,
-    candidate.summary,
-    candidate.documentSnippet,
-    ...(candidate.tags ?? [])
+    ...(candidate.tags ?? []),
+    ...(candidate.aiRoles ?? []),
+    ...(candidate.roles ?? [])
   ].filter(Boolean).join(" "));
-  return exclusions.some((term) => searchable.includes(term));
+  return exclusions.some((term) => {
+    if (!primaryProfile.includes(term)) return false;
+    if (term === "encargado") {
+      const operationalRole = /\b(repositor|cajer|auxiliar|operari|atencion|atención|ventas|deposit|logistic|stock)\b/.test(primaryProfile);
+      return /\bencargad[oa]s?\b/.test(primaryProfile) && !operationalRole;
+    }
+    return true;
+  });
 }
 
 function cleanScore(value: unknown) {
@@ -86,6 +169,217 @@ function cleanOptionalText(value: unknown, maxLength = 500) {
 function cleanTextArray(value: unknown) {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.map((item) => String(item ?? "").trim()).filter(Boolean))].slice(0, 20);
+}
+
+function textIncludesAny(haystack: unknown, terms: string[]) {
+  const normalizedHaystack = normalizeForSearch(haystack);
+  if (!normalizedHaystack) return [];
+  return terms
+    .filter((term) => {
+      const normalizedTerm = normalizeForSearch(term);
+      return normalizedTerm.length >= 3 && normalizedHaystack.includes(normalizedTerm);
+    })
+    .slice(0, 12);
+}
+
+function scoreBroadSeasonCandidate(row: any, terms: string[], locationTerms: string[]) {
+  const roleText = [row.current_role, ...(row.ai_tags ?? []), ...(row.ai_roles ?? [])].join(" ");
+  const profileText = [
+    row.full_name,
+    row.current_role,
+    row.ai_summary,
+    ...(row.ai_tags ?? []),
+    ...(row.ai_industries ?? []),
+    ...(row.ai_roles ?? []),
+    row.primary_document_name,
+    row.document_snippet
+  ].join(" ");
+  const locationText = [row.city, row.country, row.ai_summary, row.document_snippet].join(" ");
+  const roleHits = textIncludesAny(roleText, terms);
+  const documentHits = textIncludesAny(profileText, terms);
+  const locationHits = textIncludesAny(locationText, locationTerms);
+  const sourceTypes = cleanTextArray(row.source_types);
+  const hasContact = (row.email ?? []).length > 0 || (row.phone ?? []).length > 0;
+  const hasDocument = Boolean(row.primary_document_id || row.primary_document_name);
+  const roleStrength = roleHits.length ? 28 : 0;
+  const documentStrength = Math.min(26, documentHits.length * 5);
+  const locationStrength = locationTerms.length ? (locationHits.length ? 22 : 0) : 12;
+  const sourceStrength = Math.min(8, sourceTypes.length * 2);
+  const recencyStrength = row.latest_source_at ? 8 : 0;
+  const contactStrength = hasContact ? 4 : 0;
+  const documentStrengthBonus = hasDocument ? 4 : 0;
+  const rankBoost = Math.min(10, Math.round(Number(row.rank ?? 0) * 100));
+  const score = cleanScore(35 + roleStrength + documentStrength + locationStrength + sourceStrength + recencyStrength + contactStrength + documentStrengthBonus + rankBoost);
+  const evidence = [...new Set([...roleHits, ...documentHits, ...locationHits])].slice(0, 8);
+  const matchReason = evidence.length
+    ? `Coincide con ${evidence.join(", ")}. Evidencia encontrada en perfil, CV o fuentes recientes.`
+    : "Coincidencia amplia por perfil estacional y fuente reciente.";
+  return { score, matchReason, sourceTypes };
+}
+
+function mapBroadSeasonCandidate(row: any, search: any, terms: string[], locationTerms: string[]) {
+  const scored = scoreBroadSeasonCandidate(row, terms, locationTerms);
+  return {
+    id: row.id,
+    fullName: candidateDisplayName(row.full_name),
+    email: row.email ?? [],
+    phone: row.phone ?? [],
+    city: candidateDisplayLocation(row.city),
+    country: row.country,
+    linkedinUrl: row.linkedin_url,
+    profileUrl: row.profile_url ?? null,
+    currentRole: row.current_role,
+    seniority: row.ai_seniority,
+    years: row.ai_seniority_years,
+    tags: row.ai_tags ?? [],
+    languages: row.ai_languages ?? [],
+    summary: row.ai_summary,
+    strengths: row.ai_strengths ?? [],
+    weaknesses: row.ai_weaknesses ?? [],
+    qualityScore: row.quality_score,
+    sourceCount: Number(row.source_count ?? 0),
+    sourceTypes: scored.sourceTypes,
+    documentCount: Number(row.document_count ?? 0),
+    primaryDocumentName: row.primary_document_name ?? null,
+    primaryDocumentId: row.primary_document_id ?? null,
+    primaryDocumentMimeType: row.primary_document_mime_type ?? null,
+    primaryDocumentSourceType: row.primary_document_source_type ?? null,
+    documentSnippet: row.document_snippet ?? null,
+    status: row.status,
+    createdAt: row.created_at,
+    lastSeenAt: row.last_seen_at ?? row.updated_at,
+    latestSourceAt: row.latest_source_at ?? null,
+    score: scored.score,
+    matchReason: scored.matchReason,
+    rankSignals: {
+      seasonRole: search.role,
+      seasonLocation: search.city || search.department || null
+    }
+  };
+}
+
+async function broadSeasonCandidates(search: any) {
+  const terms = seasonSearchTerms(search);
+  const locationTerms = seasonLocationTerms(search);
+  const termPatterns = likePatterns(terms);
+  const locationPatterns = likePatterns(locationTerms);
+  if (!termPatterns.length) return [];
+  const query = websearchOrQuery(terms);
+  const { rows } = await qSearchWithTimeout(
+    `WITH primary_documents AS MATERIALIZED (
+       SELECT DISTINCT ON (d.candidate_id)
+         d.candidate_id,
+         d.id,
+         d.file_name,
+         d.mime_type,
+         d.source_type,
+         left(coalesce(d.raw_text, ''), 22000) AS raw_text
+       FROM documents d
+       WHERE length(coalesce(d.raw_text, '')) >= 80
+       ORDER BY d.candidate_id, d.is_primary_cv DESC, d.created_at DESC
+     ), source_summary AS MATERIALIZED (
+       SELECT cs.candidate_id,
+         count(DISTINCT cs.source_type)::int AS source_count,
+         array_agg(DISTINCT cs.source_type ORDER BY cs.source_type) AS source_types,
+         max(cs.source_created_at) AS latest_source_at,
+         max(cs.source_url) FILTER (WHERE nullif(cs.source_url, '') IS NOT NULL) AS profile_url
+       FROM candidate_sources cs
+       WHERE cs.is_active=true
+         AND cs.source_created_at >= now() - interval '2 years'
+       GROUP BY cs.candidate_id
+     ), search_vectors AS MATERIALIZED (
+       SELECT c.id,
+         to_tsvector(
+           'spanish'::regconfig,
+           coalesce(c.full_name, '') || ' ' ||
+           coalesce(c.current_role, '') || ' ' ||
+           coalesce(c.ai_summary, '') || ' ' ||
+           array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
+           array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ') || ' ' ||
+           coalesce(primary_documents.file_name, '') || ' ' ||
+           coalesce(primary_documents.raw_text, '')
+         ) AS search_vector,
+         translate(lower(
+           coalesce(c.full_name, '') || ' ' ||
+           coalesce(c.current_role, '') || ' ' ||
+           coalesce(c.city, '') || ' ' ||
+           coalesce(c.country, '') || ' ' ||
+           coalesce(c.ai_summary, '') || ' ' ||
+           array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
+           array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ') || ' ' ||
+           coalesce(primary_documents.file_name, '') || ' ' ||
+           coalesce(primary_documents.raw_text, '')
+         ), 'áéíóúüñ', 'aeiouun') AS searchable_text,
+         translate(lower(
+           coalesce(c.city, '') || ' ' ||
+           coalesce(c.country, '') || ' ' ||
+           coalesce(c.ai_summary, '') || ' ' ||
+           coalesce(primary_documents.raw_text, '')
+         ), 'áéíóúüñ', 'aeiouun') AS location_text
+       FROM candidates c
+       JOIN primary_documents ON primary_documents.candidate_id=c.id
+     )
+     SELECT c.*,
+       primary_documents.id AS primary_document_id,
+       primary_documents.file_name AS primary_document_name,
+       primary_documents.mime_type AS primary_document_mime_type,
+       primary_documents.source_type AS primary_document_source_type,
+       left(coalesce(primary_documents.raw_text, ''), 1500) AS document_snippet,
+       coalesce(source_summary.source_count, 0)::int AS source_count,
+       coalesce(source_summary.source_types, '{}'::text[]) AS source_types,
+       source_summary.latest_source_at,
+       source_summary.profile_url,
+       1 AS document_count,
+       ts_rank_cd(search_vectors.search_vector, websearch_to_tsquery('spanish'::regconfig, $1)) AS rank
+     FROM candidates c
+     JOIN primary_documents ON primary_documents.candidate_id=c.id
+     JOIN source_summary ON source_summary.candidate_id=c.id
+     JOIN search_vectors ON search_vectors.id=c.id
+     WHERE c.duplicate_of IS NULL
+       AND c.status='active'
+       AND (
+         search_vectors.search_vector @@ websearch_to_tsquery('spanish'::regconfig, $1)
+         OR search_vectors.searchable_text LIKE ANY($2::text[])
+       )
+       AND (
+         cardinality($3::text[]) = 0
+         OR search_vectors.location_text LIKE ANY($3::text[])
+       )
+     ORDER BY
+       rank DESC,
+       source_summary.latest_source_at DESC NULLS LAST,
+       c.quality_score DESC,
+       c.updated_at DESC
+     LIMIT $4`,
+    [query, termPatterns, locationPatterns, SEASON_BROAD_RETRIEVAL_LIMIT],
+    20_000
+  );
+  return rows.map((row) => mapBroadSeasonCandidate(row, search, terms, locationTerms));
+}
+
+function mergeSeasonCandidates(primary: any[], broad: any[]) {
+  const byId = new Map<string, any>();
+  for (const candidate of [...primary, ...broad]) {
+    const id = cleanOptionalText(candidate.id, 80);
+    if (!id) continue;
+    const current = byId.get(id);
+    if (!current || cleanScore(candidate.score) > cleanScore(current.score)) {
+      byId.set(id, {
+        ...candidate,
+        sourceTypes: cleanTextArray([...(current?.sourceTypes ?? []), ...(candidate.sourceTypes ?? [])]),
+        profileUrl: candidate.profileUrl ?? current?.profileUrl ?? null
+      });
+    } else if (current && candidate.sourceTypes?.length) {
+      current.sourceTypes = cleanTextArray([...(current.sourceTypes ?? []), ...candidate.sourceTypes]);
+      current.profileUrl ??= candidate.profileUrl ?? null;
+    }
+  }
+  return [...byId.values()]
+    .sort((left, right) => {
+      const scoreDiff = cleanScore(right.score) - cleanScore(left.score);
+      if (scoreDiff !== 0) return scoreDiff;
+      return String(right.latestSourceAt ?? "").localeCompare(String(left.latestSourceAt ?? ""));
+    });
 }
 
 function mapSeason(row: any) {
@@ -356,19 +650,26 @@ seasonRouter.post("/:id/run", asyncHandler(async (req, res) => {
   if (!search) return res.status(404).json({ error: "Búsqueda de temporada no encontrada" });
   const queryText = seasonQuery(search);
   let result;
+  let broadCandidates: any[] = [];
   try {
-    result = await searchTalent(queryText, {
-      location: search.city || search.department || undefined,
-      activeOnly: true,
-      recency: SEASON_RECENCY_FILTER,
-      sort: "relevance",
-      maxResults: SEASON_RESULT_LIMIT
-    });
+    const [rankedResult, broadResult] = await Promise.all([
+      searchTalent(queryText, {
+        location: search.city || search.department || undefined,
+        activeOnly: true,
+        recency: SEASON_RECENCY_FILTER,
+        sort: "relevance",
+        maxResults: SEASON_RESULT_LIMIT
+      }),
+      broadSeasonCandidates(search)
+    ]);
+    result = rankedResult;
+    broadCandidates = broadResult;
   } catch (error: any) {
     if (error?.code === "57014") return res.status(503).json({ error: "La búsqueda demoró demasiado. Probá ejecutar con menos palabras clave." });
     throw error;
   }
-  const candidates = result.data
+  const merged = mergeSeasonCandidates(result.data, broadCandidates);
+  const candidates = merged
     .filter((candidate) => !candidateContainsExcluded(candidate, search.exclude_keywords ?? []))
     .slice(0, SEASON_RESULT_LIMIT);
   let imported = 0;
@@ -395,7 +696,7 @@ seasonRouter.post("/:id/run", asyncHandler(async (req, res) => {
           cleanScore(candidate.score),
           cleanOptionalText(candidate.matchReason, 1000),
           cleanTextArray(candidate.sourceTypes),
-          null
+          cleanOptionalText(candidate.profileUrl, 1000)
         ]
       );
       imported += 1;
@@ -416,9 +717,11 @@ seasonRouter.post("/:id/run", asyncHandler(async (req, res) => {
   res.json({
     data: detail,
     meta: {
-      reviewed: result.data.length,
+      reviewed: merged.length,
+      rankedReviewed: result.data.length,
+      broadReviewed: broadCandidates.length,
       imported,
-      excluded: result.data.length - candidates.length,
+      excluded: merged.length - candidates.length,
       skipped
     }
   });
