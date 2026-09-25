@@ -12,6 +12,23 @@ const SEASON_RECENCY_FILTER = "730d" as const;
 const SEASON_RESULT_LIMIT = 2500;
 const SEASON_BROAD_RETRIEVAL_LIMIT = 2500;
 const SEASON_BROAD_POOL_LIMIT = 4500;
+const SEASON_ENTRY_LEVEL_TERMS = [
+  "sin experiencia", "poca experiencia", "junior", "estudiante", "primer empleo", "bachillerato",
+  "secundaria", "0 1", "0-1", "menos de 1", "hasta 1", "auxiliar", "ayudante", "aprendiz"
+];
+const SEASON_OPERATIONAL_TERMS = [
+  "supermercado", "autoservicio", "retail", "repositor", "repositora", "reposicion", "reposición",
+  "gondolas", "góndolas", "cajero", "cajera", "caja", "atencion al cliente", "atención al cliente",
+  "cliente", "clientes", "mostrador", "ventas", "deposito", "depósito", "stock", "almacen",
+  "almacén", "logistica", "logística", "operario", "operaria", "auxiliar", "ayudante", "produccion",
+  "producción", "limpieza", "mantenimiento", "carga", "descarga", "preparacion de pedidos",
+  "preparación de pedidos", "merchandising"
+];
+const SEASON_HIGH_SENIORITY_TERMS = [
+  "gerente", "jefe", "supervisor", "supervisora", "coordinador", "coordinadora", "responsable",
+  "encargado", "encargada", "senior", "lead", "lider", "líder", "director", "directora",
+  "contador", "contadora", "abogado", "abogada", "ingeniero", "ingeniera", "licenciado", "licenciada"
+];
 const SEASON_STOPWORDS = new Set([
   "de", "del", "la", "las", "los", "el", "un", "una", "para", "por", "con", "sin", "en", "y", "o",
   "perfil", "perfiles", "persona", "personas", "experiencia", "experiencias", "junior", "poca", "poco",
@@ -78,6 +95,28 @@ function seasonSearchTerms(search: any) {
   const normalizedKeys = [...new Set([...base.map(normalizeForSearch), ...splitWords])];
   const synonyms = normalizedKeys.flatMap((key) => SEASON_TERM_SYNONYMS[key] ?? []);
   return uniqueTerms([...base, ...splitWords, ...synonyms]);
+}
+
+export function isEntryLevelSeason(search: any) {
+  const text = normalizeForSearch([
+    search.role,
+    search.experience_level,
+    search.experienceLevel,
+    ...(search.keywords ?? [])
+  ].filter(Boolean).join(" "));
+  if (!text) return false;
+  const entryHit = SEASON_ENTRY_LEVEL_TERMS.some((term) => text.includes(normalizeForSearch(term)));
+  const operationalHit = SEASON_OPERATIONAL_TERMS.some((term) => text.includes(normalizeForSearch(term)));
+  return entryHit || (operationalHit && /\b(auxiliar|repositor|cajer|supermercado|atencion|cliente|deposit|gondol|junior)\b/.test(text));
+}
+
+function seasonOperationalTerms(search: any) {
+  if (!isEntryLevelSeason(search)) return [];
+  return uniqueTerms([
+    ...SEASON_OPERATIONAL_TERMS,
+    ...seasonSearchTerms(search),
+    ...(search.keywords ?? [])
+  ], 160);
 }
 
 function seasonLocationTerms(search: any) {
@@ -181,7 +220,40 @@ function textIncludesAny(haystack: unknown, terms: string[]) {
     .slice(0, 12);
 }
 
-function scoreBroadSeasonCandidate(row: any, terms: string[], locationTerms: string[]) {
+function candidateAge(row: any) {
+  if (!row.birth_date) return null;
+  const birth = new Date(row.birth_date);
+  if (!Number.isFinite(birth.getTime())) return null;
+  const now = new Date();
+  let age = now.getUTCFullYear() - birth.getUTCFullYear();
+  const monthDiff = now.getUTCMonth() - birth.getUTCMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && now.getUTCDate() < birth.getUTCDate())) age -= 1;
+  return age >= 0 && age <= 100 ? age : null;
+}
+
+function entryLevelStrength(row: any, profileText: string, entryLevelSeason: boolean) {
+  if (!entryLevelSeason) return { boost: 0, penalty: 0, evidence: [] as string[] };
+  const years = Number(row.ai_seniority_years);
+  const seniorityText = normalizeForSearch([row.ai_seniority, row.current_role, ...(row.ai_tags ?? []), ...(row.ai_roles ?? [])].join(" "));
+  const explicitJuniorHits = textIncludesAny(profileText, SEASON_ENTRY_LEVEL_TERMS);
+  const highSeniorityHits = textIncludesAny(seniorityText, SEASON_HIGH_SENIORITY_TERMS);
+  const age = candidateAge(row);
+  const youngBoost = age != null && age < 30 ? 10 : 0;
+  const yearsBoost = Number.isFinite(years)
+    ? years <= 1 ? 12 : years <= 2 ? 9 : years <= 4 ? 3 : 0
+    : 5;
+  const juniorBoost = explicitJuniorHits.length ? 8 : 0;
+  const penalty = highSeniorityHits.length && years > 3 ? 18 : highSeniorityHits.length ? 10 : 0;
+  return {
+    boost: youngBoost + yearsBoost + juniorBoost,
+    penalty,
+    evidence: [...explicitJuniorHits, ...(age != null && age < 30 ? [`${age} años`] : [])].slice(0, 4)
+  };
+}
+
+function scoreBroadSeasonCandidate(row: any, terms: string[], locationTerms: string[], search: any) {
+  const entryLevelSeason = isEntryLevelSeason(search);
+  const operationalTerms = seasonOperationalTerms(search);
   const roleText = [row.current_role, ...(row.ai_tags ?? []), ...(row.ai_roles ?? [])].join(" ");
   const profileText = [
     row.full_name,
@@ -196,20 +268,22 @@ function scoreBroadSeasonCandidate(row: any, terms: string[], locationTerms: str
   const locationText = [row.city, row.country, row.ai_summary, row.document_snippet].join(" ");
   const roleHits = textIncludesAny(roleText, terms);
   const documentHits = textIncludesAny(profileText, terms);
+  const operationalHits = entryLevelSeason ? textIncludesAny(profileText, operationalTerms) : [];
   const locationHits = textIncludesAny(locationText, locationTerms);
   const sourceTypes = cleanTextArray(row.source_types);
   const hasContact = (row.email ?? []).length > 0 || (row.phone ?? []).length > 0;
   const hasDocument = Boolean(row.primary_document_id || row.primary_document_name);
-  const roleStrength = roleHits.length ? 28 : 0;
-  const documentStrength = Math.min(26, documentHits.length * 5);
+  const entryLevel = entryLevelStrength(row, profileText, entryLevelSeason);
+  const roleStrength = roleHits.length ? 24 : operationalHits.length ? 16 : 0;
+  const documentStrength = Math.min(30, (documentHits.length * 5) + (operationalHits.length * 3));
   const locationStrength = locationTerms.length ? (locationHits.length ? 22 : 0) : 12;
   const sourceStrength = Math.min(8, sourceTypes.length * 2);
   const recencyStrength = row.latest_source_at ? 8 : 0;
   const contactStrength = hasContact ? 4 : 0;
   const documentStrengthBonus = hasDocument ? 4 : 0;
   const rankBoost = Math.min(10, Math.round(Number(row.rank ?? 0) * 100));
-  const score = cleanScore(35 + roleStrength + documentStrength + locationStrength + sourceStrength + recencyStrength + contactStrength + documentStrengthBonus + rankBoost);
-  const evidence = [...new Set([...roleHits, ...documentHits, ...locationHits])].slice(0, 8);
+  const score = cleanScore(30 + roleStrength + documentStrength + locationStrength + entryLevel.boost + sourceStrength + recencyStrength + contactStrength + documentStrengthBonus + rankBoost - entryLevel.penalty);
+  const evidence = [...new Set([...roleHits, ...documentHits, ...operationalHits, ...locationHits, ...entryLevel.evidence])].slice(0, 8);
   const matchReason = evidence.length
     ? `Coincide con ${evidence.join(", ")}. Evidencia encontrada en perfil, CV o fuentes recientes.`
     : "Coincidencia amplia por perfil estacional y fuente reciente.";
@@ -217,7 +291,7 @@ function scoreBroadSeasonCandidate(row: any, terms: string[], locationTerms: str
 }
 
 function mapBroadSeasonCandidate(row: any, search: any, terms: string[], locationTerms: string[]) {
-  const scored = scoreBroadSeasonCandidate(row, terms, locationTerms);
+  const scored = scoreBroadSeasonCandidate(row, terms, locationTerms, search);
   return {
     id: row.id,
     fullName: candidateDisplayName(row.full_name),
@@ -226,6 +300,8 @@ function mapBroadSeasonCandidate(row: any, search: any, terms: string[], locatio
     city: candidateDisplayLocation(row.city),
     country: row.country,
     linkedinUrl: row.linkedin_url,
+    birthDate: row.birth_date ?? null,
+    gender: row.gender ?? null,
     profileUrl: row.profile_url ?? null,
     currentRole: row.current_role,
     seniority: row.ai_seniority,
@@ -263,6 +339,8 @@ async function broadSeasonCandidates(search: any) {
   const locationTerms = location.terms;
   const termPatterns = likePatterns(terms);
   const locationPatterns = location.patterns;
+  const entryLevelSeason = isEntryLevelSeason(search);
+  const operationalPatterns = likePatterns(seasonOperationalTerms(search));
   if (!termPatterns.length) return [];
   const query = websearchOrQuery(terms);
   const { rows } = await qSearchWithTimeout(
@@ -332,6 +410,22 @@ async function broadSeasonCandidates(search: any) {
              array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
              array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ')
            ), 'áéíóúüñ', 'aeiouun') LIKE ANY($2::text[])
+           OR (
+             $6::boolean = true
+             AND (
+               cardinality($7::text[]) = 0
+               OR translate(lower(
+                 coalesce(c.current_role, '') || ' ' ||
+                 coalesce(c.ai_summary, '') || ' ' ||
+                 array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
+                 array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
+                 array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ')
+               ), 'áéíóúüñ', 'aeiouun') LIKE ANY($7::text[])
+               OR coalesce(c.ai_seniority_years, 2) <= 2
+               OR translate(lower(coalesce(c.ai_seniority, '')), 'áéíóúüñ', 'aeiouun') ~ '(junior|sin experiencia|entry|trainee)'
+               OR (c.birth_date IS NOT NULL AND c.birth_date > CURRENT_DATE - interval '30 years')
+             )
+           )
          )
        ORDER BY source_summary.latest_source_at DESC NULLS LAST, c.quality_score DESC, c.updated_at DESC
        LIMIT $5
@@ -359,12 +453,13 @@ async function broadSeasonCandidates(search: any) {
      FROM candidate_pool
      LEFT JOIN primary_documents ON primary_documents.candidate_id=candidate_pool.id
      ORDER BY
+       CASE WHEN $6::boolean = true AND candidate_pool.birth_date IS NOT NULL AND candidate_pool.birth_date > CURRENT_DATE - interval '30 years' THEN 0 ELSE 1 END,
        rank DESC,
        candidate_pool.latest_source_at DESC NULLS LAST,
        candidate_pool.quality_score DESC,
        candidate_pool.updated_at DESC
      LIMIT $4`,
-    [query, termPatterns, locationPatterns, SEASON_BROAD_RETRIEVAL_LIMIT, SEASON_BROAD_POOL_LIMIT],
+    [query, termPatterns, locationPatterns, SEASON_BROAD_RETRIEVAL_LIMIT, SEASON_BROAD_POOL_LIMIT, entryLevelSeason, operationalPatterns],
     10_000
   );
   return rows.map((row) => mapBroadSeasonCandidate(row, search, terms, locationTerms));
