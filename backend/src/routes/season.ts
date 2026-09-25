@@ -10,7 +10,8 @@ export const seasonRouter = Router();
 
 const SEASON_RECENCY_FILTER = "730d" as const;
 const SEASON_RESULT_LIMIT = 2500;
-const SEASON_BROAD_RETRIEVAL_LIMIT = 6000;
+const SEASON_BROAD_RETRIEVAL_LIMIT = 2500;
+const SEASON_BROAD_POOL_LIMIT = 4500;
 const SEASON_RECENT_SOURCE_CONDITION = `EXISTS (
   SELECT 1
   FROM candidate_sources season_recent_source
@@ -109,6 +110,12 @@ function websearchOrQuery(values: string[]) {
     .slice(0, 60)
     .map((value) => value.includes(" ") ? `"${value}"` : value);
   return parts.join(" OR ") || "curriculum OR experiencia";
+}
+
+function seasonLocationRequirement(search: any) {
+  const terms = seasonLocationTerms(search);
+  const patterns = likePatterns(terms);
+  return { terms, patterns };
 }
 
 function seasonQuery(search: any) {
@@ -260,24 +267,14 @@ function mapBroadSeasonCandidate(row: any, search: any, terms: string[], locatio
 
 async function broadSeasonCandidates(search: any) {
   const terms = seasonSearchTerms(search);
-  const locationTerms = seasonLocationTerms(search);
+  const location = seasonLocationRequirement(search);
+  const locationTerms = location.terms;
   const termPatterns = likePatterns(terms);
-  const locationPatterns = likePatterns(locationTerms);
+  const locationPatterns = location.patterns;
   if (!termPatterns.length) return [];
   const query = websearchOrQuery(terms);
   const { rows } = await qSearchWithTimeout(
-    `WITH primary_documents AS MATERIALIZED (
-       SELECT DISTINCT ON (d.candidate_id)
-         d.candidate_id,
-         d.id,
-         d.file_name,
-         d.mime_type,
-         d.source_type,
-         left(coalesce(d.raw_text, ''), 22000) AS raw_text
-       FROM documents d
-       WHERE length(coalesce(d.raw_text, '')) >= 80
-       ORDER BY d.candidate_id, d.is_primary_cv DESC, d.created_at DESC
-     ), source_summary AS MATERIALIZED (
+    `WITH source_summary AS MATERIALIZED (
        SELECT cs.candidate_id,
          count(DISTINCT cs.source_type)::int AS source_count,
          array_agg(DISTINCT cs.source_type ORDER BY cs.source_type) AS source_types,
@@ -287,17 +284,20 @@ async function broadSeasonCandidates(search: any) {
        WHERE cs.is_active=true
          AND cs.source_created_at >= now() - interval '2 years'
        GROUP BY cs.candidate_id
-     ), search_vectors AS MATERIALIZED (
-       SELECT c.id,
+     ), candidate_pool AS MATERIALIZED (
+       SELECT c.*,
+         coalesce(source_summary.source_count, 0)::int AS source_count,
+         coalesce(source_summary.source_types, '{}'::text[]) AS source_types,
+         source_summary.latest_source_at,
+         source_summary.profile_url,
          to_tsvector(
            'spanish'::regconfig,
            coalesce(c.full_name, '') || ' ' ||
            coalesce(c.current_role, '') || ' ' ||
            coalesce(c.ai_summary, '') || ' ' ||
            array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
-           array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ') || ' ' ||
-           coalesce(primary_documents.file_name, '') || ' ' ||
-           coalesce(primary_documents.raw_text, '')
+           array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
+           array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ')
          ) AS search_vector,
          translate(lower(
            coalesce(c.full_name, '') || ' ' ||
@@ -306,53 +306,74 @@ async function broadSeasonCandidates(search: any) {
            coalesce(c.country, '') || ' ' ||
            coalesce(c.ai_summary, '') || ' ' ||
            array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
-           array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ') || ' ' ||
-           coalesce(primary_documents.file_name, '') || ' ' ||
-           coalesce(primary_documents.raw_text, '')
+           array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
+           array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ')
          ), 'áéíóúüñ', 'aeiouun') AS searchable_text,
          translate(lower(
            coalesce(c.city, '') || ' ' ||
            coalesce(c.country, '') || ' ' ||
-           coalesce(c.ai_summary, '') || ' ' ||
-           coalesce(primary_documents.raw_text, '')
+           coalesce(c.ai_summary, '')
          ), 'áéíóúüñ', 'aeiouun') AS location_text
        FROM candidates c
-       JOIN primary_documents ON primary_documents.candidate_id=c.id
+       JOIN source_summary ON source_summary.candidate_id=c.id
+       WHERE c.duplicate_of IS NULL
+         AND c.status='active'
+         AND (
+           cardinality($3::text[]) = 0
+           OR translate(lower(coalesce(c.city, '') || ' ' || coalesce(c.country, '') || ' ' || coalesce(c.ai_summary, '')), 'áéíóúüñ', 'aeiouun') LIKE ANY($3::text[])
+         )
+         AND (
+           to_tsvector(
+             'spanish'::regconfig,
+             coalesce(c.full_name, '') || ' ' ||
+             coalesce(c.current_role, '') || ' ' ||
+             coalesce(c.ai_summary, '') || ' ' ||
+             array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
+             array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
+             array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ')
+           ) @@ websearch_to_tsquery('spanish'::regconfig, $1)
+           OR translate(lower(
+             coalesce(c.full_name, '') || ' ' ||
+             coalesce(c.current_role, '') || ' ' ||
+             coalesce(c.ai_summary, '') || ' ' ||
+             array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
+             array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
+             array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ')
+           ), 'áéíóúüñ', 'aeiouun') LIKE ANY($2::text[])
+         )
+       ORDER BY source_summary.latest_source_at DESC NULLS LAST, c.quality_score DESC, c.updated_at DESC
+       LIMIT $5
+     ), primary_documents AS MATERIALIZED (
+       SELECT DISTINCT ON (d.candidate_id)
+         d.candidate_id,
+         d.id,
+         d.file_name,
+         d.mime_type,
+         d.source_type,
+         left(coalesce(d.raw_text, ''), 6000) AS raw_text
+       FROM documents d
+       JOIN candidate_pool ON candidate_pool.id=d.candidate_id
+       WHERE length(coalesce(d.raw_text, '')) >= 80
+       ORDER BY d.candidate_id, d.is_primary_cv DESC, d.created_at DESC
      )
-     SELECT c.*,
+     SELECT candidate_pool.*,
        primary_documents.id AS primary_document_id,
        primary_documents.file_name AS primary_document_name,
        primary_documents.mime_type AS primary_document_mime_type,
        primary_documents.source_type AS primary_document_source_type,
        left(coalesce(primary_documents.raw_text, ''), 1500) AS document_snippet,
-       coalesce(source_summary.source_count, 0)::int AS source_count,
-       coalesce(source_summary.source_types, '{}'::text[]) AS source_types,
-       source_summary.latest_source_at,
-       source_summary.profile_url,
-       1 AS document_count,
-       ts_rank_cd(search_vectors.search_vector, websearch_to_tsquery('spanish'::regconfig, $1)) AS rank
-     FROM candidates c
-     JOIN primary_documents ON primary_documents.candidate_id=c.id
-     JOIN source_summary ON source_summary.candidate_id=c.id
-     JOIN search_vectors ON search_vectors.id=c.id
-     WHERE c.duplicate_of IS NULL
-       AND c.status='active'
-       AND (
-         search_vectors.search_vector @@ websearch_to_tsquery('spanish'::regconfig, $1)
-         OR search_vectors.searchable_text LIKE ANY($2::text[])
-       )
-       AND (
-         cardinality($3::text[]) = 0
-         OR search_vectors.location_text LIKE ANY($3::text[])
-       )
+       CASE WHEN primary_documents.id IS NULL THEN 0 ELSE 1 END AS document_count,
+       ts_rank_cd(candidate_pool.search_vector, websearch_to_tsquery('spanish'::regconfig, $1)) AS rank
+     FROM candidate_pool
+     LEFT JOIN primary_documents ON primary_documents.candidate_id=candidate_pool.id
      ORDER BY
        rank DESC,
-       source_summary.latest_source_at DESC NULLS LAST,
-       c.quality_score DESC,
-       c.updated_at DESC
+       candidate_pool.latest_source_at DESC NULLS LAST,
+       candidate_pool.quality_score DESC,
+       candidate_pool.updated_at DESC
      LIMIT $4`,
-    [query, termPatterns, locationPatterns, SEASON_BROAD_RETRIEVAL_LIMIT],
-    20_000
+    [query, termPatterns, locationPatterns, SEASON_BROAD_RETRIEVAL_LIMIT, SEASON_BROAD_POOL_LIMIT],
+    10_000
   );
   return rows.map((row) => mapBroadSeasonCandidate(row, search, terms, locationTerms));
 }
