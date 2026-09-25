@@ -646,6 +646,19 @@ test("Gmail usa modo incremental cuando el historico ya termino", async () => {
 
   assert.equal(result.mode, "incremental");
   assert.match(result.query, /after:2026\/07\/12/);
+  assert.match(result.query, /newer_than:730d/);
+});
+
+test("Gmail continua desde la ultima sincronizacion incremental", async () => {
+  const { gmailSyncQueryForConfig } = await import("../dist/routes/integrations.js");
+  const result = gmailSyncQueryForConfig({
+    gmailBackfillCompleteAt: "2026-07-13T12:00:00.000Z",
+    gmailLastIncrementalSyncAt: "2026-07-21T09:15:00.000Z"
+  }, false);
+
+  assert.equal(result.mode, "incremental");
+  assert.match(result.query, /after:2026\/07\/20/);
+  assert.ok(!result.query.includes("after:2026/07/12"));
 });
 
 test("Gmail mantiene modo historico si todavia queda cola pendiente", async () => {
