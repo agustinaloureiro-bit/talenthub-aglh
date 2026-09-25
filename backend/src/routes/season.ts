@@ -12,14 +12,6 @@ const SEASON_RECENCY_FILTER = "730d" as const;
 const SEASON_RESULT_LIMIT = 2500;
 const SEASON_BROAD_RETRIEVAL_LIMIT = 2500;
 const SEASON_BROAD_POOL_LIMIT = 4500;
-const SEASON_RECENT_SOURCE_CONDITION = `EXISTS (
-  SELECT 1
-  FROM candidate_sources season_recent_source
-  WHERE season_recent_source.candidate_id=c.id
-    AND season_recent_source.is_active=true
-    AND season_recent_source.source_created_at >= now() - interval '2 years'
-)`;
-
 const SEASON_STOPWORDS = new Set([
   "de", "del", "la", "las", "los", "el", "un", "una", "para", "por", "con", "sin", "en", "y", "o",
   "perfil", "perfiles", "persona", "personas", "experiencia", "experiencias", "junior", "poca", "poco",
@@ -475,9 +467,9 @@ function mapSeasonResult(row: any, viewerId?: string) {
 async function getSeasonList(viewerId: string) {
   const { rows } = await q(
     `SELECT ss.*,
-      count(ssr.id) FILTER (WHERE c.id IS NOT NULL AND ${SEASON_RECENT_SOURCE_CONDITION})::int AS result_count,
-      count(ssr.id) FILTER (WHERE c.id IS NOT NULL AND ${SEASON_RECENT_SOURCE_CONDITION} AND ssr.reserved_at IS NOT NULL)::int AS reserved_count,
-      count(ssr.id) FILTER (WHERE c.id IS NOT NULL AND ${SEASON_RECENT_SOURCE_CONDITION} AND ssr.reserved_by=$1)::int AS my_reserved_count
+      count(ssr.id) FILTER (WHERE c.id IS NOT NULL)::int AS result_count,
+      count(ssr.id) FILTER (WHERE c.id IS NOT NULL AND ssr.reserved_at IS NOT NULL)::int AS reserved_count,
+      count(ssr.id) FILTER (WHERE c.id IS NOT NULL AND ssr.reserved_by=$1)::int AS my_reserved_count
      FROM season_searches ss
      LEFT JOIN season_search_results ssr ON ssr.season_search_id=ss.id
      LEFT JOIN candidates c ON c.id=ssr.candidate_id AND c.duplicate_of IS NULL
@@ -492,9 +484,9 @@ async function getSeasonList(viewerId: string) {
 async function getSeasonDetail(id: string, viewerId: string) {
   const { rows: searchRows } = await q(
     `SELECT ss.*,
-      count(ssr.id) FILTER (WHERE c.id IS NOT NULL AND ${SEASON_RECENT_SOURCE_CONDITION})::int AS result_count,
-      count(ssr.id) FILTER (WHERE c.id IS NOT NULL AND ${SEASON_RECENT_SOURCE_CONDITION} AND ssr.reserved_at IS NOT NULL)::int AS reserved_count,
-      count(ssr.id) FILTER (WHERE c.id IS NOT NULL AND ${SEASON_RECENT_SOURCE_CONDITION} AND ssr.reserved_by=$2)::int AS my_reserved_count
+      count(ssr.id) FILTER (WHERE c.id IS NOT NULL)::int AS result_count,
+      count(ssr.id) FILTER (WHERE c.id IS NOT NULL AND ssr.reserved_at IS NOT NULL)::int AS reserved_count,
+      count(ssr.id) FILTER (WHERE c.id IS NOT NULL AND ssr.reserved_by=$2)::int AS my_reserved_count
      FROM season_searches ss
      LEFT JOIN season_search_results ssr ON ssr.season_search_id=ss.id
      LEFT JOIN candidates c ON c.id=ssr.candidate_id AND c.duplicate_of IS NULL
@@ -564,7 +556,6 @@ async function getSeasonDetail(id: string, viewerId: string) {
      LEFT JOIN source_summary ON source_summary.candidate_id=c.id
      WHERE ssr.season_search_id=$1
        AND c.duplicate_of IS NULL
-       AND ${SEASON_RECENT_SOURCE_CONDITION}
      ORDER BY
        CASE
          WHEN ssr.reserved_at IS NULL THEN 0
@@ -670,26 +661,42 @@ seasonRouter.post("/:id/run", asyncHandler(async (req, res) => {
   const search = rows[0];
   if (!search) return res.status(404).json({ error: "Búsqueda de temporada no encontrada" });
   const queryText = seasonQuery(search);
-  let result;
+  let result: Awaited<ReturnType<typeof searchTalent>> | null = null;
   let broadCandidates: any[] = [];
-  try {
-    const [rankedResult, broadResult] = await Promise.all([
-      searchTalent(queryText, {
-        location: search.city || search.department || undefined,
-        activeOnly: true,
-        recency: SEASON_RECENCY_FILTER,
-        sort: "relevance",
-        maxResults: SEASON_RESULT_LIMIT
-      }),
-      broadSeasonCandidates(search)
-    ]);
-    result = rankedResult;
-    broadCandidates = broadResult;
-  } catch (error: any) {
-    if (error?.code === "57014") return res.status(503).json({ error: "La búsqueda demoró demasiado. Probá ejecutar con menos palabras clave." });
-    throw error;
+  const [rankedOutcome, broadOutcome] = await Promise.allSettled([
+    searchTalent(queryText, {
+      location: search.city || search.department || undefined,
+      activeOnly: true,
+      recency: SEASON_RECENCY_FILTER,
+      sort: "relevance",
+      maxResults: SEASON_RESULT_LIMIT
+    }),
+    broadSeasonCandidates(search)
+  ]);
+  const warnings: string[] = [];
+  if (rankedOutcome.status === "fulfilled") {
+    result = rankedOutcome.value;
+  } else {
+    console.error("Season ranked search failed", { seasonSearchId: search.id, error: rankedOutcome.reason });
+    warnings.push("La búsqueda principal no respondió; se usó búsqueda amplia.");
   }
-  const merged = mergeSeasonCandidates(result.data, broadCandidates);
+  if (broadOutcome.status === "fulfilled") {
+    broadCandidates = broadOutcome.value;
+  } else {
+    console.error("Season broad search failed", { seasonSearchId: search.id, error: broadOutcome.reason });
+    warnings.push("La búsqueda amplia no respondió; se usó ranking principal.");
+  }
+  if (!result && broadCandidates.length === 0) {
+    const reasons = [rankedOutcome, broadOutcome]
+      .filter((outcome) => outcome.status === "rejected")
+      .map((outcome) => (outcome as PromiseRejectedResult).reason);
+    if (reasons.some((error: any) => error?.code === "57014")) {
+      return res.status(503).json({ error: "La búsqueda demoró demasiado. Probá nuevamente en unos segundos." });
+    }
+    return res.status(503).json({ error: "No se pudo ejecutar la búsqueda de temporada. Probá nuevamente en unos segundos." });
+  }
+  const rankedCandidates = result?.data ?? [];
+  const merged = mergeSeasonCandidates(rankedCandidates, broadCandidates);
   const candidates = merged
     .filter((candidate) => !candidateContainsExcluded(candidate, search.exclude_keywords ?? []))
     .slice(0, SEASON_RESULT_LIMIT);
@@ -739,11 +746,12 @@ seasonRouter.post("/:id/run", asyncHandler(async (req, res) => {
     data: detail,
     meta: {
       reviewed: merged.length,
-      rankedReviewed: result.data.length,
+      rankedReviewed: rankedCandidates.length,
       broadReviewed: broadCandidates.length,
       imported,
       excluded: merged.length - candidates.length,
-      skipped
+      skipped,
+      warnings
     }
   });
 }));
