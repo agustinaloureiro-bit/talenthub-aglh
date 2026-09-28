@@ -5,7 +5,7 @@ import { API_URL, api, authHeaders, loadCurrentUser, loginWithGoogle, logout, ty
 type Page = "finder" | "season" | "candidates" | "candidate" | "integrations" | "settings";
 
 const TALENT_FINDER_STATE_KEY = "talenthub:finder-state:v2";
-const SEASON_STATE_KEY = "talenthub:season-state:v1";
+const SEASON_STATE_KEY = "talenthub:season-state:v2";
 
 type TalentFinderSnapshot = {
   query: string;
@@ -235,7 +235,8 @@ const recencyOptions: FilterOption[] = [
   { value: "7d", label: "Últimos 7 días" },
   { value: "30d", label: "Últimos 30 días" },
   { value: "90d", label: "Últimos 3 meses" },
-  { value: "365d", label: "Último año" }
+  { value: "365d", label: "Último año" },
+  { value: "730d", label: "Últimos 2 años" }
 ];
 
 const nav = [
