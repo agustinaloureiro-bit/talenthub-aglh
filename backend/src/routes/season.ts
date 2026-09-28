@@ -120,6 +120,27 @@ function seasonOperationalTerms(search: any) {
   ], 160);
 }
 
+function seasonEntryLevelScoutTerms() {
+  return uniqueTerms([
+    ...SEASON_ENTRY_LEVEL_TERMS,
+    ...SEASON_OPERATIONAL_TERMS,
+    "estudiante",
+    "estudios basicos",
+    "estudios básicos",
+    "secundaria completa",
+    "secundaria incompleta",
+    "bachillerato",
+    "liceo",
+    "utú",
+    "utu",
+    "primer trabajo",
+    "disponibilidad horaria",
+    "zafral",
+    "temporario",
+    "temporaria"
+  ], 180);
+}
+
 function seasonLocationTerms(search: any) {
   const raw = [search.city, search.department].filter(Boolean).map(String);
   const expanded = raw.flatMap((location) => nearbyUruguayLocations(location, Number(search.radius_km ?? 30)));
@@ -344,6 +365,7 @@ async function broadSeasonCandidates(search: any) {
   const locationPatterns = location.patterns;
   const entryLevelSeason = isEntryLevelSeason(search);
   const operationalPatterns = likePatterns(seasonOperationalTerms(search));
+  const entryLevelPatterns = likePatterns(seasonEntryLevelScoutTerms());
   if (!termPatterns.length) return [];
   const query = websearchOrQuery(terms);
   const { rows } = await qSearchWithTimeout(
@@ -421,38 +443,21 @@ async function broadSeasonCandidates(search: any) {
            OR c.created_at >= now() - interval '2 years'
          )
          AND (
-           cardinality($3::text[]) = 0
-           OR translate(lower(
-             coalesce(c.city, '') || ' ' ||
-             coalesce(c.country, '') || ' ' ||
-             coalesce(c.ai_summary, '') || ' ' ||
-             coalesce(document_summary.document_text, '')
-           ), 'áéíóúüñ', 'aeiouun') LIKE ANY($3::text[])
-         )
-         AND (
-           to_tsvector(
-             'spanish'::regconfig,
-             coalesce(c.full_name, '') || ' ' ||
-             coalesce(c.current_role, '') || ' ' ||
-             coalesce(c.ai_summary, '') || ' ' ||
-             array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
-             array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
-             array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ') || ' ' ||
-             coalesce(document_summary.document_text, '')
-           ) @@ websearch_to_tsquery('spanish'::regconfig, $1)
-           OR translate(lower(
-             coalesce(c.full_name, '') || ' ' ||
-             coalesce(c.current_role, '') || ' ' ||
-             coalesce(c.ai_summary, '') || ' ' ||
-             array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
-             array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
-             array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ') || ' ' ||
-             coalesce(document_summary.document_text, '')
-           ), 'áéíóúüñ', 'aeiouun') LIKE ANY($2::text[])
-           OR (
+           (
              $6::boolean = true
              AND (
-               cardinality($7::text[]) = 0
+               cardinality($3::text[]) = 0
+               OR translate(lower(
+                 coalesce(c.city, '') || ' ' ||
+                 coalesce(c.country, '') || ' ' ||
+                 coalesce(c.ai_summary, '') || ' ' ||
+                 coalesce(document_summary.document_text, '')
+               ), 'áéíóúüñ', 'aeiouun') LIKE ANY($3::text[])
+             )
+             AND (
+               coalesce(c.ai_seniority_years, 2) <= 2
+               OR translate(lower(coalesce(c.ai_seniority, '')), 'áéíóúüñ', 'aeiouun') ~ '(junior|sin experiencia|entry|trainee|estudiante|primer empleo)'
+               OR (c.birth_date IS NOT NULL AND c.birth_date > CURRENT_DATE - interval '30 years')
                OR translate(lower(
                  coalesce(c.current_role, '') || ' ' ||
                  coalesce(c.ai_summary, '') || ' ' ||
@@ -461,9 +466,47 @@ async function broadSeasonCandidates(search: any) {
                  array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ') || ' ' ||
                  coalesce(document_summary.document_text, '')
                ), 'áéíóúüñ', 'aeiouun') LIKE ANY($7::text[])
-               OR coalesce(c.ai_seniority_years, 2) <= 2
-               OR translate(lower(coalesce(c.ai_seniority, '')), 'áéíóúüñ', 'aeiouun') ~ '(junior|sin experiencia|entry|trainee)'
-               OR (c.birth_date IS NOT NULL AND c.birth_date > CURRENT_DATE - interval '30 years')
+               OR translate(lower(
+                 coalesce(c.current_role, '') || ' ' ||
+                 coalesce(c.ai_summary, '') || ' ' ||
+                 array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
+                 array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
+                 array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ') || ' ' ||
+                 coalesce(document_summary.document_text, '')
+               ), 'áéíóúüñ', 'aeiouun') LIKE ANY($8::text[])
+             )
+           )
+           OR (
+             $6::boolean = false
+             AND (
+               cardinality($3::text[]) = 0
+               OR translate(lower(
+                 coalesce(c.city, '') || ' ' ||
+                 coalesce(c.country, '') || ' ' ||
+                 coalesce(c.ai_summary, '') || ' ' ||
+                 coalesce(document_summary.document_text, '')
+               ), 'áéíóúüñ', 'aeiouun') LIKE ANY($3::text[])
+             )
+             AND (
+               to_tsvector(
+                 'spanish'::regconfig,
+                 coalesce(c.full_name, '') || ' ' ||
+                 coalesce(c.current_role, '') || ' ' ||
+                 coalesce(c.ai_summary, '') || ' ' ||
+                 array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
+                 array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
+                 array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ') || ' ' ||
+                 coalesce(document_summary.document_text, '')
+               ) @@ websearch_to_tsquery('spanish'::regconfig, $1)
+               OR translate(lower(
+                 coalesce(c.full_name, '') || ' ' ||
+                 coalesce(c.current_role, '') || ' ' ||
+                 coalesce(c.ai_summary, '') || ' ' ||
+                 array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
+                 array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
+                 array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ') || ' ' ||
+                 coalesce(document_summary.document_text, '')
+               ), 'áéíóúüñ', 'aeiouun') LIKE ANY($2::text[])
              )
            )
          )
@@ -481,7 +524,7 @@ async function broadSeasonCandidates(search: any) {
        candidate_pool.quality_score DESC,
        candidate_pool.updated_at DESC
      LIMIT $4`,
-    [query, termPatterns, locationPatterns, SEASON_BROAD_RETRIEVAL_LIMIT, SEASON_BROAD_POOL_LIMIT, entryLevelSeason, operationalPatterns],
+    [query, termPatterns, locationPatterns, SEASON_BROAD_RETRIEVAL_LIMIT, SEASON_BROAD_POOL_LIMIT, entryLevelSeason, operationalPatterns, entryLevelPatterns],
     15_000
   );
   return rows.map((row) => mapBroadSeasonCandidate(row, search, terms, locationTerms));
