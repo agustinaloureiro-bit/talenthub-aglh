@@ -10,9 +10,9 @@ import { nearbyUruguayLocations } from "../intelligence/uruguayGeography.js";
 export const seasonRouter = Router();
 
 const SEASON_RECENCY_FILTER = "730d" as const;
-const SEASON_RESULT_LIMIT = 2500;
-const SEASON_BROAD_RETRIEVAL_LIMIT = 5000;
-const SEASON_BROAD_POOL_LIMIT = 16000;
+const SEASON_RESULT_LIMIT = 5000;
+const SEASON_BROAD_RETRIEVAL_LIMIT = 9000;
+const SEASON_BROAD_POOL_LIMIT = 24000;
 const SEASON_ENTRY_LEVEL_TERMS = [
   "sin experiencia", "poca experiencia", "junior", "estudiante", "primer empleo", "bachillerato",
   "secundaria", "0 1", "0-1", "menos de 1", "hasta 1", "auxiliar", "ayudante", "aprendiz"
@@ -392,7 +392,7 @@ async function entryLevelSeasonCandidates(
          d.file_name AS primary_document_name,
          d.mime_type AS primary_document_mime_type,
          d.source_type AS primary_document_source_type,
-         left(coalesce(d.raw_text, ''), 8000) AS document_text,
+         left(coalesce(d.raw_text, ''), 1400) AS document_text,
          count(*) OVER (PARTITION BY d.candidate_id)::int AS document_count,
          max(d.created_at) OVER (PARTITION BY d.candidate_id) AS latest_document_at
        FROM documents d
@@ -411,21 +411,17 @@ async function entryLevelSeasonCandidates(
          document_summary.document_text,
          coalesce(document_summary.document_count, 0)::int AS document_count,
          translate(lower(
-           coalesce(c.city, '') || ' ' ||
-           coalesce(c.country, '') || ' ' ||
-           coalesce(c.ai_summary, '') || ' ' ||
-           coalesce(document_summary.document_text, '')
-         ), 'áéíóúüñ', 'aeiouun') AS location_text,
-         translate(lower(
            coalesce(c.full_name, '') || ' ' ||
            coalesce(c.current_role, '') || ' ' ||
+           coalesce(c.city, '') || ' ' ||
+           coalesce(c.country, '') || ' ' ||
            coalesce(c.ai_seniority, '') || ' ' ||
            coalesce(c.ai_summary, '') || ' ' ||
            array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
            array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
            array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ') || ' ' ||
            coalesce(document_summary.document_text, '')
-         ), 'áéíóúüñ', 'aeiouun') AS profile_text,
+         ), 'áéíóúüñ', 'aeiouun') AS structured_text,
          CASE
            WHEN c.birth_date IS NOT NULL AND c.birth_date > CURRENT_DATE - interval '30 years' THEN 0
            WHEN c.birth_date IS NOT NULL AND c.birth_date > CURRENT_DATE - interval '35 years' THEN 1
@@ -447,30 +443,26 @@ async function entryLevelSeasonCandidates(
        SELECT candidate_pool.*,
          CASE
            WHEN cardinality($1::text[]) = 0 THEN 0
-           WHEN location_text LIKE ANY($1::text[]) THEN 0
+           WHEN structured_text LIKE ANY($1::text[]) THEN 0
            ELSE 1
          END AS location_priority,
          CASE
-           WHEN cardinality($2::text[]) > 0 AND profile_text LIKE ANY($2::text[]) THEN 0
+           WHEN cardinality($2::text[]) > 0 AND structured_text LIKE ANY($2::text[]) THEN 0
            ELSE 1
          END AS scout_priority
        FROM candidate_pool
        WHERE (
          cardinality($1::text[]) = 0
-         OR location_text LIKE ANY($1::text[])
-         OR profile_text LIKE ANY($2::text[])
-         OR (
-           birth_date IS NOT NULL
-           AND birth_date > CURRENT_DATE - interval '35 years'
-           AND (ai_seniority_years IS NULL OR ai_seniority_years <= 4)
-         )
-         OR (ai_seniority_years IS NOT NULL AND ai_seniority_years <= 2)
+         OR structured_text LIKE ANY($1::text[])
+         OR structured_text LIKE ANY($2::text[])
+         OR (birth_date IS NOT NULL AND birth_date > CURRENT_DATE - interval '35 years')
+         OR coalesce(ai_seniority_years, 2) <= 4
        )
        AND (
          birth_date IS NULL
-         OR birth_date > CURRENT_DATE - interval '40 years'
-         OR coalesce(ai_seniority_years, 2) <= 4
-         OR profile_text LIKE ANY($2::text[])
+         OR birth_date > CURRENT_DATE - interval '45 years'
+         OR coalesce(ai_seniority_years, 2) <= 5
+         OR structured_text LIKE ANY($2::text[])
        )
        ORDER BY
          location_priority,
@@ -489,7 +481,7 @@ async function entryLevelSeasonCandidates(
      SELECT candidate_filtered.*,
        left(coalesce(candidate_filtered.document_text, ''), 1500) AS document_snippet,
        CASE
-         WHEN cardinality($2::text[]) > 0 AND candidate_filtered.profile_text LIKE ANY($2::text[]) THEN 0.12
+         WHEN cardinality($2::text[]) > 0 AND candidate_filtered.structured_text LIKE ANY($2::text[]) THEN 0.12
          ELSE 0.02
        END AS rank
      FROM candidate_filtered
@@ -507,7 +499,7 @@ async function entryLevelSeasonCandidates(
       SEASON_BROAD_POOL_LIMIT,
       SEASON_BROAD_RETRIEVAL_LIMIT
     ],
-    20_000
+    12_000
   );
   return rows.map((row) => mapBroadSeasonCandidate(row, search, terms, locationTerms));
 }
