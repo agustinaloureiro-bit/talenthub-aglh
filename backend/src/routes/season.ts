@@ -504,6 +504,131 @@ async function entryLevelSeasonCandidates(
   return rows.map((row) => mapBroadSeasonCandidate(row, search, terms, locationTerms));
 }
 
+async function entryLevelSeasonFallbackCandidates(
+  search: any,
+  terms: string[],
+  locationTerms: string[],
+  locationPatterns: string[],
+  operationalPatterns: string[],
+  entryLevelPatterns: string[]
+) {
+  const scoutPatterns = [...new Set([...operationalPatterns, ...entryLevelPatterns, ...likePatterns(terms)])];
+  const broadLocationPatterns = locationPatterns.length ? locationPatterns : ["%maldonado%", "%montevideo%", "%canelones%"];
+  const broadScoutPatterns = scoutPatterns.length
+    ? scoutPatterns
+    : ["%auxiliar%", "%repositor%", "%cajero%", "%cajera%", "%atencion al cliente%", "%supermercado%"];
+  const { rows } = await qSearchWithTimeout(
+    `WITH source_summary AS MATERIALIZED (
+       SELECT cs.candidate_id,
+         count(DISTINCT cs.source_type)::int AS source_count,
+         array_agg(DISTINCT cs.source_type ORDER BY cs.source_type) AS source_types,
+         max(coalesce(cs.source_created_at, cs.created_at)) AS latest_source_at,
+         max(cs.source_url) FILTER (WHERE nullif(cs.source_url, '') IS NOT NULL) AS profile_url
+       FROM candidate_sources cs
+       WHERE cs.is_active=true
+       GROUP BY cs.candidate_id
+     ), document_summary AS MATERIALIZED (
+       SELECT DISTINCT ON (d.candidate_id)
+         d.candidate_id,
+         d.id AS primary_document_id,
+         d.file_name AS primary_document_name,
+         d.mime_type AS primary_document_mime_type,
+         d.source_type AS primary_document_source_type,
+         ''::text AS document_text,
+         count(*) OVER (PARTITION BY d.candidate_id)::int AS document_count,
+         max(d.created_at) OVER (PARTITION BY d.candidate_id) AS latest_document_at
+       FROM documents d
+       WHERE d.candidate_id IS NOT NULL
+       ORDER BY d.candidate_id, d.is_primary_cv DESC, d.created_at DESC
+     ), candidate_pool AS MATERIALIZED (
+       SELECT c.*,
+         coalesce(source_summary.source_count, 0)::int AS source_count,
+         coalesce(source_summary.source_types, '{}'::text[]) AS source_types,
+         coalesce(source_summary.latest_source_at, document_summary.latest_document_at, c.last_seen_at, c.updated_at, c.created_at) AS latest_source_at,
+         source_summary.profile_url,
+         document_summary.primary_document_id,
+         document_summary.primary_document_name,
+         document_summary.primary_document_mime_type,
+         document_summary.primary_document_source_type,
+         document_summary.document_text,
+         coalesce(document_summary.document_count, 0)::int AS document_count,
+         translate(lower(
+           coalesce(c.full_name, '') || ' ' ||
+           coalesce(c.current_role, '') || ' ' ||
+           coalesce(c.city, '') || ' ' ||
+           coalesce(c.country, '') || ' ' ||
+           coalesce(c.ai_seniority, '') || ' ' ||
+           coalesce(c.ai_summary, '') || ' ' ||
+           array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
+           array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
+           array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ')
+         ), 'áéíóúüñ', 'aeiouun') AS structured_text,
+         CASE
+           WHEN c.birth_date IS NOT NULL AND c.birth_date > CURRENT_DATE - interval '30 years' THEN 0
+           WHEN c.birth_date IS NOT NULL AND c.birth_date > CURRENT_DATE - interval '35 years' THEN 1
+           ELSE 2
+         END AS age_priority,
+         CASE
+           WHEN coalesce(c.ai_seniority_years, 2) <= 1 THEN 0
+           WHEN coalesce(c.ai_seniority_years, 2) <= 2 THEN 1
+           WHEN coalesce(c.ai_seniority_years, 2) <= 4 THEN 2
+           ELSE 4
+         END AS seniority_priority
+       FROM candidates c
+       JOIN document_summary ON document_summary.candidate_id=c.id
+       LEFT JOIN source_summary ON source_summary.candidate_id=c.id
+       WHERE c.duplicate_of IS NULL
+         AND c.status='active'
+     ), candidate_filtered AS MATERIALIZED (
+       SELECT candidate_pool.*,
+         CASE
+           WHEN cardinality($1::text[]) = 0 THEN 0
+           WHEN structured_text LIKE ANY($1::text[]) THEN 0
+           ELSE 1
+         END AS location_priority,
+         CASE
+           WHEN cardinality($2::text[]) > 0 AND structured_text LIKE ANY($2::text[]) THEN 0
+           ELSE 1
+         END AS scout_priority
+       FROM candidate_pool
+       WHERE (
+         structured_text LIKE ANY($1::text[])
+         OR structured_text LIKE ANY($2::text[])
+         OR (birth_date IS NOT NULL AND birth_date > CURRENT_DATE - interval '35 years')
+         OR coalesce(ai_seniority_years, 2) <= 4
+       )
+       ORDER BY
+         location_priority,
+         age_priority,
+         seniority_priority,
+         scout_priority,
+         latest_source_at DESC NULLS LAST,
+         quality_score DESC,
+         updated_at DESC
+       LIMIT $3
+     )
+     SELECT candidate_filtered.*,
+       ''::text AS document_snippet,
+       CASE
+         WHEN candidate_filtered.structured_text LIKE ANY($1::text[]) THEN 0.10
+         WHEN candidate_filtered.structured_text LIKE ANY($2::text[]) THEN 0.08
+         ELSE 0.01
+       END AS rank
+     FROM candidate_filtered
+     ORDER BY
+       location_priority,
+       age_priority,
+       seniority_priority,
+       scout_priority,
+       latest_source_at DESC NULLS LAST,
+       quality_score DESC
+     LIMIT $4`,
+    [broadLocationPatterns, broadScoutPatterns, SEASON_BROAD_POOL_LIMIT, SEASON_BROAD_RETRIEVAL_LIMIT],
+    8_000
+  );
+  return rows.map((row) => mapBroadSeasonCandidate(row, search, terms, locationTerms));
+}
+
 async function broadSeasonCandidates(search: any) {
   const terms = seasonSearchTerms(search);
   const location = seasonLocationRequirement(search);
@@ -514,7 +639,11 @@ async function broadSeasonCandidates(search: any) {
   const operationalPatterns = likePatterns(seasonOperationalTerms(search));
   const entryLevelPatterns = likePatterns(seasonEntryLevelScoutTerms());
   if (entryLevelSeason) {
-    return entryLevelSeasonCandidates(search, terms, locationTerms, locationPatterns, operationalPatterns, entryLevelPatterns);
+    try {
+      return await entryLevelSeasonCandidates(search, terms, locationTerms, locationPatterns, operationalPatterns, entryLevelPatterns);
+    } catch (error) {
+      return entryLevelSeasonFallbackCandidates(search, terms, locationTerms, locationPatterns, operationalPatterns, entryLevelPatterns);
+    }
   }
   if (!termPatterns.length) return [];
   const query = websearchOrQuery(terms);
