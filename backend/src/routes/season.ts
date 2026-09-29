@@ -273,7 +273,7 @@ function entryLevelStrength(row: any, profileText: string, entryLevelSeason: boo
   };
 }
 
-function scoreBroadSeasonCandidate(row: any, terms: string[], locationTerms: string[], search: any) {
+export function scoreBroadSeasonCandidate(row: any, terms: string[], locationTerms: string[], search: any) {
   const entryLevelSeason = isEntryLevelSeason(search);
   const operationalTerms = seasonOperationalTerms(search);
   const roleText = [row.current_role, ...(row.ai_tags ?? []), ...(row.ai_roles ?? [])].join(" ");
@@ -299,14 +299,23 @@ function scoreBroadSeasonCandidate(row: any, terms: string[], locationTerms: str
   const entryLevel = entryLevelStrength(row, profileText, entryLevelSeason);
   const roleStrength = roleHits.length ? 24 : operationalHits.length ? 16 : 0;
   const documentStrength = Math.min(30, (documentHits.length * 5) + (operationalHits.length * 3));
-  const locationStrength = locationTerms.length ? (locationHits.length ? 22 : 0) : 12;
+  const locationStrength = locationTerms.length
+    ? locationHits.length
+      ? 24
+      : entryLevelSeason
+        ? 7
+        : 0
+    : 12;
   const sourceStrength = Math.min(8, sourceTypes.length * 2);
   const recencyStrength = row.latest_source_at ? 8 : 0;
   const contactStrength = hasContact ? 4 : 0;
   const documentStrengthBonus = hasDocument ? 4 : 0;
   const rankBoost = Math.min(10, Math.round(Number(row.rank ?? 0) * 100));
   const score = cleanScore(30 + roleStrength + documentStrength + locationStrength + entryLevel.boost + sourceStrength + recencyStrength + contactStrength + documentStrengthBonus + rankBoost - entryLevel.penalty);
-  const evidence = [...new Set([...roleHits, ...documentHits, ...operationalHits, ...locationHits, ...entryLevel.evidence])].slice(0, 8);
+  const locationEvidence = locationTerms.length && !locationHits.length && entryLevelSeason
+    ? ["ubicación a confirmar"]
+    : [];
+  const evidence = [...new Set([...roleHits, ...locationHits, ...locationEvidence, ...entryLevel.evidence, ...documentHits, ...operationalHits])].slice(0, 8);
   const matchReason = evidence.length
     ? `Coincide con ${evidence.join(", ")}. Evidencia encontrada en perfil, CV o fuentes recientes.`
     : "Coincidencia amplia por perfil estacional y fuente reciente.";
@@ -427,7 +436,29 @@ async function entryLevelSeasonCandidates(
            WHEN coalesce(c.ai_seniority_years, 2) <= 2 THEN 1
            WHEN coalesce(c.ai_seniority_years, 2) <= 4 THEN 2
            ELSE 4
-         END AS seniority_priority
+         END AS seniority_priority,
+         CASE
+           WHEN cardinality($1::text[]) = 0 THEN 0
+           WHEN translate(lower(
+             coalesce(c.city, '') || ' ' ||
+             coalesce(c.country, '') || ' ' ||
+             coalesce(c.ai_summary, '') || ' ' ||
+             coalesce(document_summary.document_text, '')
+           ), 'áéíóúüñ', 'aeiouun') LIKE ANY($1::text[]) THEN 0
+           ELSE 1
+         END AS location_priority,
+         CASE
+           WHEN cardinality($2::text[]) > 0 AND translate(lower(
+             coalesce(c.current_role, '') || ' ' ||
+             coalesce(c.ai_seniority, '') || ' ' ||
+             coalesce(c.ai_summary, '') || ' ' ||
+             array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
+             array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
+             array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ') || ' ' ||
+             coalesce(document_summary.document_text, '')
+           ), 'áéíóúüñ', 'aeiouun') LIKE ANY($2::text[]) THEN 0
+           ELSE 1
+         END AS scout_priority
        FROM candidates c
        LEFT JOIN source_summary ON source_summary.candidate_id=c.id
        LEFT JOIN document_summary ON document_summary.candidate_id=c.id
@@ -442,6 +473,21 @@ async function entryLevelSeasonCandidates(
              coalesce(c.ai_summary, '') || ' ' ||
              coalesce(document_summary.document_text, '')
            ), 'áéíóúüñ', 'aeiouun') LIKE ANY($1::text[])
+           OR translate(lower(
+             coalesce(c.current_role, '') || ' ' ||
+             coalesce(c.ai_seniority, '') || ' ' ||
+             coalesce(c.ai_summary, '') || ' ' ||
+             array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
+             array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
+             array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ') || ' ' ||
+             coalesce(document_summary.document_text, '')
+           ), 'áéíóúüñ', 'aeiouun') LIKE ANY($2::text[])
+           OR (
+             c.birth_date IS NOT NULL
+             AND c.birth_date > CURRENT_DATE - interval '35 years'
+             AND (c.ai_seniority_years IS NULL OR c.ai_seniority_years <= 4)
+           )
+           OR (c.ai_seniority_years IS NOT NULL AND c.ai_seniority_years <= 2)
          )
          AND (
            c.birth_date IS NULL
@@ -458,6 +504,16 @@ async function entryLevelSeasonCandidates(
            ), 'áéíóúüñ', 'aeiouun') LIKE ANY($2::text[])
          )
        ORDER BY
+         CASE
+           WHEN cardinality($1::text[]) = 0 THEN 0
+           WHEN translate(lower(
+             coalesce(c.city, '') || ' ' ||
+             coalesce(c.country, '') || ' ' ||
+             coalesce(c.ai_summary, '') || ' ' ||
+             coalesce(document_summary.document_text, '')
+           ), 'áéíóúüñ', 'aeiouun') LIKE ANY($1::text[]) THEN 0
+           ELSE 1
+         END,
          CASE
            WHEN coalesce(source_summary.latest_source_at, document_summary.latest_document_at, c.last_seen_at, c.updated_at, c.created_at) >= now() - interval '2 years' THEN 0
            ELSE 1
@@ -480,9 +536,10 @@ async function entryLevelSeasonCandidates(
        END AS rank
      FROM candidate_pool
      ORDER BY
+       location_priority,
        age_priority,
        seniority_priority,
-       CASE WHEN cardinality($2::text[]) > 0 AND profile_text LIKE ANY($2::text[]) THEN 0 ELSE 1 END,
+       scout_priority,
        latest_source_at DESC NULLS LAST,
        quality_score DESC
      LIMIT $4`,
