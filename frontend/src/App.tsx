@@ -811,7 +811,7 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
     setError("");
     setMessage("Buscando candidatos existentes que coincidan con la temporada...");
     try {
-      const response = await api<{ data: { search: SeasonSearch; results: SeasonResult[] }; meta?: { reviewed: number; imported: number; excluded: number; skipped?: number } }>(`/season-searches/${id}/run`, {
+      const response = await api<{ data: { search: SeasonSearch; results: SeasonResult[] }; meta?: { resultCount?: number; reviewed: number; rankedReviewed?: number; broadReviewed?: number; imported: number; excluded: number; skipped?: number; warnings?: string[] } }>(`/season-searches/${id}/run`, {
         method: "POST",
         timeoutMs: 60_000
       });
@@ -819,7 +819,8 @@ function SeasonPage({ onView }: { onView: (id: string) => void }) {
       await load(false, true);
       const meta = response.meta;
       const skippedText = meta?.skipped ? ` ${meta.skipped} perfiles omitidos por datos incompletos.` : "";
-      setMessage(meta ? `Temporada actualizada: ${meta.imported} perfiles en bandeja, ${meta.excluded} excluidos por palabras bloqueadas.${skippedText}` : "Temporada actualizada.");
+      const warningsText = meta?.warnings?.length ? ` Advertencias: ${meta.warnings.join(" ")}` : "";
+      setMessage(meta ? `Temporada actualizada: ${meta.resultCount ?? response.data.search.resultCount} perfiles en bandeja. Revisados ${meta.reviewed}; búsqueda amplia ${meta.broadReviewed ?? 0}; ranking principal ${meta.rankedReviewed ?? 0}. ${meta.excluded} excluidos por palabras bloqueadas.${skippedText}${warningsText}` : "Temporada actualizada.");
     } catch (err: any) {
       setError(err.message || "No se pudo ejecutar la búsqueda de temporada.");
       setMessage("");

@@ -392,7 +392,7 @@ async function entryLevelSeasonCandidates(
          d.file_name AS primary_document_name,
          d.mime_type AS primary_document_mime_type,
          d.source_type AS primary_document_source_type,
-         left(coalesce(d.raw_text, ''), 14000) AS document_text,
+         left(coalesce(d.raw_text, ''), 8000) AS document_text,
          count(*) OVER (PARTITION BY d.candidate_id)::int AS document_count,
          max(d.created_at) OVER (PARTITION BY d.candidate_id) AS latest_document_at
        FROM documents d
@@ -436,105 +436,63 @@ async function entryLevelSeasonCandidates(
            WHEN coalesce(c.ai_seniority_years, 2) <= 2 THEN 1
            WHEN coalesce(c.ai_seniority_years, 2) <= 4 THEN 2
            ELSE 4
-         END AS seniority_priority,
-         CASE
-           WHEN cardinality($1::text[]) = 0 THEN 0
-           WHEN translate(lower(
-             coalesce(c.city, '') || ' ' ||
-             coalesce(c.country, '') || ' ' ||
-             coalesce(c.ai_summary, '') || ' ' ||
-             coalesce(document_summary.document_text, '')
-           ), 'áéíóúüñ', 'aeiouun') LIKE ANY($1::text[]) THEN 0
-           ELSE 1
-         END AS location_priority,
-         CASE
-           WHEN cardinality($2::text[]) > 0 AND translate(lower(
-             coalesce(c.current_role, '') || ' ' ||
-             coalesce(c.ai_seniority, '') || ' ' ||
-             coalesce(c.ai_summary, '') || ' ' ||
-             array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
-             array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
-             array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ') || ' ' ||
-             coalesce(document_summary.document_text, '')
-           ), 'áéíóúüñ', 'aeiouun') LIKE ANY($2::text[]) THEN 0
-           ELSE 1
-         END AS scout_priority
+         END AS seniority_priority
        FROM candidates c
        LEFT JOIN source_summary ON source_summary.candidate_id=c.id
        LEFT JOIN document_summary ON document_summary.candidate_id=c.id
        WHERE c.duplicate_of IS NULL
          AND c.status='active'
          AND document_summary.candidate_id IS NOT NULL
-         AND (
-           cardinality($1::text[]) = 0
-           OR translate(lower(
-             coalesce(c.city, '') || ' ' ||
-             coalesce(c.country, '') || ' ' ||
-             coalesce(c.ai_summary, '') || ' ' ||
-             coalesce(document_summary.document_text, '')
-           ), 'áéíóúüñ', 'aeiouun') LIKE ANY($1::text[])
-           OR translate(lower(
-             coalesce(c.current_role, '') || ' ' ||
-             coalesce(c.ai_seniority, '') || ' ' ||
-             coalesce(c.ai_summary, '') || ' ' ||
-             array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
-             array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
-             array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ') || ' ' ||
-             coalesce(document_summary.document_text, '')
-           ), 'áéíóúüñ', 'aeiouun') LIKE ANY($2::text[])
-           OR (
-             c.birth_date IS NOT NULL
-             AND c.birth_date > CURRENT_DATE - interval '35 years'
-             AND (c.ai_seniority_years IS NULL OR c.ai_seniority_years <= 4)
-           )
-           OR (c.ai_seniority_years IS NOT NULL AND c.ai_seniority_years <= 2)
-         )
-         AND (
-           c.birth_date IS NULL
-           OR c.birth_date > CURRENT_DATE - interval '40 years'
-           OR coalesce(c.ai_seniority_years, 2) <= 4
-           OR translate(lower(
-             coalesce(c.current_role, '') || ' ' ||
-             coalesce(c.ai_seniority, '') || ' ' ||
-             coalesce(c.ai_summary, '') || ' ' ||
-             array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
-             array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
-             array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ') || ' ' ||
-             coalesce(document_summary.document_text, '')
-           ), 'áéíóúüñ', 'aeiouun') LIKE ANY($2::text[])
-         )
-       ORDER BY
+     ), candidate_filtered AS MATERIALIZED (
+       SELECT candidate_pool.*,
          CASE
            WHEN cardinality($1::text[]) = 0 THEN 0
-           WHEN translate(lower(
-             coalesce(c.city, '') || ' ' ||
-             coalesce(c.country, '') || ' ' ||
-             coalesce(c.ai_summary, '') || ' ' ||
-             coalesce(document_summary.document_text, '')
-           ), 'áéíóúüñ', 'aeiouun') LIKE ANY($1::text[]) THEN 0
+           WHEN location_text LIKE ANY($1::text[]) THEN 0
+           ELSE 1
+         END AS location_priority,
+         CASE
+           WHEN cardinality($2::text[]) > 0 AND profile_text LIKE ANY($2::text[]) THEN 0
+           ELSE 1
+         END AS scout_priority
+       FROM candidate_pool
+       WHERE (
+         cardinality($1::text[]) = 0
+         OR location_text LIKE ANY($1::text[])
+         OR profile_text LIKE ANY($2::text[])
+         OR (
+           birth_date IS NOT NULL
+           AND birth_date > CURRENT_DATE - interval '35 years'
+           AND (ai_seniority_years IS NULL OR ai_seniority_years <= 4)
+         )
+         OR (ai_seniority_years IS NOT NULL AND ai_seniority_years <= 2)
+       )
+       AND (
+         birth_date IS NULL
+         OR birth_date > CURRENT_DATE - interval '40 years'
+         OR coalesce(ai_seniority_years, 2) <= 4
+         OR profile_text LIKE ANY($2::text[])
+       )
+       ORDER BY
+         location_priority,
+         CASE
+           WHEN latest_source_at >= now() - interval '2 years' THEN 0
            ELSE 1
          END,
-         CASE
-           WHEN coalesce(source_summary.latest_source_at, document_summary.latest_document_at, c.last_seen_at, c.updated_at, c.created_at) >= now() - interval '2 years' THEN 0
-           ELSE 1
-         END,
-         CASE
-           WHEN c.birth_date IS NOT NULL AND c.birth_date > CURRENT_DATE - interval '30 years' THEN 0
-           WHEN coalesce(c.ai_seniority_years, 2) <= 2 THEN 1
-           ELSE 2
-         END,
-         coalesce(source_summary.latest_source_at, document_summary.latest_document_at, c.last_seen_at, c.updated_at, c.created_at) DESC NULLS LAST,
-         c.quality_score DESC,
-         c.updated_at DESC
+         age_priority,
+         seniority_priority,
+         scout_priority,
+         latest_source_at DESC NULLS LAST,
+         quality_score DESC,
+         updated_at DESC
        LIMIT $3
      )
-     SELECT candidate_pool.*,
-       left(coalesce(candidate_pool.document_text, ''), 1500) AS document_snippet,
+     SELECT candidate_filtered.*,
+       left(coalesce(candidate_filtered.document_text, ''), 1500) AS document_snippet,
        CASE
-         WHEN cardinality($2::text[]) > 0 AND candidate_pool.profile_text LIKE ANY($2::text[]) THEN 0.12
+         WHEN cardinality($2::text[]) > 0 AND candidate_filtered.profile_text LIKE ANY($2::text[]) THEN 0.12
          ELSE 0.02
        END AS rank
-     FROM candidate_pool
+     FROM candidate_filtered
      ORDER BY
        location_priority,
        age_priority,
@@ -1105,6 +1063,7 @@ seasonRouter.post("/:id/run", asyncHandler(async (req, res) => {
   res.json({
     data: detail,
     meta: {
+      resultCount: detail?.search.resultCount ?? candidates.length,
       reviewed: merged.length,
       rankedReviewed: rankedCandidates.length,
       broadReviewed: broadCandidates.length,
