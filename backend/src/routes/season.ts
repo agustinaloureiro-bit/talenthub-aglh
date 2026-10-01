@@ -629,6 +629,181 @@ async function entryLevelSeasonFallbackCandidates(
   return rows.map((row) => mapBroadSeasonCandidate(row, search, terms, locationTerms));
 }
 
+async function entryLevelSeasonIndexedCandidates(
+  search: any,
+  terms: string[],
+  locationTerms: string[],
+  locationPatterns: string[],
+  operationalPatterns: string[],
+  entryLevelPatterns: string[]
+) {
+  const effectiveLocationPatterns = locationPatterns.length ? locationPatterns : likePatterns(locationTerms);
+  if (!effectiveLocationPatterns.length) return [];
+
+  const scoutPatterns = [...new Set([...operationalPatterns, ...entryLevelPatterns, ...likePatterns(terms)])];
+  const locationQuery = websearchOrQuery(locationTerms);
+  const { rows } = await qSearchWithTimeout(
+    `WITH location_document_hits AS MATERIALIZED (
+       SELECT d.candidate_id,
+         count(*)::int AS location_document_count,
+         max(d.created_at) AS latest_location_document_at,
+         max(ts_rank_cd(
+           to_tsvector('spanish'::regconfig, coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')),
+           websearch_to_tsquery('spanish'::regconfig, $1)
+         )) AS location_rank
+       FROM documents d
+       WHERE d.candidate_id IS NOT NULL
+         AND length(coalesce(d.raw_text, '')) >= 40
+         AND (
+           to_tsvector('spanish'::regconfig, coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, ''))
+             @@ websearch_to_tsquery('spanish'::regconfig, $1)
+           OR translate(lower(coalesce(d.raw_text, '') || ' ' || coalesce(d.file_name, '')), 'áéíóúüñ', 'aeiouun') LIKE ANY($2::text[])
+         )
+       GROUP BY d.candidate_id
+       ORDER BY max(d.created_at) DESC NULLS LAST
+       LIMIT $4
+     ), structured_location_hits AS MATERIALIZED (
+       SELECT c.id AS candidate_id
+       FROM candidates c
+       WHERE c.duplicate_of IS NULL
+         AND c.status='active'
+         AND translate(lower(
+           coalesce(c.city, '') || ' ' ||
+           coalesce(c.country, '') || ' ' ||
+           coalesce(c.ai_summary, '') || ' ' ||
+           coalesce(c.current_role, '') || ' ' ||
+           array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
+           array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ')
+       ), 'áéíóúüñ', 'aeiouun') LIKE ANY($2::text[])
+       ORDER BY coalesce(c.last_seen_at, c.updated_at, c.created_at) DESC NULLS LAST
+       LIMIT $4
+     ), candidate_ids AS MATERIALIZED (
+       SELECT candidate_id FROM location_document_hits
+       UNION
+       SELECT candidate_id FROM structured_location_hits
+     ), source_summary AS MATERIALIZED (
+       SELECT cs.candidate_id,
+         count(DISTINCT cs.source_type)::int AS source_count,
+         array_agg(DISTINCT cs.source_type ORDER BY cs.source_type) AS source_types,
+         max(coalesce(cs.source_created_at, cs.created_at)) AS latest_source_at,
+         max(cs.source_url) FILTER (WHERE nullif(cs.source_url, '') IS NOT NULL) AS profile_url
+       FROM candidate_sources cs
+       JOIN candidate_ids ids ON ids.candidate_id=cs.candidate_id
+       WHERE cs.is_active=true
+       GROUP BY cs.candidate_id
+     ), candidate_pool AS MATERIALIZED (
+       SELECT c.*,
+         coalesce(source_summary.source_count, 0)::int AS source_count,
+         coalesce(source_summary.source_types, '{}'::text[]) AS source_types,
+         coalesce(source_summary.latest_source_at, location_document_hits.latest_location_document_at, primary_document.created_at, c.last_seen_at, c.updated_at, c.created_at) AS latest_source_at,
+         source_summary.profile_url,
+         primary_document.id AS primary_document_id,
+         primary_document.file_name AS primary_document_name,
+         primary_document.mime_type AS primary_document_mime_type,
+         primary_document.source_type AS primary_document_source_type,
+         left(coalesce(primary_document.raw_text, ''), 1800) AS document_text,
+         coalesce(document_counts.document_count, 0)::int AS document_count,
+         coalesce(location_document_hits.location_document_count, 0)::int AS location_document_count,
+         coalesce(location_document_hits.location_rank, 0) AS location_rank,
+         translate(lower(
+           coalesce(c.full_name, '') || ' ' ||
+           coalesce(c.current_role, '') || ' ' ||
+           coalesce(c.city, '') || ' ' ||
+           coalesce(c.country, '') || ' ' ||
+           coalesce(c.ai_seniority, '') || ' ' ||
+           coalesce(c.ai_summary, '') || ' ' ||
+           array_to_string(coalesce(c.ai_tags, '{}'::text[]), ' ') || ' ' ||
+           array_to_string(coalesce(c.ai_industries, '{}'::text[]), ' ') || ' ' ||
+           array_to_string(coalesce(c.ai_roles, '{}'::text[]), ' ') || ' ' ||
+           coalesce(primary_document.raw_text, '')
+         ), 'áéíóúüñ', 'aeiouun') AS structured_text,
+         CASE
+           WHEN c.birth_date IS NOT NULL AND c.birth_date > CURRENT_DATE - interval '30 years' THEN 0
+           WHEN c.birth_date IS NOT NULL AND c.birth_date > CURRENT_DATE - interval '35 years' THEN 1
+           ELSE 2
+         END AS age_priority,
+         CASE
+           WHEN coalesce(c.ai_seniority_years, 2) <= 1 THEN 0
+           WHEN coalesce(c.ai_seniority_years, 2) <= 2 THEN 1
+           WHEN coalesce(c.ai_seniority_years, 2) <= 4 THEN 2
+           ELSE 4
+         END AS seniority_priority
+       FROM candidate_ids ids
+       JOIN candidates c ON c.id=ids.candidate_id
+       LEFT JOIN source_summary ON source_summary.candidate_id=c.id
+       LEFT JOIN location_document_hits ON location_document_hits.candidate_id=c.id
+       LEFT JOIN LATERAL (
+         SELECT d.id, d.file_name, d.mime_type, d.source_type, d.raw_text, d.created_at
+         FROM documents d
+         WHERE d.candidate_id=c.id
+         ORDER BY d.is_primary_cv DESC, d.created_at DESC
+         LIMIT 1
+       ) primary_document ON true
+       LEFT JOIN LATERAL (
+         SELECT count(*)::int AS document_count
+         FROM documents d
+         WHERE d.candidate_id=c.id
+       ) document_counts ON true
+       WHERE c.duplicate_of IS NULL
+         AND c.status='active'
+         AND primary_document.id IS NOT NULL
+         AND coalesce(source_summary.latest_source_at, location_document_hits.latest_location_document_at, primary_document.created_at, c.last_seen_at, c.updated_at, c.created_at) >= now() - interval '2 years'
+     ), candidate_filtered AS MATERIALIZED (
+       SELECT candidate_pool.*,
+         CASE
+           WHEN structured_text LIKE ANY($2::text[]) THEN 0
+           ELSE 1
+         END AS location_priority,
+         CASE
+           WHEN structured_text LIKE ANY($3::text[]) THEN 0
+           ELSE 1
+         END AS scout_priority
+       FROM candidate_pool
+       WHERE (
+         birth_date IS NULL
+         OR birth_date > CURRENT_DATE - interval '45 years'
+         OR coalesce(ai_seniority_years, 2) <= 6
+         OR structured_text LIKE ANY($3::text[])
+       )
+       ORDER BY
+         location_priority,
+         age_priority,
+         seniority_priority,
+         scout_priority,
+         latest_source_at DESC NULLS LAST,
+         quality_score DESC,
+         updated_at DESC
+       LIMIT $5
+     )
+     SELECT candidate_filtered.*,
+       left(coalesce(candidate_filtered.document_text, ''), 1500) AS document_snippet,
+       CASE
+         WHEN candidate_filtered.location_priority = 0 AND candidate_filtered.scout_priority = 0 THEN 0.16
+         WHEN candidate_filtered.location_priority = 0 THEN 0.11
+         ELSE 0.03
+       END AS rank
+     FROM candidate_filtered
+     ORDER BY
+       location_priority,
+       age_priority,
+       seniority_priority,
+       scout_priority,
+       latest_source_at DESC NULLS LAST,
+       quality_score DESC
+     LIMIT $6`,
+    [
+      locationQuery,
+      effectiveLocationPatterns,
+      scoutPatterns.length ? scoutPatterns : ["%auxiliar%", "%repositor%", "%cajero%", "%cajera%", "%atencion al cliente%", "%supermercado%"],
+      SEASON_BROAD_POOL_LIMIT,
+      SEASON_BROAD_POOL_LIMIT,
+      SEASON_BROAD_RETRIEVAL_LIMIT
+    ],
+    7_000
+  );
+  return rows.map((row) => mapBroadSeasonCandidate(row, search, terms, locationTerms));
+}
+
 async function broadSeasonCandidates(search: any) {
   const terms = seasonSearchTerms(search);
   const location = seasonLocationRequirement(search);
@@ -639,10 +814,25 @@ async function broadSeasonCandidates(search: any) {
   const operationalPatterns = likePatterns(seasonOperationalTerms(search));
   const entryLevelPatterns = likePatterns(seasonEntryLevelScoutTerms());
   if (entryLevelSeason) {
+    let indexedCandidates: any[] = [];
     try {
-      return await entryLevelSeasonCandidates(search, terms, locationTerms, locationPatterns, operationalPatterns, entryLevelPatterns);
+      indexedCandidates = await entryLevelSeasonIndexedCandidates(search, terms, locationTerms, locationPatterns, operationalPatterns, entryLevelPatterns);
+      if (indexedCandidates.length >= 500) return indexedCandidates;
     } catch (error) {
-      return entryLevelSeasonFallbackCandidates(search, terms, locationTerms, locationPatterns, operationalPatterns, entryLevelPatterns);
+      console.warn("season indexed broad search failed", error);
+    }
+    try {
+      const deepCandidates = await entryLevelSeasonCandidates(search, terms, locationTerms, locationPatterns, operationalPatterns, entryLevelPatterns);
+      return mergeSeasonCandidates(deepCandidates, indexedCandidates);
+    } catch (error) {
+      console.warn("season deep broad search failed", error);
+    }
+    try {
+      const fallbackCandidates = await entryLevelSeasonFallbackCandidates(search, terms, locationTerms, locationPatterns, operationalPatterns, entryLevelPatterns);
+      return mergeSeasonCandidates(indexedCandidates, fallbackCandidates);
+    } catch (error) {
+      console.warn("season fallback broad search failed", error);
+      return indexedCandidates;
     }
   }
   if (!termPatterns.length) return [];
